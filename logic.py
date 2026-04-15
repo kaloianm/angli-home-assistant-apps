@@ -104,8 +104,7 @@ class ExtractorFanPairLogic:
 
         self._light_is_on = True
         self._light_on_since = now
-        self._activation_due_at = now + timedelta(
-            seconds=self._config.min_light_on_for_fan_seconds)
+        self._activation_due_at = now + timedelta(seconds=self._config.min_light_on_for_fan_seconds)
 
         # Manual override is cleared only after full OFF -> ON transition.
         if self._manual_override is not None and self._override_reset_ready:
@@ -137,8 +136,7 @@ class ExtractorFanPairLogic:
 
         if self._occupancy_active_while_light_on and light_on_since is not None:
             duration = now - light_on_since
-            if duration < timedelta(
-                    seconds=self._config.short_visit_threshold_seconds):
+            if duration < timedelta(seconds=self._config.short_visit_threshold_seconds):
                 self._occupancy_run_until = now
             else:
                 self._occupancy_run_until = now + duration
@@ -146,8 +144,7 @@ class ExtractorFanPairLogic:
         self._occupancy_active_while_light_on = False
         return self._reconcile(now)
 
-    def on_schedule_started(self, now: datetime, *,
-                            duration_seconds: int) -> List[Action]:
+    def on_schedule_started(self, now: datetime, *, duration_seconds: int) -> List[Action]:
         """Start or extend a scheduled fan run.
 
         ``now`` is the schedule trigger time.
@@ -164,8 +161,7 @@ class ExtractorFanPairLogic:
 
         return self._reconcile(now)
 
-    def on_manual_fan_toggle(self, now: datetime, *,
-                             fan_on: bool) -> List[Action]:
+    def on_manual_fan_toggle(self, now: datetime, *, fan_on: bool) -> List[Action]:
         """Apply a manual fan override.
 
         ``fan_on`` is the user-forced target state (True/False).
@@ -217,8 +213,7 @@ class ExtractorFanPairLogic:
             # Scheduled demand window has ended.
             self._schedule_run_until = None
 
-    def _target_outputs(self,
-                        now: datetime) -> Dict[str, Optional[datetime] | bool]:
+    def _target_outputs(self, now: datetime) -> Dict[str, Optional[datetime] | bool]:
         """Compute target fan/keepalive/timer outputs from current state.
 
         Manual override, when present, always wins over automatic demand.
@@ -231,8 +226,7 @@ class ExtractorFanPairLogic:
             target_keepalive_on = self._manual_override
         else:
             occupancy_active = self._occupancy_active_while_light_on or (
-                self._occupancy_run_until is not None
-                and now < self._occupancy_run_until)
+                self._occupancy_run_until is not None and now < self._occupancy_run_until)
             schedule_active = (self._schedule_run_until is not None
                                and now < self._schedule_run_until)
             # Merge demand sources: if either needs fan, fan should run.
@@ -242,8 +236,8 @@ class ExtractorFanPairLogic:
         activation_timer = (
             # Activation timer exists only while waiting to decide if this light
             # session is long enough to trigger fan behavior.
-            self._activation_due_at if self._light_is_on
-            and not self._occupancy_active_while_light_on else None)
+            self._activation_due_at
+            if self._light_is_on and not self._occupancy_active_while_light_on else None)
         # Deadline timer wakes integration layer on next relevant expiry.
         deadline_timer = self._compute_next_deadline(now)
 
@@ -269,10 +263,8 @@ class ExtractorFanPairLogic:
             return None
         return min(candidates)
 
-    def _emit_transitions(
-            self,
-            target_outputs: Dict[str,
-                                 Optional[datetime] | bool]) -> List[Action]:
+    def _emit_transitions(self, target_outputs: Dict[str,
+                                                     Optional[datetime] | bool]) -> List[Action]:
         """Emit only changes between previous output and target output.
 
         This makes the logic idempotent: repeated events/ticks with unchanged
@@ -283,16 +275,14 @@ class ExtractorFanPairLogic:
         target_fan_on = bool(target_outputs["fan_on"])
         if target_fan_on != self._fan_output_on:
             # Emit edge-triggered fan command only on state transition.
-            actions.append(
-                Action(ACTION_FAN_ON if target_fan_on else ACTION_FAN_OFF))
+            actions.append(Action(ACTION_FAN_ON if target_fan_on else ACTION_FAN_OFF))
             self._fan_output_on = target_fan_on
 
         target_keepalive_on = bool(target_outputs["keepalive_on"])
         if target_keepalive_on != self._keepalive_output_on:
             # Keepalive scheduler is also edge-triggered.
             actions.append(
-                Action(ACTION_START_KEEPALIVE
-                       if target_keepalive_on else ACTION_STOP_KEEPALIVE))
+                Action(ACTION_START_KEEPALIVE if target_keepalive_on else ACTION_STOP_KEEPALIVE))
             self._keepalive_output_on = target_keepalive_on
 
         for timer_name in (TIMER_ACTIVATION, TIMER_DEADLINE):
@@ -302,13 +292,9 @@ class ExtractorFanPairLogic:
                 # Timer commands are declarative too: set when needed, cancel
                 # when no longer needed.
                 if target_at is None:
-                    actions.append(
-                        Action(ACTION_CANCEL_TIMER, timer_name=timer_name))
+                    actions.append(Action(ACTION_CANCEL_TIMER, timer_name=timer_name))
                 else:
-                    actions.append(
-                        Action(ACTION_SET_TIMER,
-                               timer_name=timer_name,
-                               at=target_at))
+                    actions.append(Action(ACTION_SET_TIMER, timer_name=timer_name, at=target_at))
                 self._timer_outputs[timer_name] = target_at
 
         return actions

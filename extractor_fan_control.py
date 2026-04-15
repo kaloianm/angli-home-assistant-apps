@@ -60,40 +60,25 @@ class ExtractorFanControl(hass.Hass):
         self._runtime_by_fan_entity: Dict[str, PairRuntime] = {}
 
         for pair_config in self._config.pairs:
-            self.log("Processing pair "
-                     f"name={pair_config.name}, "
-                     f"light_entity={pair_config.light_entity}, "
-                     f"fan_switch_entity={pair_config.fan_switch_entity}, "
-                     "min_light_on_for_fan_seconds="
-                     f"{pair_config.min_light_on_for_fan_seconds}, "
-                     "short_visit_threshold_seconds="
-                     f"{pair_config.short_visit_threshold_seconds}, "
-                     f"daily_run_time={pair_config.daily_run_time}, "
-                     "daily_run_duration_seconds="
-                     f"{pair_config.daily_run_duration_seconds}")
+            self.log(f"Processing pair: {pair_config}")
             runtime = PairRuntime(
                 config=pair_config,
                 logic=ExtractorFanPairLogic(
                     LogicConfig(
-                        min_light_on_for_fan_seconds=pair_config.
-                        min_light_on_for_fan_seconds,
-                        short_visit_threshold_seconds=pair_config.
-                        short_visit_threshold_seconds,
+                        min_light_on_for_fan_seconds=pair_config.min_light_on_for_fan_seconds,
+                        short_visit_threshold_seconds=pair_config.short_visit_threshold_seconds,
                     )),
             )
             self._runtime_by_name[pair_config.name] = runtime
             self._runtime_by_light_entity[pair_config.light_entity] = runtime
-            self._runtime_by_fan_entity[
-                pair_config.fan_switch_entity] = runtime
+            self._runtime_by_fan_entity[pair_config.fan_switch_entity] = runtime
 
-            runtime.light_listener_handle = self.listen_state(
-                self._on_light_state,
-                pair_config.light_entity,
-                pair_name=pair_config.name)
-            runtime.fan_listener_handle = self.listen_state(
-                self._on_fan_state,
-                pair_config.fan_switch_entity,
-                pair_name=pair_config.name)
+            runtime.light_listener_handle = self.listen_state(self._on_light_state,
+                                                              pair_config.light_entity,
+                                                              pair_name=pair_config.name)
+            runtime.fan_listener_handle = self.listen_state(self._on_fan_state,
+                                                            pair_config.fan_switch_entity,
+                                                            pair_name=pair_config.name)
             if pair_config.daily_run_time and pair_config.daily_run_duration_seconds:
                 runtime.daily_schedule_handle = self.run_daily(
                     self._on_daily_schedule_start,
@@ -155,8 +140,7 @@ class ExtractorFanControl(hass.Hass):
 
         if runtime.logic is None:
             return
-        actions = runtime.logic.on_manual_fan_toggle(self.datetime(),
-                                                     fan_on=(new == "on"))
+        actions = runtime.logic.on_manual_fan_toggle(self.datetime(), fan_on=(new == "on"))
         self._apply_actions(runtime, actions)
 
     def _on_daily_schedule_start(self, kwargs: Dict[str, Any]) -> None:
@@ -188,8 +172,7 @@ class ExtractorFanControl(hass.Hass):
         runtime = self._runtime_by_name[kwargs["pair_name"]]
         self._turn_fan(runtime, on=True)
 
-    def _apply_actions(self, runtime: PairRuntime,
-                       actions: list[Action]) -> None:
+    def _apply_actions(self, runtime: PairRuntime, actions: list[Action]) -> None:
         """Translate pure logic actions into AppDaemon side effects."""
         for action in actions:
             if action.kind == ACTION_FAN_ON:
@@ -232,8 +215,7 @@ class ExtractorFanControl(hass.Hass):
 
     def _set_timer(self, runtime: PairRuntime, action: Action) -> None:
         """Set activation/deadline one-shot timer at the requested timestamp."""
-        if action.timer_name not in (TIMER_ACTIVATION,
-                                     TIMER_DEADLINE) or action.at is None:
+        if action.timer_name not in (TIMER_ACTIVATION, TIMER_DEADLINE) or action.at is None:
             return
         self._cancel_timer(runtime, action.timer_name)
         handle = self.run_at(
@@ -247,8 +229,7 @@ class ExtractorFanControl(hass.Hass):
         else:
             runtime.deadline_timer_handle = handle
 
-    def _cancel_timer(self, runtime: PairRuntime,
-                      timer_name: Optional[str]) -> None:
+    def _cancel_timer(self, runtime: PairRuntime, timer_name: Optional[str]) -> None:
         """Cancel activation/deadline timer if currently scheduled."""
         if timer_name == TIMER_ACTIVATION:
             handle = runtime.activation_timer_handle

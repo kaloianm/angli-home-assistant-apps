@@ -1,6 +1,6 @@
 import unittest
 
-from extractor_fan_control.config import parse_app_config
+from extractor_fan_control.config import PairConfig, parse_app_config
 
 
 class TestConfigParsing(unittest.TestCase):
@@ -47,8 +47,7 @@ class TestConfigParsing(unittest.TestCase):
             })
 
     def test_invalid_daily_time_is_rejected(self):
-        with self.assertRaisesRegex(ValueError,
-                                    "daily_run_time must be HH:MM"):
+        with self.assertRaisesRegex(ValueError, "daily_run_time must be HH:MM"):
             parse_app_config({
                 "pairs": [{
                     "light_entity": "light.bathroom",
@@ -81,8 +80,7 @@ class TestConfigParsing(unittest.TestCase):
         self.assertIsNone(cfg.pairs[0].daily_run_duration_seconds)
 
     def test_pulse_guard_must_be_smaller_than_staircase_interval(self):
-        with self.assertRaisesRegex(ValueError,
-                                    "pulse_guard_seconds must be smaller"):
+        with self.assertRaisesRegex(ValueError, "pulse_guard_seconds must be smaller"):
             parse_app_config({
                 "staircase_interval_seconds":
                 30,
@@ -97,9 +95,23 @@ class TestConfigParsing(unittest.TestCase):
             })
 
     def test_pairs_must_be_non_empty_list(self):
-        with self.assertRaisesRegex(ValueError,
-                                    "pairs must be a non-empty list"):
+        with self.assertRaisesRegex(ValueError, "pairs must be a non-empty list"):
             parse_app_config({"pairs": []})
+
+    def test_pair_config_string_representation_is_readable(self):
+        pair = PairConfig(
+            name="guestroom_bathroom",
+            light_entity="light.guestroom_bathroom_ceiling_light",
+            fan_switch_entity="switch.guestroom_bathroom_air_extractor",
+            min_light_on_for_fan_seconds=15,
+            short_visit_threshold_seconds=60,
+            daily_run_time=None,
+            daily_run_duration_seconds=None,
+        )
+        rendered = str(pair)
+        self.assertIn("PairConfig(", rendered)
+        self.assertIn("name=guestroom_bathroom", rendered)
+        self.assertIn("daily_run_time=None", rendered)
 
 
 if __name__ == "__main__":

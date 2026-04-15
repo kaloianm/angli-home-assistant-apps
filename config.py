@@ -24,6 +24,21 @@ class PairConfig:
     daily_run_time: Optional[str]
     daily_run_duration_seconds: Optional[int]
 
+    def __str__(self) -> str:
+        """Human-friendly summary used in logs."""
+        return ("PairConfig("
+                f"name={self.name}, "
+                f"light_entity={self.light_entity}, "
+                f"fan_switch_entity={self.fan_switch_entity}, "
+                "min_light_on_for_fan_seconds="
+                f"{self.min_light_on_for_fan_seconds}, "
+                "short_visit_threshold_seconds="
+                f"{self.short_visit_threshold_seconds}, "
+                f"daily_run_time={self.daily_run_time}, "
+                "daily_run_duration_seconds="
+                f"{self.daily_run_duration_seconds}"
+                ")")
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -36,20 +51,17 @@ class AppConfig:
     @property
     def keepalive_pulse_interval_seconds(self) -> int:
         """Seconds between keepalive ON pulses."""
-        return max(1,
-                   self.staircase_interval_seconds - self.pulse_guard_seconds)
+        return max(1, self.staircase_interval_seconds - self.pulse_guard_seconds)
 
 
 def parse_app_config(args: Dict[str, Any]) -> AppConfig:
     """Parse and validate AppDaemon args for ExtractorFanControl."""
-    staircase_interval_seconds = _parse_positive_int(
-        args, "staircase_interval_seconds", DEFAULT_STAIRCASE_INTERVAL_SECONDS)
+    staircase_interval_seconds = _parse_positive_int(args, "staircase_interval_seconds",
+                                                     DEFAULT_STAIRCASE_INTERVAL_SECONDS)
     pulse_guard_seconds = _parse_non_negative_int(args, "pulse_guard_seconds",
                                                   DEFAULT_PULSE_GUARD_SECONDS)
     if pulse_guard_seconds >= staircase_interval_seconds:
-        raise ValueError(
-            "pulse_guard_seconds must be smaller than staircase_interval_seconds"
-        )
+        raise ValueError("pulse_guard_seconds must be smaller than staircase_interval_seconds")
 
     raw_pairs = args.get("pairs")
     if not isinstance(raw_pairs, list) or not raw_pairs:
@@ -76,8 +88,7 @@ def parse_app_config(args: Dict[str, Any]) -> AppConfig:
 def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
     """Parse and validate one pair object from args['pairs']."""
     light_entity = _require_non_empty_str(raw_pair, "light_entity", idx)
-    fan_switch_entity = _require_non_empty_str(raw_pair, "fan_switch_entity",
-                                               idx)
+    fan_switch_entity = _require_non_empty_str(raw_pair, "fan_switch_entity", idx)
 
     raw_name = raw_pair.get("name")
     if raw_name is None or str(raw_name).strip() == "":
@@ -109,8 +120,10 @@ def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
         if daily_run_time == "":
             raise ValueError(f"pairs[{idx}].daily_run_time is required")
         _validate_daily_time(daily_run_time, idx)
-        daily_run_duration_seconds = _parse_positive_int(
-            raw_pair, "daily_run_duration_seconds", default=None, idx=idx)
+        daily_run_duration_seconds = _parse_positive_int(raw_pair,
+                                                         "daily_run_duration_seconds",
+                                                         default=None,
+                                                         idx=idx)
 
     return PairConfig(
         name=name,
@@ -131,9 +144,7 @@ def _validate_daily_time(value: str, idx: int) -> None:
         raise ValueError(f"pairs[{idx}].daily_run_time must be HH:MM") from exc
 
 
-def _require_non_empty_str(source: Dict[str, Any],
-                           key: str,
-                           idx: Optional[int] = None) -> str:
+def _require_non_empty_str(source: Dict[str, Any], key: str, idx: Optional[int] = None) -> str:
     """Read a required non-empty string field."""
     value = source.get(key)
     if value is None or str(value).strip() == "":
