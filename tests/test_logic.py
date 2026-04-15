@@ -1,5 +1,6 @@
-from datetime import datetime, timedelta
 import unittest
+
+from datetime import datetime, timedelta
 
 from extractor_fan_control.logic import (
     ACTION_FAN_OFF,
