@@ -21,8 +21,8 @@ class PairConfig:
     fan_switch_entity: str
     min_light_on_for_fan_seconds: int
     short_visit_threshold_seconds: int
-    daily_run_time: str
-    daily_run_duration_seconds: int
+    daily_run_time: Optional[str]
+    daily_run_duration_seconds: Optional[int]
 
 
 @dataclass(frozen=True)
@@ -98,10 +98,19 @@ def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
         idx=idx,
     )
 
-    daily_run_time = _require_non_empty_str(raw_pair, "daily_run_time", idx)
-    _validate_daily_time(daily_run_time, idx)
-    daily_run_duration_seconds = _parse_positive_int(
-        raw_pair, "daily_run_duration_seconds", default=None, idx=idx)
+    daily_run_time_raw = raw_pair.get("daily_run_time")
+    daily_run_duration_raw = raw_pair.get("daily_run_duration_seconds")
+    if daily_run_time_raw is None or daily_run_duration_raw is None:
+        # Missing either field means this pair has no daily schedule configured.
+        daily_run_time = None
+        daily_run_duration_seconds = None
+    else:
+        daily_run_time = str(daily_run_time_raw).strip()
+        if daily_run_time == "":
+            raise ValueError(f"pairs[{idx}].daily_run_time is required")
+        _validate_daily_time(daily_run_time, idx)
+        daily_run_duration_seconds = _parse_positive_int(
+            raw_pair, "daily_run_duration_seconds", default=None, idx=idx)
 
     return PairConfig(
         name=name,
