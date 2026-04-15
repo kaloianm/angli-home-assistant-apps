@@ -60,6 +60,17 @@ class ExtractorFanControl(hass.Hass):
         self._runtime_by_fan_entity: Dict[str, PairRuntime] = {}
 
         for pair_config in self._config.pairs:
+            self.log("Processing pair "
+                     f"name={pair_config.name}, "
+                     f"light_entity={pair_config.light_entity}, "
+                     f"fan_switch_entity={pair_config.fan_switch_entity}, "
+                     "min_light_on_for_fan_seconds="
+                     f"{pair_config.min_light_on_for_fan_seconds}, "
+                     "short_visit_threshold_seconds="
+                     f"{pair_config.short_visit_threshold_seconds}, "
+                     f"daily_run_time={pair_config.daily_run_time}, "
+                     "daily_run_duration_seconds="
+                     f"{pair_config.daily_run_duration_seconds}")
             runtime = PairRuntime(
                 config=pair_config,
                 logic=ExtractorFanPairLogic(
