@@ -1,2 +1,1 @@
 """Extractor fan control package."""
-
