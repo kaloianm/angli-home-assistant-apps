@@ -74,8 +74,8 @@ ExtractorFanControl:
 
 ## Tests
 
-From repository root:
+From the `extractor_fan_control/` directory:
 
 ```bash
-PYTHONPATH=./apps python3 -m unittest discover -s ./apps/extractor_fan_control/tests -p "test_*.py"
+pytest tests/ -v
 ```
