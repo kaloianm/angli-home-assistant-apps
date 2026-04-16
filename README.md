@@ -31,7 +31,16 @@ ExtractorFanControl:
   module: extractor_fan_control.extractor_fan_control
   class: ExtractorFanControl
 
-  # KNX staircase actuator auto-off interval in seconds
+  # KNX staircase actuator auto-off interval in seconds. The settings for the relay controlling the
+  # fans (in ETS) need to be:
+  #  - Feedback ON
+  #  - Time delays OFF
+  #  - Staircase function ON
+  #    - Staircase time 30 seconds
+  #    - Staircase time retriggerable ON
+  #    - Switch-on delay OFF
+  #    - Reaction to OFF-telegram "switch off"
+  #    - At the end of the staircase time "switch off"
   staircase_interval_seconds: 30
 
   # Keepalive pulse guard in seconds (pulse interval = staircase - guard)
