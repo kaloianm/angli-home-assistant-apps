@@ -1,15 +1,12 @@
-"""Pure config models and parsing for ExtractorFanControl."""
+"""
+Pure config models and parsing for ExtractorFanControl.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-
-DEFAULT_STAIRCASE_INTERVAL_SECONDS = 30
-DEFAULT_PULSE_GUARD_SECONDS = 5
-DEFAULT_MIN_LIGHT_ON_FOR_FAN_SECONDS = 15
-DEFAULT_SHORT_VISIT_THRESHOLD_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -57,9 +54,8 @@ class AppConfig:
 def parse_app_config(args: Dict[str, Any]) -> AppConfig:
     """Parse and validate AppDaemon args for ExtractorFanControl."""
     staircase_interval_seconds = _parse_positive_int(args, "staircase_interval_seconds",
-                                                     DEFAULT_STAIRCASE_INTERVAL_SECONDS)
-    pulse_guard_seconds = _parse_non_negative_int(args, "pulse_guard_seconds",
-                                                  DEFAULT_PULSE_GUARD_SECONDS)
+                                                     default=None)
+    pulse_guard_seconds = _parse_non_negative_int(args, "pulse_guard_seconds", default=None)
     if pulse_guard_seconds >= staircase_interval_seconds:
         raise ValueError("pulse_guard_seconds must be smaller than staircase_interval_seconds")
 
@@ -99,13 +95,13 @@ def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
     min_light_on_for_fan_seconds = _parse_positive_int(
         raw_pair,
         "min_light_on_for_fan_seconds",
-        DEFAULT_MIN_LIGHT_ON_FOR_FAN_SECONDS,
+        default=None,
         idx=idx,
     )
     short_visit_threshold_seconds = _parse_positive_int(
         raw_pair,
         "short_visit_threshold_seconds",
-        DEFAULT_SHORT_VISIT_THRESHOLD_SECONDS,
+        default=None,
         idx=idx,
     )
 
@@ -120,10 +116,8 @@ def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
         if daily_run_time == "":
             raise ValueError(f"pairs[{idx}].daily_run_time is required")
         _validate_daily_time(daily_run_time, idx)
-        daily_run_duration_seconds = _parse_positive_int(raw_pair,
-                                                         "daily_run_duration_seconds",
-                                                         default=None,
-                                                         idx=idx)
+        daily_run_duration_seconds = _parse_positive_int(raw_pair, "daily_run_duration_seconds",
+                                                         default=None, idx=idx)
 
     return PairConfig(
         name=name,
@@ -153,9 +147,7 @@ def _require_non_empty_str(source: Dict[str, Any], key: str, idx: Optional[int] 
     return str(value).strip()
 
 
-def _parse_positive_int(source: Dict[str, Any],
-                        key: str,
-                        default: Optional[int],
+def _parse_positive_int(source: Dict[str, Any], key: str, default: Optional[int],
                         idx: Optional[int] = None) -> int:
     """Read integer field and enforce > 0."""
     value = source.get(key, default)
@@ -171,13 +163,13 @@ def _parse_positive_int(source: Dict[str, Any],
     return value_int
 
 
-def _parse_non_negative_int(source: Dict[str, Any],
-                            key: str,
-                            default: int,
+def _parse_non_negative_int(source: Dict[str, Any], key: str, default: Optional[int],
                             idx: Optional[int] = None) -> int:
     """Read integer field and enforce >= 0."""
     value = source.get(key, default)
     where = f"pairs[{idx}].{key}" if idx is not None else key
+    if value is None:
+        raise ValueError(f"{where} is required")
     try:
         value_int = int(value)
     except (TypeError, ValueError) as exc:

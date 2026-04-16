@@ -5,11 +5,15 @@ from extractor_fan_control.config import PairConfig, parse_app_config
 
 class TestConfigParsing(unittest.TestCase):
 
-    def test_parse_valid_config_with_defaults(self):
+    def test_parse_valid_config_with_required_values(self):
         cfg = parse_app_config({
+            "staircase_interval_seconds": 30,
+            "pulse_guard_seconds": 5,
             "pairs": [{
                 "light_entity": "light.bathroom",
                 "fan_switch_entity": "switch.bathroom_fan",
+                "min_light_on_for_fan_seconds": 15,
+                "short_visit_threshold_seconds": 60,
                 "daily_run_time": "07:30",
                 "daily_run_duration_seconds": 600,
             }]
@@ -28,11 +32,15 @@ class TestConfigParsing(unittest.TestCase):
     def test_duplicate_pair_name_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "duplicate pair name"):
             parse_app_config({
+                "staircase_interval_seconds": 30,
+                "pulse_guard_seconds": 5,
                 "pairs": [
                     {
                         "name": "bathroom",
                         "light_entity": "light.bathroom",
                         "fan_switch_entity": "switch.bathroom_fan",
+                        "min_light_on_for_fan_seconds": 15,
+                        "short_visit_threshold_seconds": 60,
                         "daily_run_time": "07:30",
                         "daily_run_duration_seconds": 600,
                     },
@@ -40,6 +48,8 @@ class TestConfigParsing(unittest.TestCase):
                         "name": "bathroom",
                         "light_entity": "light.wc",
                         "fan_switch_entity": "switch.wc_fan",
+                        "min_light_on_for_fan_seconds": 15,
+                        "short_visit_threshold_seconds": 60,
                         "daily_run_time": "08:00",
                         "daily_run_duration_seconds": 600,
                     },
@@ -49,9 +59,13 @@ class TestConfigParsing(unittest.TestCase):
     def test_invalid_daily_time_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "daily_run_time must be HH:MM"):
             parse_app_config({
+                "staircase_interval_seconds": 30,
+                "pulse_guard_seconds": 5,
                 "pairs": [{
                     "light_entity": "light.bathroom",
                     "fan_switch_entity": "switch.bathroom_fan",
+                    "min_light_on_for_fan_seconds": 15,
+                    "short_visit_threshold_seconds": 60,
                     "daily_run_time": "25:99",
                     "daily_run_duration_seconds": 600,
                 }]
@@ -59,9 +73,13 @@ class TestConfigParsing(unittest.TestCase):
 
     def test_missing_daily_duration_disables_daily_run(self):
         cfg = parse_app_config({
+            "staircase_interval_seconds": 30,
+            "pulse_guard_seconds": 5,
             "pairs": [{
                 "light_entity": "light.bathroom",
                 "fan_switch_entity": "switch.bathroom_fan",
+                "min_light_on_for_fan_seconds": 15,
+                "short_visit_threshold_seconds": 60,
                 "daily_run_time": "07:30",
             }]
         })
@@ -70,9 +88,13 @@ class TestConfigParsing(unittest.TestCase):
 
     def test_missing_daily_time_disables_daily_run(self):
         cfg = parse_app_config({
+            "staircase_interval_seconds": 30,
+            "pulse_guard_seconds": 5,
             "pairs": [{
                 "light_entity": "light.bathroom",
                 "fan_switch_entity": "switch.bathroom_fan",
+                "min_light_on_for_fan_seconds": 15,
+                "short_visit_threshold_seconds": 60,
                 "daily_run_duration_seconds": 600,
             }]
         })
@@ -82,13 +104,13 @@ class TestConfigParsing(unittest.TestCase):
     def test_pulse_guard_must_be_smaller_than_staircase_interval(self):
         with self.assertRaisesRegex(ValueError, "pulse_guard_seconds must be smaller"):
             parse_app_config({
-                "staircase_interval_seconds":
-                30,
-                "pulse_guard_seconds":
-                30,
+                "staircase_interval_seconds": 30,
+                "pulse_guard_seconds": 30,
                 "pairs": [{
                     "light_entity": "light.bathroom",
                     "fan_switch_entity": "switch.bathroom_fan",
+                    "min_light_on_for_fan_seconds": 15,
+                    "short_visit_threshold_seconds": 60,
                     "daily_run_time": "07:30",
                     "daily_run_duration_seconds": 600,
                 }],
@@ -96,7 +118,36 @@ class TestConfigParsing(unittest.TestCase):
 
     def test_pairs_must_be_non_empty_list(self):
         with self.assertRaisesRegex(ValueError, "pairs must be a non-empty list"):
-            parse_app_config({"pairs": []})
+            parse_app_config({
+                "staircase_interval_seconds": 30,
+                "pulse_guard_seconds": 5,
+                "pairs": []
+            })
+
+    def test_missing_required_top_level_value_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "staircase_interval_seconds is required"):
+            parse_app_config({
+                "pulse_guard_seconds": 5,
+                "pairs": [{
+                    "light_entity": "light.bathroom",
+                    "fan_switch_entity": "switch.bathroom_fan",
+                    "min_light_on_for_fan_seconds": 15,
+                    "short_visit_threshold_seconds": 60,
+                }]
+            })
+
+    def test_missing_required_pair_value_is_rejected(self):
+        with self.assertRaisesRegex(ValueError,
+                                    "pairs\\[0\\]\\.min_light_on_for_fan_seconds is required"):
+            parse_app_config({
+                "staircase_interval_seconds": 30,
+                "pulse_guard_seconds": 5,
+                "pairs": [{
+                    "light_entity": "light.bathroom",
+                    "fan_switch_entity": "switch.bathroom_fan",
+                    "short_visit_threshold_seconds": 60,
+                }]
+            })
 
     def test_pair_config_string_representation_is_readable(self):
         pair = PairConfig(

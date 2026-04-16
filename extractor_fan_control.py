@@ -1,4 +1,6 @@
-"""AppDaemon entry point for ExtractorFanControl."""
+"""
+AppDaemon entry point for ExtractorFanControl.
+"""
 
 from __future__ import annotations
 

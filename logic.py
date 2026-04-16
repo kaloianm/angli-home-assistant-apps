@@ -1,8 +1,9 @@
-"""Pure business logic for extractor fan control.
+"""
+Pure business logic for extractor fan control.
 
 This module intentionally has no AppDaemon or Home Assistant dependencies.
-The runtime integration layer can feed events into ``ExtractorFanPairLogic``
-and execute the returned actions.
+The runtime integration layer can feed events into ``ExtractorFanPairLogic`` and execute the
+returned actions.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ TIMER_DEADLINE = "deadline"
 class LogicConfig:
     """Per light/fan pair timing configuration."""
 
-    min_light_on_for_fan_seconds: int = 15
+    min_light_on_for_fan_seconds: int = 10
     short_visit_threshold_seconds: int = 60
     max_post_run_seconds: int = 600
 
