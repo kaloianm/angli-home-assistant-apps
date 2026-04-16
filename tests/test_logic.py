@@ -173,6 +173,46 @@ class TestExtractorFanPairLogic(unittest.TestCase):
             any(a.at == self.t0 + timedelta(seconds=190) for a in deadline_sets)
             or timer_set_actions == [])
 
+    def test_equal_thresholds_allow_activation_and_expected_stop_behavior(self):
+        logic = ExtractorFanPairLogic(
+            LogicConfig(min_light_on_for_fan_seconds=60, short_visit_threshold_seconds=60))
+        logic.on_light_on(self.t0)
+
+        before_activation = logic.on_time_tick(self.t0 + timedelta(seconds=59))
+        self.assertNotIn(ACTION_FAN_ON, _kinds(before_activation))
+
+        at_activation = logic.on_time_tick(self.t0 + timedelta(seconds=60))
+        self.assertIn(ACTION_FAN_ON, _kinds(at_activation))
+        self.assertIn(ACTION_START_KEEPALIVE, _kinds(at_activation))
+
+        logic.on_light_off(self.t0 + timedelta(seconds=60))
+        before_post_run_end = logic.on_time_tick(self.t0 + timedelta(seconds=119))
+        self.assertNotIn(ACTION_FAN_OFF, _kinds(before_post_run_end))
+
+        at_post_run_end = logic.on_time_tick(self.t0 + timedelta(seconds=120))
+        self.assertIn(ACTION_FAN_OFF, _kinds(at_post_run_end))
+        self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(at_post_run_end))
+
+    def test_invalid_threshold_order_is_rejected(self):
+        with self.assertRaisesRegex(
+                ValueError,
+                "min_light_on_for_fan_seconds must be <= short_visit_threshold_seconds",
+        ):
+            ExtractorFanPairLogic(
+                LogicConfig(min_light_on_for_fan_seconds=61, short_visit_threshold_seconds=60))
+
+    def test_zero_min_light_on_is_allowed(self):
+        logic = ExtractorFanPairLogic(
+            LogicConfig(min_light_on_for_fan_seconds=0, short_visit_threshold_seconds=60))
+        actions_on = logic.on_light_on(self.t0)
+        self.assertIn(ACTION_FAN_ON, _kinds(actions_on))
+        self.assertIn(ACTION_START_KEEPALIVE, _kinds(actions_on))
+
+    def test_zero_short_visit_threshold_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "short_visit_threshold_seconds must be > 0"):
+            ExtractorFanPairLogic(
+                LogicConfig(min_light_on_for_fan_seconds=0, short_visit_threshold_seconds=0))
+
 
 if __name__ == "__main__":
     unittest.main()

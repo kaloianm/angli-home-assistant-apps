@@ -40,10 +40,13 @@ class LogicConfig:
           this value, fan stops immediately when light turns off.
         - ``max_post_run_seconds``: upper bound for long-visit post-run time.
         """
-        if self.min_light_on_for_fan_seconds <= 0:
-            raise ValueError("min_light_on_for_fan_seconds must be > 0")
+        if self.min_light_on_for_fan_seconds < 0:
+            raise ValueError("min_light_on_for_fan_seconds must be >= 0")
         if self.short_visit_threshold_seconds <= 0:
             raise ValueError("short_visit_threshold_seconds must be > 0")
+        if self.min_light_on_for_fan_seconds > self.short_visit_threshold_seconds:
+            raise ValueError(
+                "min_light_on_for_fan_seconds must be <= short_visit_threshold_seconds")
         if self.max_post_run_seconds <= 0:
             raise ValueError("max_post_run_seconds must be > 0")
 

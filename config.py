@@ -92,7 +92,7 @@ def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
     else:
         name = str(raw_name).strip()
 
-    min_light_on_for_fan_seconds = _parse_positive_int(
+    min_light_on_for_fan_seconds = _parse_non_negative_int(
         raw_pair,
         "min_light_on_for_fan_seconds",
         default=None,
@@ -104,6 +104,13 @@ def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
         default=None,
         idx=idx,
     )
+    if min_light_on_for_fan_seconds > short_visit_threshold_seconds:
+        raise ValueError("pairs["
+                         f"{idx}"
+                         "].min_light_on_for_fan_seconds must be <= "
+                         "pairs["
+                         f"{idx}"
+                         "].short_visit_threshold_seconds")
 
     daily_run_time_raw = raw_pair.get("daily_run_time")
     daily_run_duration_raw = raw_pair.get("daily_run_duration_seconds")

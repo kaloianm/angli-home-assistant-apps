@@ -149,6 +149,50 @@ class TestConfigParsing(unittest.TestCase):
                 }]
             })
 
+    def test_min_light_on_can_be_zero(self):
+        cfg = parse_app_config({
+            "staircase_interval_seconds": 30,
+            "pulse_guard_seconds": 5,
+            "pairs": [{
+                "light_entity": "light.bathroom",
+                "fan_switch_entity": "switch.bathroom_fan",
+                "min_light_on_for_fan_seconds": 0,
+                "short_visit_threshold_seconds": 60,
+            }]
+        })
+        self.assertEqual(0, cfg.pairs[0].min_light_on_for_fan_seconds)
+
+    def test_short_visit_threshold_cannot_be_zero(self):
+        with self.assertRaisesRegex(ValueError,
+                                    "pairs\\[0\\]\\.short_visit_threshold_seconds must be > 0"):
+            parse_app_config({
+                "staircase_interval_seconds": 30,
+                "pulse_guard_seconds": 5,
+                "pairs": [{
+                    "light_entity": "light.bathroom",
+                    "fan_switch_entity": "switch.bathroom_fan",
+                    "min_light_on_for_fan_seconds": 0,
+                    "short_visit_threshold_seconds": 0,
+                }]
+            })
+
+    def test_min_light_on_cannot_exceed_short_visit_threshold(self):
+        with self.assertRaisesRegex(
+                ValueError,
+                "pairs\\[0\\]\\.min_light_on_for_fan_seconds must be <= "
+                "pairs\\[0\\]\\.short_visit_threshold_seconds",
+        ):
+            parse_app_config({
+                "staircase_interval_seconds": 30,
+                "pulse_guard_seconds": 5,
+                "pairs": [{
+                    "light_entity": "light.bathroom",
+                    "fan_switch_entity": "switch.bathroom_fan",
+                    "min_light_on_for_fan_seconds": 61,
+                    "short_visit_threshold_seconds": 60,
+                }]
+            })
+
     def test_pair_config_string_representation_is_readable(self):
         pair = PairConfig(
             name="guestroom_bathroom",
