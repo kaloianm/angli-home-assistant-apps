@@ -1,0 +1,45 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# AppDaemon apps.yaml — Gradhermetic Cover wrapper
+# ─────────────────────────────────────────────────────────────────────────────
+# One block per physical blind.
+# ─────────────────────────────────────────────────────────────────────────────
+
+gradhermetic_living_room:
+  module: gradhermetic_cover
+  class: GradhhermeticCover
+
+  # The existing HA cover entity controlled by your relay/motor controller.
+  real_cover: cover.living_room_blind
+
+  # Identity for the new virtual cover entity.
+  virtual_id: living_room
+  virtual_name: "Living Room Blind"
+
+  # ── Tilt mechanism parameters ─────────────────────────────────────────────
+  # Position (0-100%) below which the engagement pin can be reached.
+  tilt_lower_pct: 3.0
+  # Position (0-100%) above which tilt mode disengages.
+  tilt_upper_pct: 10.0
+  # Overshoot distance (%) required to trigger/release the mechanical pin.
+  epsilon_pct: 2.0
+
+  # Total motor travel time in seconds (0% → 100%).
+  full_travel_time_secs: 60.0
+
+  # Step sizes for position and tilt step commands.
+  step_pct: 5.0
+  tilt_step_pct: 10.0
+
+
+# gradhermetic_bedroom:
+#   module: gradhermetic_cover
+#   class: GradhhermeticCover
+#   real_cover: cover.bedroom_blind
+#   virtual_id: bedroom
+#   virtual_name: "Bedroom Blind"
+#   tilt_lower_pct: 3.0
+#   tilt_upper_pct: 10.0
+#   epsilon_pct: 2.0
+#   full_travel_time_secs: 45.0
+#   step_pct: 5.0
+#   tilt_step_pct: 10.0

@@ -1,0 +1,5 @@
+pytest>=7.0
+pytest-timeout>=2.0
+pytest-mqtt>=0.7.0
+paho-mqtt>=2.0
+PyYAML>=6.0

@@ -1,0 +1,33 @@
+mqtt:
+  host: "localhost"
+  port: 1883
+  # username: "homeassistant"
+  # password: "your_password"
+  client_id: "gradhermetic-emulator"
+
+blinds:
+  - id: "blind_1"
+    name: "Living Room Blind"
+    # Position (0-100%) below which the engagement pin can be reached.
+    # The blind must lower to (tilt_lower_pct - epsilon_pct) to start engagement.
+    tilt_lower_pct: 3.0
+    # Position (0-100%) above which tilt mode disengages.
+    # During engagement, the blind rises to (tilt_upper_pct + epsilon_pct) to lock the pin.
+    tilt_upper_pct: 10.0
+    # Overshoot distance (in %) required to trigger/release the mechanical pin.
+    epsilon_pct: 2.0
+    # Total motor travel time in seconds from fully closed (0%) to fully open (100%).
+    full_travel_time_secs: 60.0
+    # Step size for position step commands (%).
+    step_pct: 5.0
+    # Step size for tilt step commands (%).
+    tilt_step_pct: 10.0
+
+  # - id: "blind_2"
+  #   name: "Bedroom Blind"
+  #   tilt_lower_pct: 3.0
+  #   tilt_upper_pct: 10.0
+  #   epsilon_pct: 2.0
+  #   full_travel_time_secs: 45.0
+  #   step_pct: 5.0
+  #   tilt_step_pct: 10.0
