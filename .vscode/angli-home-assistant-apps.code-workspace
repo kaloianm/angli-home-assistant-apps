@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		}
+	],
+	"settings": {
+		"[python]": {
+			"editor.defaultFormatter": "eeyore.yapf",
+		},
+		"yapf.args": [
+			"--style",
+			"{based_on_style: pep8, indent_width: 4, column_limit: 100, allow_split_before_dict_value: false, split_before_named_assigns: false}"
+		],
+	},
+}
