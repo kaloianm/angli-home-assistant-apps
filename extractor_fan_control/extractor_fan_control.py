@@ -123,6 +123,7 @@ class ExtractorFanControl(hass.Hass):
 
         pair_name = kwargs["pair_name"]
         runtime = self._runtime_by_name[pair_name]
+        self.log(f"[{pair_name}] Light {new}")
         now = self.datetime()
         if runtime.logic is None:
             return
@@ -146,7 +147,8 @@ class ExtractorFanControl(hass.Hass):
         if new not in ("on", "off"):
             return
 
-        runtime = self._runtime_by_name[kwargs["pair_name"]]
+        pair_name = kwargs["pair_name"]
+        runtime = self._runtime_by_name[pair_name]
 
         # Ignore the next state update if it matches what we just requested.
         if runtime.expected_fan_state is not None and new == runtime.expected_fan_state:
@@ -208,6 +210,7 @@ class ExtractorFanControl(hass.Hass):
         """Issue fan switch command and mark expected resulting state."""
         runtime.expected_fan_state = "on" if on else "off"
         service = "switch/turn_on" if on else "switch/turn_off"
+        self.log(f"[{runtime.config.name}] Fan {service}")
         self.call_service(service, entity_id=runtime.config.fan_switch_entity)
 
     def _start_keepalive(self, runtime: PairRuntime) -> None:

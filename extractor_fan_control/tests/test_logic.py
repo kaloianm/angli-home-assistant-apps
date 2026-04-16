@@ -213,6 +213,73 @@ class TestExtractorFanPairLogic(unittest.TestCase):
             ExtractorFanPairLogic(
                 LogicConfig(min_light_on_for_fan_seconds=0, short_visit_threshold_seconds=0))
 
+    def test_schedule_only_starts_and_stops_fan(self):
+        actions_start = self.logic.on_schedule_started(self.t0, duration_seconds=900)
+        self.assertIn(ACTION_FAN_ON, _kinds(actions_start))
+        self.assertIn(ACTION_START_KEEPALIVE, _kinds(actions_start))
+
+        deadline_sets = _timer_actions(actions_start, ACTION_SET_TIMER)
+        self.assertTrue(
+            any(a.timer_name == TIMER_DEADLINE and a.at == self.t0 + timedelta(seconds=900)
+                for a in deadline_sets))
+
+        actions_before = self.logic.on_time_tick(self.t0 + timedelta(seconds=899))
+        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before))
+
+        actions_at = self.logic.on_time_tick(self.t0 + timedelta(seconds=900))
+        self.assertIn(ACTION_FAN_OFF, _kinds(actions_at))
+        self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(actions_at))
+
+    def test_schedule_with_light_uses_later_end(self):
+        self.logic.on_schedule_started(self.t0, duration_seconds=300)
+        self.logic.on_light_on(self.t0 + timedelta(seconds=10))
+        self.logic.on_time_tick(self.t0 + timedelta(seconds=25))
+
+        # Light off at t+200 after 190s on (long visit).
+        # Capped post-run = 190s -> occupancy end = t+390.
+        # Schedule end = t+300. Fan should stay until t+390.
+        self.logic.on_light_off(self.t0 + timedelta(seconds=200))
+
+        actions_at_schedule_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=300))
+        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_at_schedule_end))
+
+        actions_before_occ_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=389))
+        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_occ_end))
+
+        actions_at_occ_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=390))
+        self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_occ_end))
+
+    def test_rapid_manual_toggle_oscillation_is_self_sustaining(self):
+        """Demonstrate that once the integration layer feeds false manual
+        toggles (due to expected_fan_state overwrite race), the logic
+        amplifies them into an infinite FAN_ON / FAN_OFF loop.
+
+        Scenario: daily schedule ran, deadline expired (fan is now off).
+        The integration layer's _on_fan_state misidentifies a delayed KNX
+        state callback as a manual toggle, feeding alternating
+        on_manual_fan_toggle(True) / on_manual_fan_toggle(False) calls.
+        """
+        self.logic.on_schedule_started(self.t0, duration_seconds=900)
+        t_end = self.t0 + timedelta(seconds=900)
+        self.logic.on_time_tick(t_end)
+
+        # At this point: fan is off, no demand, no override.
+        # Simulate the integration layer feeding false manual toggles
+        # as it would when expected_fan_state tracking breaks:
+        t_race = t_end + timedelta(seconds=1)
+        for i in range(5):
+            # False "on" callback -> treated as manual toggle ON
+            actions_on = self.logic.on_manual_fan_toggle(t_race + timedelta(milliseconds=i * 2),
+                                                         fan_on=True)
+            self.assertIn(ACTION_FAN_ON, _kinds(actions_on),
+                          f"iteration {i}: expected FAN_ON from false manual toggle")
+
+            # False "off" callback -> treated as manual toggle OFF
+            actions_off = self.logic.on_manual_fan_toggle(
+                t_race + timedelta(milliseconds=i * 2 + 1), fan_on=False)
+            self.assertIn(ACTION_FAN_OFF, _kinds(actions_off),
+                          f"iteration {i}: expected FAN_OFF from false manual toggle")
+
 
 if __name__ == "__main__":
     unittest.main()
