@@ -66,6 +66,53 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_deadline))
         self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(actions_at_deadline))
 
+    def test_long_visit_post_run_is_capped_to_ten_minutes_by_default(self):
+        self.logic.on_light_on(self.t0)
+        self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
+
+        # 30-minute light usage would normally imply 30-minute post-run,
+        # but default max_post_run_seconds caps it to 10 minutes.
+        self.logic.on_light_off(self.t0 + timedelta(seconds=1800))
+
+        actions_before_cap = self.logic.on_time_tick(self.t0 + timedelta(seconds=2399))
+        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_cap))
+
+        actions_at_cap = self.logic.on_time_tick(self.t0 + timedelta(seconds=2400))
+        self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_cap))
+
+    def test_long_visit_post_run_can_use_higher_configured_cap(self):
+        logic = ExtractorFanPairLogic(LogicConfig(max_post_run_seconds=900))
+        logic.on_light_on(self.t0)
+        logic.on_time_tick(self.t0 + timedelta(seconds=15))
+
+        # 30-minute light usage is capped to configured 15-minute post-run.
+        logic.on_light_off(self.t0 + timedelta(seconds=1800))
+
+        actions_before_cap = logic.on_time_tick(self.t0 + timedelta(seconds=2699))
+        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_cap))
+
+        actions_at_cap = logic.on_time_tick(self.t0 + timedelta(seconds=2700))
+        self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_cap))
+
+    def test_overlap_uses_remaining_schedule_or_capped_post_run(self):
+        self.logic.on_light_on(self.t0)
+        self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
+
+        # Schedule starts at t+500 for 900s (ends t+1400).
+        self.logic.on_schedule_started(self.t0 + timedelta(seconds=500), duration_seconds=900)
+
+        # Light turns off at t+700 after 700s on-time.
+        # Capped post-run is 600s -> occupancy end t+1300.
+        self.logic.on_light_off(self.t0 + timedelta(seconds=700))
+
+        # Remaining schedule at light-off is 700s -> schedule end t+1400.
+        # Effective fan end should be max(700, 600) => t+1400.
+        actions_before_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=1399))
+        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_end))
+
+        actions_at_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=1400))
+        self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_end))
+
     def test_schedule_and_occupancy_overlap_uses_latest_end(self):
         schedule_actions = self.logic.on_schedule_started(self.t0, duration_seconds=300)
         self.assertIn(ACTION_FAN_ON, _kinds(schedule_actions))

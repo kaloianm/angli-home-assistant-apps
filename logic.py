@@ -28,6 +28,7 @@ class LogicConfig:
 
     min_light_on_for_fan_seconds: int = 15
     short_visit_threshold_seconds: int = 60
+    max_post_run_seconds: int = 600
 
     def validate(self) -> None:
         """Validate config values.
@@ -36,11 +37,14 @@ class LogicConfig:
           required before fan automation can start.
         - ``short_visit_threshold_seconds``: if the light-on duration is below
           this value, fan stops immediately when light turns off.
+        - ``max_post_run_seconds``: upper bound for long-visit post-run time.
         """
         if self.min_light_on_for_fan_seconds <= 0:
             raise ValueError("min_light_on_for_fan_seconds must be > 0")
         if self.short_visit_threshold_seconds <= 0:
             raise ValueError("short_visit_threshold_seconds must be > 0")
+        if self.max_post_run_seconds <= 0:
+            raise ValueError("max_post_run_seconds must be > 0")
 
 
 @dataclass(frozen=True)
@@ -120,7 +124,8 @@ class ExtractorFanPairLogic:
         - If activation never happened, fan demand ends immediately.
         - If activation happened:
           - short visit (< threshold): stop fan now
-          - long visit (>= threshold): keep fan for same duration as light-on
+          - long visit (>= threshold): keep fan for light-on duration, capped
+            by ``max_post_run_seconds``
         """
         actions: List[Action] = []
         if not self._light_is_on:
@@ -139,7 +144,11 @@ class ExtractorFanPairLogic:
             if duration < timedelta(seconds=self._config.short_visit_threshold_seconds):
                 self._occupancy_run_until = now
             else:
-                self._occupancy_run_until = now + duration
+                capped_post_run = min(
+                    duration,
+                    timedelta(seconds=self._config.max_post_run_seconds),
+                )
+                self._occupancy_run_until = now + capped_post_run
 
         self._occupancy_active_while_light_on = False
         return self._reconcile(now)
