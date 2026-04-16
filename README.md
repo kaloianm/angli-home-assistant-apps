@@ -1,7 +1,7 @@
 # ExtractorFanControl
 
-ExtractorFanControl automates bathroom/enclosed-room extractor fans based on
-light usage and optional daily scheduled runs.
+ExtractorFanControl automates bathroom/enclosed-room extractor fans based on light usage and
+optional daily scheduled runs.
 
 ## Overall behavior
 
@@ -18,8 +18,8 @@ light usage and optional daily scheduled runs.
 
 ## Tests
 
-From repository root (`/Volumes/config`):
+From repository root:
 
 ```bash
-PYTHONPATH=/Volumes/config/apps python3 -m unittest discover -s /Volumes/config/apps/extractor_fan_control/tests -p "test_*.py"
+PYTHONPATH=./apps python3 -m unittest discover -s ./apps/extractor_fan_control/tests -p "test_*.py"
 ```
