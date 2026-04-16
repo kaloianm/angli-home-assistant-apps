@@ -35,8 +35,8 @@ impl BlindParams {
         }
 
         ensure!(
-            full_travel_time_secs > 5.0,
-            "full_travel_time_secs must be > 5.0"
+            full_travel_time_secs >= 5.0,
+            "full_travel_time_secs must be >= 5.0"
         );
         ensure!(tilt_lower_pct > 0.0, "tilt_lower_pct must be positive");
         ensure!(tilt_upper_pct > 0.0, "tilt_upper_pct must be positive");
