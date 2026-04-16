@@ -65,8 +65,6 @@ gradhermetic_living_room:
 From `gradhermetic_control/`:
 
 ```bash
-python3 -m venv python3-venv
-source python3-venv/bin/activate
 pip install -r tests/requirements-test.txt
 pytest tests/test_logic.py -v
 ```
@@ -80,8 +78,6 @@ cargo build --release
 
 # Back to gradhermetic_control/
 cd ../
-python3 -m venv python3-venv
-source python3-venv/bin/activate
 pip install -r tests/requirements-test.txt
 pytest tests/test_integration.py -v --timeout=30
 
