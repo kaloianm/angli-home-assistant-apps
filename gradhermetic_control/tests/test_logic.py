@@ -1,14 +1,15 @@
-"""Unit tests for BlindController — no AppDaemon or MQTT needed."""
+import unittest
 
-import sys
-from pathlib import Path
-
-# Allow importing from the apps/ directory.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "apps"))
-
-from gradhermetic_logic import (  # pylint: disable=import-error,wrong-import-position
-    BlindController, CloseCover, EngagePhase, OpenCover, PublishState,
-    ScheduleTimer, SetCoverPosition, StopCover, CancelTimer,
+from gradhermetic_control.logic import (
+    BlindController,
+    CloseCover,
+    EngagePhase,
+    OpenCover,
+    PublishState,
+    ScheduleTimer,
+    SetCoverPosition,
+    StopCover,
+    CancelTimer,
 )
 
 

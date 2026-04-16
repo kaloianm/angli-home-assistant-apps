@@ -206,23 +206,20 @@ class BlindController:
     def handle_slat_step_up(self) -> list[Action]:
         """Step slats toward closed (tilt value decreases)."""
         if self.tilt_engaged:
-            return self.handle_set_tilt(
-                max(0.0, self.tilt_value - self.tilt_step_pct))
+            return self.handle_set_tilt(max(0.0, self.tilt_value - self.tilt_step_pct))
         self.pending_tilt = max(0.0, 50.0 - self.tilt_step_pct)
         return self._start_engagement()
 
     def handle_slat_step_down(self) -> list[Action]:
         """Step slats toward open (tilt value increases)."""
         if self.tilt_engaged:
-            return self.handle_set_tilt(
-                min(100.0, self.tilt_value + self.tilt_step_pct))
+            return self.handle_set_tilt(min(100.0, self.tilt_value + self.tilt_step_pct))
         self.pending_tilt = min(100.0, 50.0 + self.tilt_step_pct)
         return self._start_engagement()
 
     # ── Event callbacks (return actions) ────────────────────────────────
 
-    def on_real_cover_changed(self, state: str,
-                              position: float) -> list[Action]:
+    def on_real_cover_changed(self, state: str, position: float) -> list[Action]:
         """Called when the real cover's HA state or position changes."""
         self.real_state = state
         self.real_position = position
@@ -295,8 +292,7 @@ class BlindController:
         return [
             SetCoverPosition(position=int(lower_target)),
             ScheduleTimer(timer_id=ENGAGE_TIMER, seconds=travel_secs + 3),
-            Log(f"Engage phase 1: moving to {lower_target:.1f}% (~{travel_secs:.1f}s)"
-                ),
+            Log(f"Engage phase 1: moving to {lower_target:.1f}% (~{travel_secs:.1f}s)"),
         ]
 
     def _do_engage_phase2(self) -> list[Action]:
@@ -307,6 +303,5 @@ class BlindController:
         return [
             SetCoverPosition(position=int(upper_target)),
             ScheduleTimer(timer_id=ENGAGE_TIMER, seconds=travel_secs + 3),
-            Log(f"Engage phase 2: moving to {upper_target:.1f}% (~{travel_secs:.1f}s)"
-                ),
+            Log(f"Engage phase 2: moving to {upper_target:.1f}% (~{travel_secs:.1f}s)"),
         ]

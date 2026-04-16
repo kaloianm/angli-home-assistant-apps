@@ -8,9 +8,8 @@ Requires the AppDaemon MQTT plugin to be configured.
 """
 
 import json
-import mqttapi as mqtt
 
-from gradhermetic_logic import (
+from gradhermetic_control.logic import (
     BlindController,
     SetCoverPosition,
     OpenCover,
@@ -23,26 +22,33 @@ from gradhermetic_logic import (
     Action,
 )
 
+try:
+    import mqttapi as mqtt
+except ImportError:  # pragma: no cover - used only outside AppDaemon runtime.
 
-class GradhhermeticCover(mqtt.Mqtt):
+    class _MqttBase:
+        pass
+
+    class mqtt:  # type: ignore[no-redef]
+        Mqtt = _MqttBase
+
+
+class GradhermeticCover(mqtt.Mqtt):
     """One instance per physical blind."""
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
     def initialize(self):
         self.real_cover: str = self.args["real_cover"]
-        self.virtual_id: str = self.args.get("virtual_id",
-                                             "gradhermetic_blind")
-        self.virtual_name: str = self.args.get("virtual_name",
-                                               "Gradhermetic Blind")
+        self.virtual_id: str = self.args.get("virtual_id", "gradhermetic_blind")
+        self.virtual_name: str = self.args.get("virtual_name", "Gradhermetic Blind")
         self.topic_prefix: str = f"gradhermetic/{self.virtual_id}"
 
         self.controller = BlindController(
             tilt_lower_pct=float(self.args.get("tilt_lower_pct", 3.0)),
             tilt_upper_pct=float(self.args.get("tilt_upper_pct", 10.0)),
             epsilon_pct=float(self.args.get("epsilon_pct", 2.0)),
-            full_travel_time_secs=float(
-                self.args.get("full_travel_time_secs", 60.0)),
+            full_travel_time_secs=float(self.args.get("full_travel_time_secs", 60.0)),
             step_pct=float(self.args.get("step_pct", 5.0)),
             tilt_step_pct=float(self.args.get("tilt_step_pct", 10.0)),
         )
@@ -53,9 +59,7 @@ class GradhhermeticCover(mqtt.Mqtt):
         self._publish_discovery_buttons()
         self._subscribe()
 
-        self.listen_state(self._on_real_cover_change,
-                          self.real_cover,
-                          namespace="default")
+        self.listen_state(self._on_real_cover_change, self.real_cover, namespace="default")
 
         self._mqtt_pub(f"{self.topic_prefix}/availability", "online")
         self._execute(self.controller.on_real_cover_changed("closed", 0.0))
@@ -86,17 +90,15 @@ class GradhhermeticCover(mqtt.Mqtt):
             elif isinstance(action, ScheduleTimer):
                 if action.timer_id in self._timers:
                     self.cancel_timer(self._timers[action.timer_id])
-                self._timers[action.timer_id] = self.run_in(
-                    self._on_timer, action.seconds, timer_id=action.timer_id)
+                self._timers[action.timer_id] = self.run_in(self._on_timer, action.seconds,
+                                                            timer_id=action.timer_id)
             elif isinstance(action, CancelTimer):
                 handle = self._timers.pop(action.timer_id, None)
                 if handle is not None:
                     self.cancel_timer(handle)
             elif isinstance(action, PublishState):
-                self._mqtt_pub(f"{self.topic_prefix}/state",
-                               action.cover_state)
-                self._mqtt_pub(f"{self.topic_prefix}/position",
-                               str(action.position))
+                self._mqtt_pub(f"{self.topic_prefix}/state", action.cover_state)
+                self._mqtt_pub(f"{self.topic_prefix}/position", str(action.position))
                 self._mqtt_pub(f"{self.topic_prefix}/tilt", str(action.tilt))
             elif isinstance(action, Log):
                 self.log(action.message)
@@ -109,8 +111,7 @@ class GradhhermeticCover(mqtt.Mqtt):
         self._execute(self.controller.on_timer(timer_id))
 
     def _on_real_cover_change(self, entity, attribute, old, new, kwargs):
-        state = self.get_state(self.real_cover,
-                               namespace="default") or "closed"
+        state = self.get_state(self.real_cover, namespace="default") or "closed"
         position = self._get_real_position()
         self._execute(self.controller.on_real_cover_changed(state, position))
 
@@ -158,19 +159,15 @@ class GradhhermeticCover(mqtt.Mqtt):
         self.mqtt_publish(topic, payload, namespace="mqtt", retain=retain)
 
     def _subscribe(self):
-        for suffix in ("set", "position/set", "tilt/set", "enter_slat",
-                       "slat_step_up", "slat_step_down"):
-            self.mqtt_subscribe(f"{self.topic_prefix}/{suffix}",
-                                namespace="mqtt")
+        for suffix in ("set", "position/set", "tilt/set", "enter_slat", "slat_step_up",
+                       "slat_step_down"):
+            self.mqtt_subscribe(f"{self.topic_prefix}/{suffix}", namespace="mqtt")
         self.listen_event(self._on_mqtt, "MQTT_MESSAGE", namespace="mqtt")
 
     def _get_real_position(self) -> float:
-        state = self.get_state(self.real_cover,
-                               attribute="all",
-                               namespace="default")
+        state = self.get_state(self.real_cover, attribute="all", namespace="default")
         if state and isinstance(state, dict):
-            return float(
-                state.get("attributes", {}).get("current_position", 0))
+            return float(state.get("attributes", {}).get("current_position", 0))
         return 0.0
 
     def _ha_call(self, service: str, **kwargs):

@@ -12,10 +12,11 @@ Run with:
 Override broker address:
     pytest tests/test_integration.py --mqtt-host 192.168.1.10 --mqtt-port 1883
 
-These tests are skipped automatically when the emulator binary is not found.
+These tests fail if the emulator binary is not found.
 """
 
 import os
+import logging
 import subprocess
 import sys
 import tempfile
@@ -24,24 +25,29 @@ from pathlib import Path
 
 import pytest
 
-paho = pytest.importorskip("paho.mqtt.client",
-                           reason="paho-mqtt not installed")
+paho = pytest.importorskip("paho.mqtt.client", reason="paho-mqtt not installed")
 yaml = pytest.importorskip("yaml", reason="PyYAML not installed")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "apps"))
 
-from gradhermetic_logic import (  # pylint: disable=import-error,wrong-import-position
-    BlindController, SetCoverPosition, OpenCover, CloseCover, StopCover,
-    ScheduleTimer, CancelTimer,
+from gradhermetic_control.logic import (
+    BlindController,
+    SetCoverPosition,
+    OpenCover,
+    CloseCover,
+    StopCover,
+    ScheduleTimer,
+    CancelTimer,
 )
 
 EMULATOR_BIN = os.environ.get(
     "EMULATOR_BIN",
     str(
-        Path(__file__).resolve().parent.parent.parent / "emulator" / "target" /
-        "release" / "gradhermetic-emulator"),
+        Path(__file__).resolve().parent.parent / "emulator" / "target" / "release" /
+        "gradhermetic-emulator"),
 )
 BLIND_ID = "integration_test"
+LOGGER = logging.getLogger(__name__)
 
 # Fast travel time so the emulator moves quickly.
 TRAVEL_TIME = 5.0
@@ -53,8 +59,7 @@ class MqttHelper:
     """Thin wrapper around paho-mqtt for test convenience."""
 
     def __init__(self, host: str, port: int):
-        self.client = paho.Client(paho.CallbackAPIVersion.VERSION2,
-                                  client_id="integration-test")
+        self.client = paho.Client(paho.CallbackAPIVersion.VERSION2, client_id="integration-test")
         self.received: dict[str, str] = {}
         self.client.on_message = self._on_message
         self.client.connect(host, port)
@@ -96,8 +101,7 @@ class ActionExecutor:
     def execute(self, actions) -> None:
         for action in actions:
             if isinstance(action, SetCoverPosition):
-                self.mq.publish(f"{self.pfx}/position/set",
-                                str(action.position))
+                self.mq.publish(f"{self.pfx}/position/set", str(action.position))
             elif isinstance(action, OpenCover):
                 self.mq.publish(f"{self.pfx}/set", "OPEN")
             elif isinstance(action, CloseCover):
@@ -105,8 +109,7 @@ class ActionExecutor:
             elif isinstance(action, StopCover):
                 self.mq.publish(f"{self.pfx}/set", "STOP")
             elif isinstance(action, ScheduleTimer):
-                self.timers[
-                    action.timer_id] = time.monotonic() + action.seconds
+                self.timers[action.timer_id] = time.monotonic() + action.seconds
             elif isinstance(action, CancelTimer):
                 self.timers.pop(action.timer_id, None)
 
@@ -156,9 +159,10 @@ def emulator(mosquitto):
     """Start the Rust emulator; depends on mosquitto to ensure broker is up."""
     mqtt_host, mqtt_port = mosquitto
     mqtt_port = int(mqtt_port)
+    LOGGER.warning("Starting emulator with EMULATOR_BIN=%s", EMULATOR_BIN)
 
     if not Path(EMULATOR_BIN).exists():
-        pytest.skip(f"Emulator binary not found at {EMULATOR_BIN}")
+        pytest.fail(f"Emulator binary not found at {EMULATOR_BIN}")
 
     config = {
         "mqtt": {
@@ -178,8 +182,7 @@ def emulator(mosquitto):
         }],
     }
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml",
-                                     delete=False) as cfg_file:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as cfg_file:
         yaml.dump(config, cfg_file)
         cfg_path = cfg_file.name
 
