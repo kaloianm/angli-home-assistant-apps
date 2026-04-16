@@ -63,6 +63,7 @@ class ExtractorFanControl(hass.Hass):
 
         for pair_config in self._config.pairs:
             self.log(f"Processing pair: {pair_config}")
+            self._validate_pair_entities(pair_config)
             runtime = PairRuntime(
                 config=pair_config,
                 logic=ExtractorFanPairLogic(
@@ -92,6 +93,19 @@ class ExtractorFanControl(hass.Hass):
                  f"{len(self._runtime_by_name)} pair(s). "
                  "keepalive_pulse_interval_seconds="
                  f"{self._config.keepalive_pulse_interval_seconds}")
+
+    def _validate_pair_entities(self, pair_config: PairConfig) -> None:
+        """Log configuration errors for missing entities without failing startup."""
+        entities = (
+            ("light_entity", pair_config.light_entity),
+            ("fan_switch_entity", pair_config.fan_switch_entity),
+        )
+        for key, entity_id in entities:
+            if self.get_state(entity_id, default=None) is None:
+                self.log(
+                    f"[{pair_config.name}] Configured {key} '{entity_id}' does not exist in Home Assistant.",
+                    level="ERROR",
+                )
 
     def _on_light_state(
         self,
