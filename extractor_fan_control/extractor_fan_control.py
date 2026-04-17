@@ -4,9 +4,10 @@ AppDaemon entry point for ExtractorFanControl.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import timedelta
-from typing import Any, Dict, Optional
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Deque, Dict, Optional
 
 from extractor_fan_control.config import PairConfig, parse_app_config
 from extractor_fan_control.logic import (
@@ -34,6 +35,13 @@ except ImportError:  # pragma: no cover - used only outside AppDaemon runtime.
         Hass = _HassBase
 
 
+# If a single pair sends more than this many fan switch commands (including
+# keepalive retriggers) within the sliding window, the pair is permanently
+# disabled until AppDaemon is restarted.
+_FAN_CMD_RATE_LIMIT = 10
+_FAN_CMD_RATE_WINDOW_SECONDS = 60
+
+
 @dataclass
 class PairRuntime:
     """Mutable runtime state for one pair."""
@@ -47,6 +55,26 @@ class PairRuntime:
     keepalive_timer_handle: Optional[Any] = None
     daily_schedule_handle: Optional[Any] = None
     expected_fan_state: Optional[str] = None
+
+    _fan_cmd_timestamps: Deque[datetime] = field(default_factory=deque)
+    disabled: bool = False
+
+    def record_fan_command(self, now: datetime) -> bool:
+        """Record a fan switch command and return True if the rate limit is exceeded.
+
+        Maintains a sliding window of timestamps.  When more than
+        ``_FAN_CMD_RATE_LIMIT`` commands land within
+        ``_FAN_CMD_RATE_WINDOW_SECONDS``, marks this pair as disabled and
+        returns True so the caller can alert and stop processing.
+        """
+        window_start = now - timedelta(seconds=_FAN_CMD_RATE_WINDOW_SECONDS)
+        while self._fan_cmd_timestamps and self._fan_cmd_timestamps[0] <= window_start:
+            self._fan_cmd_timestamps.popleft()
+        self._fan_cmd_timestamps.append(now)
+        if len(self._fan_cmd_timestamps) > _FAN_CMD_RATE_LIMIT:
+            self.disabled = True
+            return True
+        return False
 
 
 class ExtractorFanControl(hass.Hass):
@@ -192,6 +220,8 @@ class ExtractorFanControl(hass.Hass):
 
     def _apply_actions(self, runtime: PairRuntime, actions: list[Action]) -> None:
         """Translate pure logic actions into AppDaemon side effects."""
+        if runtime.disabled:
+            return
         for action in actions:
             if action.kind == ACTION_FAN_ON:
                 self._turn_fan(runtime, on=True)
@@ -208,10 +238,33 @@ class ExtractorFanControl(hass.Hass):
 
     def _turn_fan(self, runtime: PairRuntime, *, on: bool) -> None:
         """Issue fan switch command and mark expected resulting state."""
-        runtime.expected_fan_state = "on" if on else "off"
         service = "switch/turn_on" if on else "switch/turn_off"
+        if runtime.disabled:
+            return
+        if runtime.record_fan_command(self.datetime()):
+            self._disable_pair(runtime)
+            return
         self.log(f"[{runtime.config.name}] Fan {service}")
         self.call_service(service, entity_id=runtime.config.fan_switch_entity)
+        runtime.expected_fan_state = "on" if on else "off"
+
+    def _disable_pair(self, runtime: PairRuntime) -> None:
+        """Permanently disable a pair due to rate limiting and notify."""
+        self._stop_keepalive(runtime)
+        self.log(
+            f"[{runtime.config.name}] DISABLED: fan switch command rate "
+            f"limit exceeded ({_FAN_CMD_RATE_LIMIT} commands in "
+            f"{_FAN_CMD_RATE_WINDOW_SECONDS}s). Restart AppDaemon to "
+            "re-enable.", level="ERROR")
+        self.call_service(
+            "persistent_notification/create",
+            title="ExtractorFanControl disabled",
+            message=(f"Pair '{runtime.config.name}' has been disabled because "
+                     f"it sent more than {_FAN_CMD_RATE_LIMIT} fan switch "
+                     f"commands in {_FAN_CMD_RATE_WINDOW_SECONDS} seconds. "
+                     "This likely indicates a bug. Restart AppDaemon to "
+                     "re-enable."),
+        )
 
     def _start_keepalive(self, runtime: PairRuntime) -> None:
         """Start periodic staircase keepalive pulses."""
