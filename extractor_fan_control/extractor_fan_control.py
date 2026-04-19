@@ -35,9 +35,8 @@ except ImportError:  # pragma: no cover - used only outside AppDaemon runtime.
         Hass = _HassBase
 
 
-# If a single pair sends more than this many fan switch commands (including
-# keepalive retriggers) within the sliding window, the pair is permanently
-# disabled until AppDaemon is restarted.
+# If a single pair sends more than this many fan switch commands (including keepalive retriggers)
+# within the sliding window, the pair is permanently disabled until AppDaemon is restarted.
 _FAN_CMD_RATE_LIMIT = 10
 _FAN_CMD_RATE_WINDOW_SECONDS = 60
 
@@ -47,6 +46,7 @@ class PairRuntime:
     """Mutable runtime state for one pair."""
 
     config: PairConfig
+
     logic: Optional[ExtractorFanPairLogic] = None
     light_listener_handle: Optional[Any] = None
     fan_listener_handle: Optional[Any] = None
@@ -56,8 +56,10 @@ class PairRuntime:
     daily_schedule_handle: Optional[Any] = None
     expected_fan_state: Optional[str] = None
 
-    _fan_cmd_timestamps: Deque[datetime] = field(default_factory=deque)
     disabled: bool = False
+
+    # Record of fan switch command timestamps for rate limiting
+    _fan_command_timestamps: Deque[datetime] = field(default_factory=deque)
 
     def record_fan_command(self, now: datetime) -> bool:
         """Record a fan switch command and return True if the rate limit is exceeded.
@@ -68,10 +70,10 @@ class PairRuntime:
         returns True so the caller can alert and stop processing.
         """
         window_start = now - timedelta(seconds=_FAN_CMD_RATE_WINDOW_SECONDS)
-        while self._fan_cmd_timestamps and self._fan_cmd_timestamps[0] <= window_start:
-            self._fan_cmd_timestamps.popleft()
-        self._fan_cmd_timestamps.append(now)
-        if len(self._fan_cmd_timestamps) > _FAN_CMD_RATE_LIMIT:
+        while self._fan_command_timestamps and self._fan_command_timestamps[0] <= window_start:
+            self._fan_command_timestamps.popleft()
+        self._fan_command_timestamps.append(now)
+        if len(self._fan_command_timestamps) > _FAN_CMD_RATE_LIMIT:
             self.disabled = True
             return True
         return False
