@@ -1,0 +1,2 @@
+# Virtual environments (YAPF reads this when run from the repo root.)
+python3-venv

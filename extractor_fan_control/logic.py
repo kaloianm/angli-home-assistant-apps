@@ -25,7 +25,9 @@ TIMER_DEADLINE = "deadline"
 
 @dataclass(frozen=True)
 class LogicConfig:
-    """Per light/fan pair timing configuration."""
+    """
+    Per light/fan pair timing configuration.
+    """
 
     min_light_on_for_fan_seconds: int = 10
     short_visit_threshold_seconds: int = 60

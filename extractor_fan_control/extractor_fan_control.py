@@ -43,7 +43,9 @@ _FAN_CMD_RATE_WINDOW_SECONDS = 60
 
 @dataclass
 class PairRuntime:
-    """Mutable runtime state for one pair."""
+    """
+    Mutable runtime state for one pair.
+    """
 
     config: PairConfig
 
