@@ -70,8 +70,8 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         self.logic.on_light_on(self.t0)
         self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
 
-        # 30-minute light usage would normally imply 30-minute post-run,
-        # but default max_post_run_seconds caps it to 10 minutes.
+        # 30-minute light usage would normally imply 30-minute post-run, but
+        # max_post_run_seconds caps it to 10 minutes by default.
         self.logic.on_light_off(self.t0 + timedelta(seconds=1800))
 
         actions_before_cap = self.logic.on_time_tick(self.t0 + timedelta(seconds=2399))
@@ -106,7 +106,7 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         self.logic.on_light_off(self.t0 + timedelta(seconds=700))
 
         # Remaining schedule at light-off is 700s -> schedule end t+1400.
-        # Effective fan end should be max(700, 600) => t+1400.
+        # Effective fan end is t+1400.
         actions_before_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=1399))
         self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_end))
 
@@ -237,7 +237,7 @@ class TestExtractorFanPairLogic(unittest.TestCase):
 
         # Light off at t+200 after 190s on (long visit).
         # Capped post-run = 190s -> occupancy end = t+390.
-        # Schedule end = t+300. Fan should stay until t+390.
+        # Schedule end = t+300, so fan should stay until t+390.
         self.logic.on_light_off(self.t0 + timedelta(seconds=200))
 
         actions_at_schedule_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=300))
@@ -250,22 +250,22 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_occ_end))
 
     def test_rapid_manual_toggle_oscillation_is_self_sustaining(self):
-        """Demonstrate that once the integration layer feeds false manual
-        toggles (due to expected_fan_state overwrite race), the logic
-        amplifies them into an infinite FAN_ON / FAN_OFF loop.
+        """Demonstrate that once the integration layer feeds false manual toggles (due to
+        expected_fan_state overwrite race), the logic amplifies them into an infinite FAN_ON /
+        FAN_OFF loop.
 
         Scenario: daily schedule ran, deadline expired (fan is now off).
-        The integration layer's _on_fan_state misidentifies a delayed KNX
-        state callback as a manual toggle, feeding alternating
-        on_manual_fan_toggle(True) / on_manual_fan_toggle(False) calls.
+        The integration layer's _on_fan_state misidentifies a delayed KNX state callback as a
+        manual toggle, feeding alternating on_manual_fan_toggle(True) /
+        on_manual_fan_toggle(False) calls.
         """
         self.logic.on_schedule_started(self.t0, duration_seconds=900)
         t_end = self.t0 + timedelta(seconds=900)
         self.logic.on_time_tick(t_end)
 
         # At this point: fan is off, no demand, no override.
-        # Simulate the integration layer feeding false manual toggles
-        # as it would when expected_fan_state tracking breaks:
+        # Simulate false manual toggles as they would appear
+        # when expected_fan_state tracking breaks:
         t_race = t_end + timedelta(seconds=1)
         for i in range(5):
             # False "on" callback -> treated as manual toggle ON

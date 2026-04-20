@@ -11,7 +11,9 @@ from typing import Any, Dict, List, Optional
 
 @dataclass(frozen=True)
 class PairConfig:
-    """Configuration for one light/fan pair."""
+    """
+    Configuration for one light/fan pair.
+    """
 
     name: str
     light_entity: str
@@ -22,7 +24,9 @@ class PairConfig:
     daily_run_duration_seconds: Optional[int]
 
     def __str__(self) -> str:
-        """Human-friendly summary used in logs."""
+        """
+        Human-friendly summary used in logs.
+        """
         return ("PairConfig("
                 f"name={self.name}, "
                 f"light_entity={self.light_entity}, "
@@ -39,7 +43,9 @@ class PairConfig:
 
 @dataclass(frozen=True)
 class AppConfig:
-    """Top-level ExtractorFanControl configuration."""
+    """
+    Top-level ExtractorFanControl configuration.
+    """
 
     staircase_interval_seconds: int
     pulse_guard_seconds: int
@@ -47,12 +53,16 @@ class AppConfig:
 
     @property
     def keepalive_pulse_interval_seconds(self) -> int:
-        """Seconds between keepalive ON pulses."""
+        """
+        Seconds between keepalive ON pulses.
+        """
         return max(1, self.staircase_interval_seconds - self.pulse_guard_seconds)
 
 
 def parse_app_config(args: Dict[str, Any]) -> AppConfig:
-    """Parse and validate AppDaemon args for ExtractorFanControl."""
+    """
+    Parse and validate AppDaemon args for ExtractorFanControl.
+    """
     staircase_interval_seconds = _parse_positive_int(args, "staircase_interval_seconds",
                                                      default=None)
     pulse_guard_seconds = _parse_non_negative_int(args, "pulse_guard_seconds", default=None)
@@ -82,7 +92,9 @@ def parse_app_config(args: Dict[str, Any]) -> AppConfig:
 
 
 def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
-    """Parse and validate one pair object from args['pairs']."""
+    """
+    Parse and validate one pair object from args['pairs'].
+    """
     light_entity = _require_non_empty_str(raw_pair, "light_entity", idx)
     fan_switch_entity = _require_non_empty_str(raw_pair, "fan_switch_entity", idx)
 
@@ -138,7 +150,9 @@ def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
 
 
 def _validate_daily_time(value: str, idx: int) -> None:
-    """Validate daily time format HH:MM."""
+    """
+    Validate daily time format HH:MM.
+    """
     try:
         datetime.strptime(value, "%H:%M")
     except ValueError as exc:
@@ -146,7 +160,9 @@ def _validate_daily_time(value: str, idx: int) -> None:
 
 
 def _require_non_empty_str(source: Dict[str, Any], key: str, idx: Optional[int] = None) -> str:
-    """Read a required non-empty string field."""
+    """
+    Read a required non-empty string field.
+    """
     value = source.get(key)
     if value is None or str(value).strip() == "":
         where = f"pairs[{idx}].{key}" if idx is not None else key
@@ -156,7 +172,9 @@ def _require_non_empty_str(source: Dict[str, Any], key: str, idx: Optional[int] 
 
 def _parse_positive_int(source: Dict[str, Any], key: str, default: Optional[int],
                         idx: Optional[int] = None) -> int:
-    """Read integer field and enforce > 0."""
+    """
+    Read integer field and enforce > 0.
+    """
     value = source.get(key, default)
     where = f"pairs[{idx}].{key}" if idx is not None else key
     if value is None:
@@ -172,7 +190,9 @@ def _parse_positive_int(source: Dict[str, Any], key: str, default: Optional[int]
 
 def _parse_non_negative_int(source: Dict[str, Any], key: str, default: Optional[int],
                             idx: Optional[int] = None) -> int:
-    """Read integer field and enforce >= 0."""
+    """
+    Read integer field and enforce >= 0.
+    """
     value = source.get(key, default)
     where = f"pairs[{idx}].{key}" if idx is not None else key
     if value is None:
