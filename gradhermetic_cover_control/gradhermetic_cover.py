@@ -9,7 +9,7 @@ Requires the AppDaemon MQTT plugin to be configured.
 
 import json
 
-from gradhermetic_control.logic import (
+from gradhermetic_cover_control.logic import (
     BlindController,
     SetCoverPosition,
     OpenCover,

@@ -62,7 +62,7 @@ gradhermetic_living_room:
 
 ## Tests
 
-From `gradhermetic_control/`:
+From `gradhermetic_cover_control/`:
 
 ```bash
 python3 -m venv python3-venv
@@ -78,7 +78,7 @@ Integration tests use MQTT + the Rust emulator:
 cd emulator
 cargo build --release
 
-# Back to gradhermetic_control/
+# Back to gradhermetic_cover_control/
 cd ../
 pytest tests/test_integration.py -v --timeout=30
 

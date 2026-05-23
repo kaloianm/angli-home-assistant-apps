@@ -30,7 +30,7 @@ yaml = pytest.importorskip("yaml", reason="PyYAML not installed")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "apps"))
 
-from gradhermetic_control.logic import (
+from gradhermetic_cover_control.logic import (
     BlindController,
     SetCoverPosition,
     OpenCover,
