@@ -16,7 +16,7 @@ ACTION_SET_COOL = "set_cool"
 ACTION_SET_FAN_ONLY = "set_fan_only"
 ACTION_TURN_OFF = "turn_off"
 
-AC_MODE_COLD = "cold"
+AC_MODE_COLD = "0"
 
 HVAC_COOL = "cool"
 HVAC_FAN_ONLY = "fan_only"
@@ -221,7 +221,7 @@ class DaikinACLogic:
         ``ventilation_hysteresis``: degrees below setpoint at which to switch to fan-only.
         ``on_off_hysteresis``: degrees below setpoint to turn off; degrees above to turn back on.
         """
-        self._mode_is_cold = False
+        self._ac_mode: str = ""
         self._entities: Dict[str, ACEntityLogic] = {
             entity_id: ACEntityLogic(ventilation_hysteresis, on_off_hysteresis)
             for entity_id in ac_entities
@@ -230,9 +230,9 @@ class DaikinACLogic:
     @property
     def mode_is_cold(self) -> bool:
         """
-        Whether the global AC mode is currently "cold".
+        Whether the global AC mode is currently cold (ac_mode entity reads ``AC_MODE_COLD``).
         """
-        return self._mode_is_cold
+        return self._ac_mode == AC_MODE_COLD
 
     def entity_state(self, entity_id: str) -> Optional[EntityState]:
         """
@@ -245,13 +245,11 @@ class DaikinACLogic:
         """
         Handle a change in the global AC mode select entity.
 
-        Transitions to "cold" enable management. Any other mode resets all per-entity states to
-        IDLE without emitting actions (entities are left in whatever state they are in).
+        Transitions to ``AC_MODE_COLD`` enable management. Any other value resets all per-entity
+        states to IDLE without emitting actions (entities are left in whatever state they are in).
         """
-        if new_mode == AC_MODE_COLD:
-            self._mode_is_cold = True
-        else:
-            self._mode_is_cold = False
+        self._ac_mode = new_mode
+        if self._ac_mode != AC_MODE_COLD:
             for entity_logic in self._entities.values():
                 entity_logic.reset()
         return []
@@ -269,7 +267,7 @@ class DaikinACLogic:
         Returns ``(entity_id, action)`` pairs for the adapter to execute. Returns an empty list
         when the global mode is not "cold" or the entity is not tracked.
         """
-        if not self._mode_is_cold:
+        if self._ac_mode != AC_MODE_COLD:
             return []
         entity_logic = self._entities.get(entity_id)
         if entity_logic is None:

@@ -1,6 +1,7 @@
 import unittest
 
 from daikin_ac_control.logic import (
+    AC_MODE_COLD,
     ACTION_SET_COOL,
     ACTION_SET_FAN_ONLY,
     ACTION_TURN_OFF,
@@ -264,17 +265,17 @@ class TestDaikinACLogicModeHandling(unittest.TestCase):
 
     def test_mode_change_to_cold_enables_management(self):
         logic = self._make_logic()
-        logic.on_mode_change("cold")
+        logic.on_mode_change(AC_MODE_COLD)
         self.assertTrue(logic.mode_is_cold)
 
     def test_mode_change_to_cold_returns_no_actions(self):
         logic = self._make_logic()
-        actions = logic.on_mode_change("cold")
+        actions = logic.on_mode_change(AC_MODE_COLD)
         self.assertEqual([], actions)
 
     def test_mode_change_away_from_cold_disables_management(self):
         logic = self._make_logic()
-        logic.on_mode_change("cold")
+        logic.on_mode_change(AC_MODE_COLD)
         logic.on_entity_update(ENTITY_A, "cool", 23.0, 22.0)
         self.assertEqual(EntityState.COOLING, logic.entity_state(ENTITY_A))
 
@@ -285,7 +286,7 @@ class TestDaikinACLogicModeHandling(unittest.TestCase):
 
     def test_mode_change_away_returns_no_actions(self):
         logic = self._make_logic()
-        logic.on_mode_change("cold")
+        logic.on_mode_change(AC_MODE_COLD)
         logic.on_entity_update(ENTITY_A, "cool", 23.0, 22.0)
         actions = logic.on_mode_change("heat")
         self.assertEqual([], actions)
@@ -293,13 +294,13 @@ class TestDaikinACLogicModeHandling(unittest.TestCase):
     def test_non_cold_mode_values_all_disable_management(self):
         for mode in ("heat", "off", "auto", ""):
             logic = self._make_logic()
-            logic.on_mode_change("cold")
+            logic.on_mode_change(AC_MODE_COLD)
             logic.on_mode_change(mode)
             self.assertFalse(logic.mode_is_cold, f"mode={mode!r}")
 
     def test_untracked_entity_update_returns_no_actions(self):
         logic = self._make_logic()
-        logic.on_mode_change("cold")
+        logic.on_mode_change(AC_MODE_COLD)
         actions = logic.on_entity_update("climate.unknown", "cool", 23.0, 22.0)
         self.assertEqual([], actions)
 
@@ -312,7 +313,7 @@ class TestDaikinACLogicEntityUpdates(unittest.TestCase):
             ventilation_hysteresis=SWITCH_HYST,
             on_off_hysteresis=ON_OFF_HYST,
         )
-        self.logic.on_mode_change("cold")
+        self.logic.on_mode_change(AC_MODE_COLD)
 
     def test_entity_enters_cooling_returns_no_actions(self):
         actions = self.logic.on_entity_update(ENTITY_A, "cool", 23.0, 22.0)
@@ -377,7 +378,7 @@ class TestAppCommandEchoEvents(unittest.TestCase):
             ventilation_hysteresis=SWITCH_HYST,
             on_off_hysteresis=ON_OFF_HYST,
         )
-        self.logic.on_mode_change("cold")
+        self.logic.on_mode_change(AC_MODE_COLD)
 
     def test_echo_of_fan_only_after_app_switches_to_ventilation_is_no_op(self):
         # App decides to switch to ventilation.
@@ -436,7 +437,7 @@ class TestSetpointChanges(unittest.TestCase):
             ventilation_hysteresis=SWITCH_HYST,
             on_off_hysteresis=ON_OFF_HYST,
         )
-        self.logic.on_mode_change("cold")
+        self.logic.on_mode_change(AC_MODE_COLD)
 
     def test_raising_setpoint_while_cooling_triggers_ventilation(self):
         # Room at 22.0, setpoint 22.0: comfortably at target, app does nothing.

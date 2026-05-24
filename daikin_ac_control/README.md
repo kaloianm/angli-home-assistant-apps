@@ -11,7 +11,7 @@ and replaces Daikin's hysteresis with configurable, tighter thresholds.
 
 ## How It Works
 
-The app monitors a global AC mode select entity. It only acts when that entity reports `cold`.
+The app monitors a global AC mode entity. It only acts when that entity reports `0` (cold mode on a KNX binary sensor: `0` = cold, `1` = heat).
 
 For each configured climate entity, the app tracks a per-room management state and reacts to
 temperature changes with a two-stage intervention:
@@ -71,9 +71,9 @@ Entities in IDLE are picked up again automatically as soon as they re-enter `coo
 
 ### Global Mode Changes
 
-When the mode select entity changes away from `cold`, the app discards all per-entity state and
-stops acting. Entities are left in whatever state they are in at that point. When the mode returns
-to `cold`, the app initialises fresh from the current observed entity states.
+When the mode entity changes away from `0`, the app discards all per-entity state and stops
+acting. Entities are left in whatever state they are in at that point. When the mode returns to
+`0`, the app initialises fresh from the current observed entity states.
 
 ## Configuration
 
@@ -95,7 +95,7 @@ DaikinAcControl:
 
 | Parameter | Type | Description |
 |---|---|---|
-| `ac_mode` | string | Select entity controlling the global Daikin AC mode. Must read `cold` to activate the app. |
+| `ac_mode` | string | KNX binary sensor controlling the global Daikin AC mode. Must read `0` (cold) to activate the app; any other value disables management. |
 | `ac_entities` | list of strings | Climate entities to manage (one per room). |
 | `settings.switch_to_ventilation_hysteresis` | float (°C) | Degrees below setpoint at which the app switches a cooling entity to fan-only. Must be positive and strictly less than `on_off_ac_hysteresis`. |
 | `settings.on_off_ac_hysteresis` | float (°C) | Degrees below setpoint at which the app turns an entity off; also the degrees above setpoint at which it turns back on. |
