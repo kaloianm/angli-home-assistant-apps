@@ -13,6 +13,7 @@ VALID_ARGS = {
 
 
 class TestConfigParsing(unittest.TestCase):
+    # parse_app_config validation: required fields, types, and hysteresis constraints.
 
     def test_parse_valid_config(self):
         cfg = parse_app_config(VALID_ARGS)

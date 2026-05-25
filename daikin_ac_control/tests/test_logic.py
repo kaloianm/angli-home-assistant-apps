@@ -25,6 +25,7 @@ def _entity_kinds(entity_actions):
 
 
 class TestACEntityLogicFromIdle(unittest.TestCase):
+    # Transitions from IDLE: entering cool mode, skip-to-OFF, and non-cool modes.
 
     def setUp(self):
         self.logic = ACEntityLogic(OFF_HYST, ON_HYST)
@@ -59,10 +60,11 @@ class TestACEntityLogicFromIdle(unittest.TestCase):
 
 
 class TestACEntityLogicFromCooling(unittest.TestCase):
+    # Off hysteresis, threshold boundaries, and manual disable while in COOLING.
 
     def setUp(self):
         self.logic = ACEntityLogic(OFF_HYST, ON_HYST)
-        self.logic.update("cool", 23.0, 22.0)
+        self.logic.update("cool", 23.0, 22.0)  # IDLE → COOLING
 
     def test_above_target_stays_cooling_no_action(self):
         actions = self.logic.update("cool", 23.0, 22.0)
@@ -109,11 +111,12 @@ class TestACEntityLogicFromCooling(unittest.TestCase):
 
 
 class TestACEntityLogicFromOff(unittest.TestCase):
+    # On hysteresis, manual cool restore, and manual disable while app-managed in OFF.
 
     def setUp(self):
         self.logic = ACEntityLogic(OFF_HYST, ON_HYST)
-        self.logic.update("cool", 22.0, 22.0)
-        self.logic.update("cool", 21.2, 22.0)
+        self.logic.update("cool", 22.0, 22.0)  # IDLE → COOLING
+        self.logic.update("cool", 21.2, 22.0)  # COOLING → OFF
 
     def test_state_is_off(self):
         self.assertEqual(EntityState.OFF, self.logic.state)
@@ -156,6 +159,7 @@ class TestACEntityLogicFromOff(unittest.TestCase):
 
 
 class TestACEntityLogicReset(unittest.TestCase):
+    # reset() clears state when global AC mode leaves cold.
 
     def test_reset_from_cooling_returns_to_idle(self):
         logic = ACEntityLogic(OFF_HYST, ON_HYST)
@@ -165,21 +169,22 @@ class TestACEntityLogicReset(unittest.TestCase):
 
     def test_reset_from_off_returns_to_idle(self):
         logic = ACEntityLogic(OFF_HYST, ON_HYST)
-        logic.update("cool", 22.0, 22.0)
-        logic.update("cool", 21.2, 22.0)
+        logic.update("cool", 22.0, 22.0)  # IDLE → COOLING
+        logic.update("cool", 21.2, 22.0)  # COOLING → OFF
         logic.reset()
         self.assertEqual(EntityState.IDLE, logic.state)
 
     def test_after_reset_entering_cool_restarts_management(self):
         logic = ACEntityLogic(OFF_HYST, ON_HYST)
-        logic.update("cool", 22.0, 22.0)
-        logic.update("cool", 21.2, 22.0)
+        logic.update("cool", 22.0, 22.0)  # IDLE → COOLING
+        logic.update("cool", 21.2, 22.0)  # COOLING → OFF
         logic.reset()
         logic.update("cool", 23.0, 22.0)
         self.assertEqual(EntityState.COOLING, logic.state)
 
 
 class TestManualDisableAndReEnable(unittest.TestCase):
+    # Manual fan_only/off stops management; cool mode re-enables it.
 
     def setUp(self):
         self.logic = ACEntityLogic(OFF_HYST, ON_HYST)
@@ -203,8 +208,8 @@ class TestManualDisableAndReEnable(unittest.TestCase):
         self.assertEqual(EntityState.COOLING, self.logic.state)
 
     def test_after_manual_disable_app_does_not_manage_off_state(self):
-        self.logic.update("cool", 22.0, 22.0)
-        self.logic.update("cool", 21.2, 22.0)
+        self.logic.update("cool", 22.0, 22.0)  # IDLE → COOLING
+        self.logic.update("cool", 21.2, 22.0)  # COOLING → OFF
         self.assertEqual(EntityState.OFF, self.logic.state)
 
         self.logic.update("fan_only", 22.4, 22.0)
@@ -216,6 +221,7 @@ class TestManualDisableAndReEnable(unittest.TestCase):
 
 
 class TestDaikinACLogicModeHandling(unittest.TestCase):
+    # Global AC mode gating: management only active when mode is cold.
 
     def _make_logic(self):
         return DaikinACLogic(
@@ -247,6 +253,7 @@ class TestDaikinACLogicModeHandling(unittest.TestCase):
 
 
 class TestDaikinACLogicEntityUpdates(unittest.TestCase):
+    # End-to-end entity updates through the coordinator with global mode cold.
 
     def setUp(self):
         self.logic = DaikinACLogic(
@@ -267,8 +274,8 @@ class TestDaikinACLogicEntityUpdates(unittest.TestCase):
         self.assertEqual([(ENTITY_A, ACTION_TURN_OFF)], _entity_kinds(actions))
 
     def test_temperature_recovery_from_off_resumes_cooling(self):
-        self.logic.on_entity_changed(ENTITY_A, "cool", 23.0, 22.0)
-        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)
+        self.logic.on_entity_changed(ENTITY_A, "cool", 23.0, 22.0)  # IDLE → COOLING
+        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 22.4, 22.0)
         self.assertEqual([(ENTITY_A, ACTION_SET_COOL)], _entity_kinds(actions))
 
@@ -292,6 +299,7 @@ class TestDaikinACLogicEntityUpdates(unittest.TestCase):
 
 
 class TestIdempotency(unittest.TestCase):
+    # Repeated identical observations must not emit duplicate actions.
 
     def setUp(self):
         self.logic = DaikinACLogic(
@@ -308,14 +316,15 @@ class TestIdempotency(unittest.TestCase):
         self.assertEqual(EntityState.COOLING, self.logic.entity_state(ENTITY_A))
 
     def test_repeated_off_observation_below_threshold_is_no_op(self):
-        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)
-        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)
+        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # IDLE → COOLING
+        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 21.2, 22.0)
         self.assertEqual([], actions)
         self.assertEqual(EntityState.OFF, self.logic.entity_state(ENTITY_A))
 
 
 class TestAppCommandEchoEvents(unittest.TestCase):
+    # HA state-change echoes of app commands vs genuine manual overrides.
 
     def setUp(self):
         self.logic = DaikinACLogic(
@@ -335,8 +344,8 @@ class TestAppCommandEchoEvents(unittest.TestCase):
         self.assertEqual(EntityState.OFF, self.logic.entity_state(ENTITY_A))
 
     def test_echo_of_cool_after_app_resumes_cooling_is_no_op(self):
-        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)
-        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)
+        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # IDLE → COOLING
+        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 22.4, 22.0)
         self.assertEqual(ACTION_SET_COOL, actions[0][1].kind)
 
@@ -358,6 +367,7 @@ class TestAppCommandEchoEvents(unittest.TestCase):
 
 
 class TestSetpointChanges(unittest.TestCase):
+    # Setpoint-only changes must trigger the same hysteresis logic as temperature changes.
 
     def setUp(self):
         self.logic = DaikinACLogic(
@@ -373,14 +383,14 @@ class TestSetpointChanges(unittest.TestCase):
         self.assertEqual([(ENTITY_A, ACTION_TURN_OFF)], _entity_kinds(actions))
 
     def test_lowering_setpoint_while_off_resumes_cooling(self):
-        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)
-        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)
+        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # IDLE → COOLING
+        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 21.2, 20.8)
         self.assertEqual([(ENTITY_A, ACTION_SET_COOL)], _entity_kinds(actions))
 
     def test_raising_setpoint_while_off_keeps_off(self):
-        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)
-        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)
+        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # IDLE → COOLING
+        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 21.2, 23.0)
         self.assertEqual([], actions)
         self.assertEqual(EntityState.OFF, self.logic.entity_state(ENTITY_A))
