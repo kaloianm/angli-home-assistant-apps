@@ -1,6 +1,6 @@
 import unittest
 
-from daikin_ac_control.config import parse_app_config
+from daikin_cooling_limiter.config import parse_app_config
 
 VALID_ARGS = {
     "ac_mode": "select.climate_mode",

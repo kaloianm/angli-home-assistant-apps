@@ -1,4 +1,4 @@
-# daikin_ac_control
+# daikin_cooling_limiter
 
 AppDaemon app that works around the Daikin AC system's built-in 4°C cooling hysteresis.
 
@@ -63,9 +63,9 @@ acting. Entities are left in whatever state they are in at that point. When the 
 Add the following to your private `apps/apps.yaml`:
 
 ```yaml
-DaikinAcControl:
-  module: daikin_ac_control.daikin_ac_control
-  class: DaikinAcControl
+DaikinCoolingLimiter:
+  module: daikin_cooling_limiter.daikin_cooling_limiter
+  class: DaikinCoolingLimiter
   ac_mode: select.climate_mode
   ac_entities:
     - climate.living_room_ac
@@ -99,7 +99,7 @@ This means:
 ## Installation
 
 This repository is used as a git submodule under `apps/public_apps` in the private Home Assistant
-config repo. AppDaemon resolves the module path as `daikin_ac_control.daikin_ac_control` from
+config repo. AppDaemon resolves the module path as `daikin_cooling_limiter.daikin_cooling_limiter` from
 that location. No additional Python dependencies are required beyond AppDaemon itself.
 
 ## Running Tests
@@ -107,7 +107,7 @@ that location. No additional Python dependencies are required beyond AppDaemon i
 From the repository root:
 
 ```bash
-python -m pytest daikin_ac_control/tests/ -v
+python -m pytest daikin_cooling_limiter/tests/ -v
 ```
 
 Tests cover all state machine transitions, manual disable handling, global mode handling, and

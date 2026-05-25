@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime
 
-from daikin_ac_control.logic import (
+from daikin_cooling_limiter.logic import (
     AC_MODE_COLD,
     ACTION_SET_COOL,
     ACTION_TURN_OFF,

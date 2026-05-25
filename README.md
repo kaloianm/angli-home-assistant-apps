@@ -10,6 +10,7 @@ This repository contains reusable AppDaemon applications used by my Home Assista
 
 ## Structure
 
+- `daikin_cooling_limiter/`: Limits Daikin AC cooling overshoot with tighter per-room hysteresis; see [`daikin_cooling_limiter/README.md`](daikin_cooling_limiter/README.md) for setup and usage details.
 - `extractor_fan_control/`: Controls an extractor fan through configurable AppDaemon automation logic; see [`extractor_fan_control/README.md`](extractor_fan_control/README.md) for setup and usage details.
 - `gradhermetic_cover_control/`: Automates a Gradhermetic cover with AppDaemon logic and integrations; see [`gradhermetic_cover_control/README.md`](gradhermetic_cover_control/README.md) for setup and usage details.
 

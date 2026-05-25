@@ -1,8 +1,8 @@
 """
-AppDaemon entry point for DaikinACControl.
+AppDaemon entry point for DaikinCoolingLimiter.
 
 This module contains only wiring: listener registration, state extraction from Home Assistant, and
-action dispatch. All business decisions and logging live in ``daikin_ac_control.logic``.
+action dispatch. All business decisions and logging live in ``daikin_cooling_limiter.logic``.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from __future__ import annotations
 import traceback
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from daikin_ac_control.config import parse_app_config
-from daikin_ac_control.logic import (
+from daikin_cooling_limiter.config import parse_app_config
+from daikin_cooling_limiter.logic import (
     ACTION_SET_COOL,
     ACTION_TURN_OFF,
     Action,
@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - used only outside AppDaemon runtime.
         Hass = _HassBase
 
 
-class DaikinACControl(hass.Hass):
+class DaikinCoolingLimiter(hass.Hass):
     """
     AppDaemon app wiring for Daikin AC hysteresis control logic.
     """
@@ -64,7 +64,7 @@ class DaikinACControl(hass.Hass):
         current_mode = self.get_state(config.ac_mode_entity) or ""
         self._on_mode_change(config.ac_mode_entity, "state", None, current_mode, {})
 
-        self.log(f"DaikinACControl initialized: mode_entity={config.ac_mode_entity}, "
+        self.log(f"DaikinCoolingLimiter initialized: mode_entity={config.ac_mode_entity}, "
                  f"entities={config.ac_entities}, "
                  f"off_hysteresis={config.settings.off_hysteresis}, "
                  f"on_hysteresis={config.settings.on_hysteresis}")
@@ -176,6 +176,6 @@ class DaikinACControl(hass.Hass):
 
         self.call_service(
             "persistent_notification/create",
-            title="DaikinACControl error",
+            title="DaikinCoolingLimiter error",
             message=f"{context}\n{type(exc).__name__}: {exc}",
         )
