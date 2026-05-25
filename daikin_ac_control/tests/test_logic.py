@@ -28,14 +28,14 @@ def _entity_kinds(entity_actions):
     return [(eid, a.kind) for eid, a in entity_actions]
 
 
-class TestACEntityLogicFromIdle(unittest.TestCase):
-    # Transitions from IDLE: entering cool mode, skip-to-OFF, and non-cool modes.
+class TestACEntityLogicFromNotManaged(unittest.TestCase):
+    # Transitions from NOT_MANAGED: entering cool mode, skip-to-LOWER_TEMP_REACHED, and non-cool modes.
 
     def setUp(self):
         self.logic = ACEntityLogic(OFF_HYST, ON_HYST)
 
-    def test_initial_state_is_idle(self):
-        self.assertEqual(EntityState.IDLE, self.logic.state)
+    def test_initial_state_is_not_managed(self):
+        self.assertEqual(EntityState.NOT_MANAGED, self.logic.state)
 
     def test_cool_mode_transitions_to_cooling(self):
         actions = self.logic.update("cool", 22.0, 22.0)
@@ -46,21 +46,22 @@ class TestACEntityLogicFromIdle(unittest.TestCase):
         for mode in ("off", "fan_only", "heat", "dry", "auto", ""):
             logic = ACEntityLogic(OFF_HYST, ON_HYST)
             logic.update(mode, 22.0, 22.0)
-            self.assertEqual(EntityState.IDLE, logic.state, f"mode={mode!r} should stay IDLE")
+            self.assertEqual(EntityState.NOT_MANAGED, logic.state,
+                             f"mode={mode!r} should stay NOT_MANAGED")
 
     def test_no_action_on_cool_mode_entry_at_target(self):
         actions = self.logic.update("cool", 23.0, 22.0)
         self.assertEqual([], _kinds(actions))
 
-    def test_missing_temperature_does_not_prevent_idle_to_cooling(self):
+    def test_missing_temperature_does_not_prevent_not_managed_to_cooling(self):
         actions = self.logic.update("cool", None, None)
         self.assertEqual([], actions)
         self.assertEqual(EntityState.COOLING, self.logic.state)
 
-    def test_entering_cool_from_idle_evaluates_temperature_on_same_update(self):
+    def test_entering_cool_from_not_managed_evaluates_temperature_on_same_update(self):
         actions = self.logic.update("cool", 21.2, 22.0)
         self.assertEqual([ACTION_TURN_OFF], _kinds(actions))
-        self.assertEqual(EntityState.OFF, self.logic.state)
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.state)
 
 
 class TestACEntityLogicFromCooling(unittest.TestCase):
@@ -68,7 +69,7 @@ class TestACEntityLogicFromCooling(unittest.TestCase):
 
     def setUp(self):
         self.logic = ACEntityLogic(OFF_HYST, ON_HYST)
-        self.logic.update("cool", 23.0, 22.0)  # IDLE → COOLING
+        self.logic.update("cool", 23.0, 22.0)  # NOT_MANAGED → COOLING
 
     def test_above_target_stays_cooling_no_action(self):
         actions = self.logic.update("cool", 23.0, 22.0)
@@ -83,7 +84,7 @@ class TestACEntityLogicFromCooling(unittest.TestCase):
     def test_below_off_threshold_turns_off(self):
         actions = self.logic.update("cool", 21.2, 22.0)
         self.assertEqual([ACTION_TURN_OFF], _kinds(actions))
-        self.assertEqual(EntityState.OFF, self.logic.state)
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.state)
 
     def test_exactly_at_off_threshold_stays_cooling(self):
         actions = self.logic.update("cool", 21.3, 22.0)
@@ -101,34 +102,34 @@ class TestACEntityLogicFromCooling(unittest.TestCase):
     def test_manual_off_disables_management(self):
         actions = self.logic.update("off", 23.0, 22.0)
         self.assertEqual([], _kinds(actions))
-        self.assertEqual(EntityState.IDLE, self.logic.state)
+        self.assertEqual(EntityState.NOT_MANAGED, self.logic.state)
 
     def test_manual_fan_only_disables_management(self):
         actions = self.logic.update("fan_only", 23.0, 22.0)
         self.assertEqual([], _kinds(actions))
-        self.assertEqual(EntityState.IDLE, self.logic.state)
+        self.assertEqual(EntityState.NOT_MANAGED, self.logic.state)
 
     def test_manual_heat_disables_management(self):
         actions = self.logic.update("heat", 23.0, 22.0)
         self.assertEqual([], _kinds(actions))
-        self.assertEqual(EntityState.IDLE, self.logic.state)
+        self.assertEqual(EntityState.NOT_MANAGED, self.logic.state)
 
 
 class TestACEntityLogicFromOff(unittest.TestCase):
-    # On hysteresis, manual cool restore, and manual disable while app-managed in OFF.
+    # On hysteresis, manual cool restore, and manual disable while app-managed in LOWER_TEMP_REACHED.
 
     def setUp(self):
         self.logic = ACEntityLogic(OFF_HYST, ON_HYST)
-        self.logic.update("cool", 22.0, 22.0)  # IDLE → COOLING
+        self.logic.update("cool", 22.0, 22.0)  # NOT_MANAGED → COOLING
         self.logic.update("cool", 21.2, 22.0)  # COOLING → OFF
 
     def test_state_is_off(self):
-        self.assertEqual(EntityState.OFF, self.logic.state)
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.state)
 
     def test_below_on_threshold_stays_off(self):
         actions = self.logic.update("off", 21.2, 22.0)
         self.assertEqual([], _kinds(actions))
-        self.assertEqual(EntityState.OFF, self.logic.state)
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.state)
 
     def test_above_on_threshold_resumes_cooling(self):
         actions = self.logic.update("off", 22.4, 22.0)
@@ -139,17 +140,17 @@ class TestACEntityLogicFromOff(unittest.TestCase):
         # Use 22.29 so delta stays strictly below 0.3 (22.3 - 22.0 has float error).
         actions = self.logic.update("off", 22.29, 22.0)
         self.assertEqual([], _kinds(actions))
-        self.assertEqual(EntityState.OFF, self.logic.state)
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.state)
 
     def test_missing_temperatures_stays_off(self):
         actions = self.logic.update("off", None, None)
         self.assertEqual([], _kinds(actions))
-        self.assertEqual(EntityState.OFF, self.logic.state)
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.state)
 
     def test_manual_cool_from_off_enforces_off_hysteresis_on_same_update(self):
         actions = self.logic.update("cool", 21.2, 22.0)
         self.assertEqual([ACTION_TURN_OFF], _kinds(actions))
-        self.assertEqual(EntityState.OFF, self.logic.state)
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.state)
 
     def test_manual_cool_from_off_at_target_stays_cooling(self):
         actions = self.logic.update("cool", 22.0, 22.0)
@@ -159,28 +160,28 @@ class TestACEntityLogicFromOff(unittest.TestCase):
     def test_manual_fan_only_disables_management(self):
         actions = self.logic.update("fan_only", 21.2, 22.0)
         self.assertEqual([], _kinds(actions))
-        self.assertEqual(EntityState.IDLE, self.logic.state)
+        self.assertEqual(EntityState.NOT_MANAGED, self.logic.state)
 
 
 class TestACEntityLogicReset(unittest.TestCase):
     # reset() clears state when global AC mode leaves cold.
 
-    def test_reset_from_cooling_returns_to_idle(self):
+    def test_reset_from_cooling_returns_to_not_managed(self):
         logic = ACEntityLogic(OFF_HYST, ON_HYST)
         logic.update("cool", 23.0, 22.0)
         logic.reset()
-        self.assertEqual(EntityState.IDLE, logic.state)
+        self.assertEqual(EntityState.NOT_MANAGED, logic.state)
 
-    def test_reset_from_off_returns_to_idle(self):
+    def test_reset_from_lower_temp_reached_returns_to_not_managed(self):
         logic = ACEntityLogic(OFF_HYST, ON_HYST)
-        logic.update("cool", 22.0, 22.0)  # IDLE → COOLING
+        logic.update("cool", 22.0, 22.0)  # NOT_MANAGED → COOLING
         logic.update("cool", 21.2, 22.0)  # COOLING → OFF
         logic.reset()
-        self.assertEqual(EntityState.IDLE, logic.state)
+        self.assertEqual(EntityState.NOT_MANAGED, logic.state)
 
     def test_after_reset_entering_cool_restarts_management(self):
         logic = ACEntityLogic(OFF_HYST, ON_HYST)
-        logic.update("cool", 22.0, 22.0)  # IDLE → COOLING
+        logic.update("cool", 22.0, 22.0)  # NOT_MANAGED → COOLING
         logic.update("cool", 21.2, 22.0)  # COOLING → OFF
         logic.reset()
         logic.update("cool", 23.0, 22.0)
@@ -196,7 +197,7 @@ class TestManualDisableAndReEnable(unittest.TestCase):
     def test_manual_fan_then_cool_re_enables_management(self):
         self.logic.update("cool", 23.0, 22.0)
         self.logic.update("fan_only", 23.0, 22.0)
-        self.assertEqual(EntityState.IDLE, self.logic.state)
+        self.assertEqual(EntityState.NOT_MANAGED, self.logic.state)
 
         actions = self.logic.update("cool", 23.0, 22.0)
         self.assertEqual([], _kinds(actions))
@@ -205,23 +206,23 @@ class TestManualDisableAndReEnable(unittest.TestCase):
     def test_manual_off_then_cool_re_enables_management(self):
         self.logic.update("cool", 23.0, 22.0)
         self.logic.update("off", 23.0, 22.0)
-        self.assertEqual(EntityState.IDLE, self.logic.state)
+        self.assertEqual(EntityState.NOT_MANAGED, self.logic.state)
 
         actions = self.logic.update("cool", 23.0, 22.0)
         self.assertEqual([], _kinds(actions))
         self.assertEqual(EntityState.COOLING, self.logic.state)
 
-    def test_after_manual_disable_app_does_not_manage_off_state(self):
-        self.logic.update("cool", 22.0, 22.0)  # IDLE → COOLING
+    def test_after_manual_disable_app_does_not_manage_lower_temp_reached_state(self):
+        self.logic.update("cool", 22.0, 22.0)  # NOT_MANAGED → COOLING
         self.logic.update("cool", 21.2, 22.0)  # COOLING → OFF
-        self.assertEqual(EntityState.OFF, self.logic.state)
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.state)
 
         self.logic.update("fan_only", 22.4, 22.0)
-        self.assertEqual(EntityState.IDLE, self.logic.state)
+        self.assertEqual(EntityState.NOT_MANAGED, self.logic.state)
 
         actions = self.logic.update("off", 22.4, 22.0)
         self.assertEqual([], _kinds(actions))
-        self.assertEqual(EntityState.IDLE, self.logic.state)
+        self.assertEqual(EntityState.NOT_MANAGED, self.logic.state)
 
 
 class TestDaikinACLogicModeHandling(unittest.TestCase):
@@ -253,7 +254,7 @@ class TestDaikinACLogicModeHandling(unittest.TestCase):
         logic.on_mode_change(AC_MODE_COLD)
         logic.on_entity_changed(ENTITY_A, "cool", 23.0, 22.0)
         logic.on_mode_change("heat")
-        self.assertEqual(EntityState.IDLE, logic.entity_state(ENTITY_A))
+        self.assertEqual(EntityState.NOT_MANAGED, logic.entity_state(ENTITY_A))
 
 
 class TestDaikinACLogicEntityUpdates(unittest.TestCase):
@@ -278,7 +279,7 @@ class TestDaikinACLogicEntityUpdates(unittest.TestCase):
         self.assertEqual([(ENTITY_A, ACTION_TURN_OFF)], _entity_kinds(actions))
 
     def test_temperature_recovery_from_off_resumes_cooling(self):
-        self.logic.on_entity_changed(ENTITY_A, "cool", 23.0, 22.0)  # IDLE → COOLING
+        self.logic.on_entity_changed(ENTITY_A, "cool", 23.0, 22.0)  # NOT_MANAGED → COOLING
         self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 22.4, 22.0)
         self.assertEqual([(ENTITY_A, ACTION_SET_COOL)], _entity_kinds(actions))
@@ -320,11 +321,11 @@ class TestIdempotency(unittest.TestCase):
         self.assertEqual(EntityState.COOLING, self.logic.entity_state(ENTITY_A))
 
     def test_repeated_off_observation_below_threshold_is_no_op(self):
-        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # IDLE → COOLING
+        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # NOT_MANAGED → COOLING
         self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 21.2, 22.0)
         self.assertEqual([], actions)
-        self.assertEqual(EntityState.OFF, self.logic.entity_state(ENTITY_A))
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.entity_state(ENTITY_A))
 
 
 class TestAppCommandEchoEvents(unittest.TestCase):
@@ -345,10 +346,10 @@ class TestAppCommandEchoEvents(unittest.TestCase):
 
         echo_actions = self.logic.on_entity_changed(ENTITY_A, "off", 21.2, 22.0)
         self.assertEqual([], echo_actions)
-        self.assertEqual(EntityState.OFF, self.logic.entity_state(ENTITY_A))
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.entity_state(ENTITY_A))
 
     def test_echo_of_cool_after_app_resumes_cooling_is_no_op(self):
-        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # IDLE → COOLING
+        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # NOT_MANAGED → COOLING
         self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 22.4, 22.0)
         self.assertEqual(ACTION_SET_COOL, actions[0][1].kind)
@@ -361,13 +362,13 @@ class TestAppCommandEchoEvents(unittest.TestCase):
         self.logic.on_entity_changed(ENTITY_A, "cool", 23.0, 22.0)
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 23.0, 22.0)
         self.assertEqual([], actions)
-        self.assertEqual(EntityState.IDLE, self.logic.entity_state(ENTITY_A))
+        self.assertEqual(EntityState.NOT_MANAGED, self.logic.entity_state(ENTITY_A))
 
     def test_fan_only_received_while_in_cooling_is_manual_disable(self):
         self.logic.on_entity_changed(ENTITY_A, "cool", 23.0, 22.0)
         actions = self.logic.on_entity_changed(ENTITY_A, "fan_only", 23.0, 22.0)
         self.assertEqual([], actions)
-        self.assertEqual(EntityState.IDLE, self.logic.entity_state(ENTITY_A))
+        self.assertEqual(EntityState.NOT_MANAGED, self.logic.entity_state(ENTITY_A))
 
 
 class TestSetpointChanges(unittest.TestCase):
@@ -387,17 +388,17 @@ class TestSetpointChanges(unittest.TestCase):
         self.assertEqual([(ENTITY_A, ACTION_TURN_OFF)], _entity_kinds(actions))
 
     def test_lowering_setpoint_while_off_resumes_cooling(self):
-        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # IDLE → COOLING
+        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # NOT_MANAGED → COOLING
         self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 21.2, 20.8)
         self.assertEqual([(ENTITY_A, ACTION_SET_COOL)], _entity_kinds(actions))
 
     def test_raising_setpoint_while_off_keeps_off(self):
-        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # IDLE → COOLING
+        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # NOT_MANAGED → COOLING
         self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 21.2, 23.0)
         self.assertEqual([], actions)
-        self.assertEqual(EntityState.OFF, self.logic.entity_state(ENTITY_A))
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.entity_state(ENTITY_A))
 
 
 class TestControlRateLimiter(unittest.TestCase):
@@ -453,7 +454,7 @@ class TestDaikinACLogicDisable(unittest.TestCase):
         self.logic.disable(ENTITY_A)
         actions = self.logic.on_entity_changed(ENTITY_B, "cool", 21.2, 22.0)
         self.assertEqual([(ENTITY_B, ACTION_TURN_OFF)], _entity_kinds(actions))
-        self.assertEqual(EntityState.OFF, self.logic.entity_state(ENTITY_B))
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.entity_state(ENTITY_B))
 
     def test_disabled_entity_stays_disabled_on_cool(self):
         self.logic.disable(ENTITY_A)

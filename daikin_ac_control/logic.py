@@ -73,14 +73,15 @@ class EntityState(Enum):
     """
     Per-entity management state tracked by the app.
 
+    ``NOT_MANAGED``: app is not managing this entity.
     ``COOLING``: entity is in cool mode; app monitors temperature.
-    ``OFF``: app turned the entity off; waiting for room to warm before resuming cooling.
+    ``LOWER_TEMP_REACHED``: app turned the entity off after overshoot; waiting to resume cooling.
     ``DISABLED``: unrecoverable error; no transitions out until AppDaemon restart.
     """
 
-    IDLE = "idle"
+    NOT_MANAGED = "not_managed"
     COOLING = "cooling"
-    OFF = "off"
+    LOWER_TEMP_REACHED = "lower_temp_reached"
     DISABLED = "disabled"
 
 
@@ -93,7 +94,7 @@ class ACEntityLogic:
     no I/O is performed.
 
     Whenever the entity is in ``cool`` mode, the off hysteresis is enforced on every update.
-    While app-managed in ``OFF``, the on hysteresis is evaluated on each update. Manual
+    While app-managed in ``LOWER_TEMP_REACHED``, the on hysteresis is evaluated on each update. Manual
     ``fan_only`` or ``off`` disables management until the entity re-enters ``cool`` mode.
     """
 
@@ -106,7 +107,7 @@ class ACEntityLogic:
         """
         self._off_hysteresis = off_hysteresis
         self._on_hysteresis = on_hysteresis
-        self._state = EntityState.IDLE
+        self._state = EntityState.NOT_MANAGED
 
     @property
     def state(self) -> EntityState:
@@ -123,14 +124,14 @@ class ACEntityLogic:
 
     def reset(self) -> None:
         """
-        Reset to IDLE, discarding any accumulated state.
+        Reset to NOT_MANAGED, discarding any accumulated state.
 
         Called when the global AC mode leaves "cold" so the app stops managing the entity.
         No actions are emitted; the entity is left in whatever state it is in.
         """
         if self._state == EntityState.DISABLED:
             return
-        self._state = EntityState.IDLE
+        self._state = EntityState.NOT_MANAGED
 
     def update(
         self,
@@ -157,15 +158,15 @@ class ACEntityLogic:
             self._state = EntityState.COOLING
             return self._from_cooling(current_temp, target_temp)
 
-        if observed_hvac_mode == HVAC_OFF and self._state == EntityState.OFF:
+        if observed_hvac_mode == HVAC_OFF and self._state == EntityState.LOWER_TEMP_REACHED:
             return self._from_off(current_temp, target_temp)
 
         if observed_hvac_mode in (HVAC_FAN_ONLY, HVAC_OFF):
-            self._state = EntityState.IDLE
+            self._state = EntityState.NOT_MANAGED
             return []
 
-        if self._state != EntityState.IDLE:
-            self._state = EntityState.IDLE
+        if self._state != EntityState.NOT_MANAGED:
+            self._state = EntityState.NOT_MANAGED
 
         return []
 
@@ -178,7 +179,7 @@ class ACEntityLogic:
             return []
 
         if current_temp - target_temp < -self._off_hysteresis:
-            self._state = EntityState.OFF
+            self._state = EntityState.LOWER_TEMP_REACHED
             return [Action(ACTION_TURN_OFF)]
         return []
 
@@ -251,7 +252,7 @@ class DaikinACLogic:
         Handle a change in the global AC mode select entity.
 
         Transitions to ``AC_MODE_COLD`` enable management. Any other value resets all per-entity
-        states to IDLE without emitting actions (entities are left in whatever state they are in).
+        states to NOT_MANAGED without emitting actions (entities are left in whatever state they are in).
         """
         self._ac_mode = new_mode
         self._log(f"AC mode: {new_mode!r}")

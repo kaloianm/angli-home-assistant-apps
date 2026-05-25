@@ -26,25 +26,26 @@ current - target >  on_hysteresis     →  turn back on in cooling mode
 Each entity progresses through these states independently:
 
 ```
-IDLE ──(entity enters cool mode)──▶ COOLING
-  ▲                                    │
-  │◀──(manual fan_only/off)────────────┤
-  │                                    │ current - target < -off_hysteresis
-  │                                    ▼
-  │                                   OFF
-  │◀──(manual fan_only/off)────────────┤
-  └◀──(entity enters cool mode)────────┤
+NOT_MANAGED ──(entity enters cool mode)──▶ COOLING
+    ▲                                    │
+    │◀──(manual fan_only/off)────────────┤
+    │                                    │ current - target < -off_hysteresis
+    │                                    ▼
+    │                          LOWER_TEMP_REACHED
+    │◀──(manual fan_only/off)────────────┤
+    └◀──(entity enters cool mode)────────┤
                                        │ current - target > on_hysteresis
                                        └──────────────▶ COOLING
 ```
 
-**IDLE**: Not managing this entity. Entered when the user manually sets `fan_only` or `off`, or
+**NOT_MANAGED**: Not managing this entity. Entered when the user manually sets `fan_only` or `off`, or
 when the entity is in any other mode. The app resumes when the entity re-enters `cool` mode.
 
 **COOLING**: Entity is in `cool` mode. App monitors temperature and turns the unit off if the room
 drops too far below the setpoint.
 
-**OFF**: App turned the entity off. Waiting for the room to warm before resuming cooling.
+**LOWER_TEMP_REACHED**: App turned the entity off after overshoot. Waiting for the room to warm
+before resuming cooling.
 
 ### Manual Disable
 
