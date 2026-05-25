@@ -19,6 +19,7 @@ ACTION_TURN_OFF = "turn_off"
 CONTROL_MIN_INTERVAL_SECONDS = 60.0
 
 AC_MODE_COLD = "0"
+AC_MODE_COLD_STATES = frozenset((AC_MODE_COLD, "off", "cooling"))
 
 HVAC_COOL = "cool"
 HVAC_FAN_ONLY = "fan_only"
@@ -230,9 +231,9 @@ class DaikinACLogic:
     @property
     def mode_is_cold(self) -> bool:
         """
-        Whether the global AC mode is currently cold (ac_mode entity reads ``AC_MODE_COLD``).
+        Whether the global AC mode is currently cold.
         """
-        return self._ac_mode == AC_MODE_COLD
+        return self._ac_mode.strip().lower() in AC_MODE_COLD_STATES
 
     def entity_state(self, entity_id: str) -> EntityState:
         """
@@ -257,7 +258,7 @@ class DaikinACLogic:
         self._ac_mode = new_mode
         self._log(f"AC mode: {new_mode!r}")
 
-        if self._ac_mode != AC_MODE_COLD:
+        if not self.mode_is_cold:
             for entity_logic in self._entities.values():
                 entity_logic.reset()
 
@@ -276,7 +277,7 @@ class DaikinACLogic:
         Returns ``(entity_id, action)`` pairs for the adapter to execute. Returns an empty list
         when the global mode is not cold.
         """
-        if self._ac_mode != AC_MODE_COLD:
+        if not self.mode_is_cold:
             return []
 
         entity_logic = self._entities[entity_id]

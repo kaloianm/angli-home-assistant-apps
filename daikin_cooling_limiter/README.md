@@ -11,7 +11,8 @@ and replaces Daikin's hysteresis with configurable, tighter thresholds.
 
 ## How It Works
 
-The app monitors a global AC mode entity. It only acts when that entity reports `0` (cold mode on a KNX binary sensor: `0` = cold, `1` = heat).
+The app monitors a global AC mode entity. It only acts when that entity reports cold mode (`0`,
+`off`, or `Cooling`; for KNX boolean variables this is typically `0`/`off` = cold and `1`/`on` = heat).
 
 For each configured climate entity, the app tracks a per-room management state and reacts to
 temperature changes:
@@ -78,7 +79,7 @@ DaikinCoolingLimiter:
 
 | Parameter | Type | Description |
 |---|---|---|
-| `ac_mode` | string | KNX binary sensor controlling the global Daikin AC mode. Must read `0` (cold) to activate the app; any other value disables management. |
+| `ac_mode` | string | KNX entity controlling the global Daikin AC mode. Must read `0`, `off`, or `Cooling` to activate the app; any other value disables management. |
 | `ac_entities` | list of strings | Climate entities to manage (one per room). |
 | `settings.off_hysteresis` | float (°C) | Degrees below setpoint at which the app turns a cooling entity off. |
 | `settings.on_hysteresis` | float (°C) | Degrees above setpoint at which the app turns an entity back on in cooling mode. |

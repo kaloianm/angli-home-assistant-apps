@@ -249,6 +249,19 @@ class TestDaikinACLogicModeHandling(unittest.TestCase):
         logic.on_mode_change(AC_MODE_COLD)
         self.assertTrue(logic.mode_is_cold)
 
+    def test_knx_switch_off_enables_management(self):
+        logic = self._make_logic()
+        logic.on_mode_change("off")
+        self.assertTrue(logic.mode_is_cold)
+
+    def test_knx_switch_on_disables_management(self):
+        logic = self._make_logic()
+        logic.on_mode_change("off")
+        logic.on_entity_changed(ENTITY_A, "cool", 23.0, 22.0)
+        logic.on_mode_change("on")
+        self.assertFalse(logic.mode_is_cold)
+        self.assertEqual(EntityState.NOT_MANAGED, logic.entity_state(ENTITY_A))
+
     def test_mode_change_away_from_cold_disables_management(self):
         logic = self._make_logic()
         logic.on_mode_change(AC_MODE_COLD)
