@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 ACTION_SET_COOL = "set_cool"
 ACTION_SET_FAN_ONLY = "set_fan_only"
@@ -204,7 +204,7 @@ class DaikinACLogic:
     """
     App-level coordinator: manages global AC mode state and all per-entity logic instances.
 
-    The only public methods are ``on_mode_change`` and ``on_entity_update``. Both return a list
+    The only public methods are ``on_mode_change`` and ``on_entity_changed``. Both return a list
     of ``(entity_id, Action)`` pairs for the adapter to execute.
     """
 
@@ -213,6 +213,7 @@ class DaikinACLogic:
         ac_entities: List[str],
         ventilation_hysteresis: float,
         on_off_hysteresis: float,
+        log: Callable[[str], None] = lambda _: None,
     ) -> None:
         """
         Create the coordinator.
@@ -220,7 +221,9 @@ class DaikinACLogic:
         ``ac_entities``: list of climate entity IDs to manage.
         ``ventilation_hysteresis``: degrees below setpoint at which to switch to fan-only.
         ``on_off_hysteresis``: degrees below setpoint to turn off; degrees above to turn back on.
+        ``log``: optional callable for diagnostic output; receives a single message string.
         """
+        self._log = log
         self._ac_mode: str = ""
         self._entities: Dict[str, ACEntityLogic] = {
             entity_id: ACEntityLogic(ventilation_hysteresis, on_off_hysteresis)
@@ -249,12 +252,13 @@ class DaikinACLogic:
         states to IDLE without emitting actions (entities are left in whatever state they are in).
         """
         self._ac_mode = new_mode
+        self._log(f"AC mode: {new_mode!r}")
         if self._ac_mode != AC_MODE_COLD:
             for entity_logic in self._entities.values():
                 entity_logic.reset()
         return []
 
-    def on_entity_update(
+    def on_entity_changed(
         self,
         entity_id: str,
         hvac_mode: str,
@@ -272,5 +276,9 @@ class DaikinACLogic:
         entity_logic = self._entities.get(entity_id)
         if entity_logic is None:
             return []
+        self._log(f"[{entity_id}] hvac={hvac_mode!r} temp={current_temp} setpoint={target_temp}"
+                  f" state={entity_logic.state.value}")
         actions = entity_logic.update(hvac_mode, current_temp, target_temp)
+        for action in actions:
+            self._log(f"[{entity_id}] → {action.kind} (new state: {entity_logic.state.value})")
         return [(entity_id, action) for action in actions]
