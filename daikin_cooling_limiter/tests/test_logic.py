@@ -406,6 +406,13 @@ class TestSetpointChanges(unittest.TestCase):
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 21.2, 20.8)
         self.assertEqual([(ENTITY_A, ACTION_SET_COOL)], _entity_kinds(actions))
 
+    def test_lowering_setpoint_while_off_keeps_off_when_drop_is_not_enough(self):
+        self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # NOT_MANAGED → COOLING
+        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
+        actions = self.logic.on_entity_changed(ENTITY_A, "off", 21.2, 21.5)
+        self.assertEqual([], actions)
+        self.assertEqual(EntityState.LOWER_TEMP_REACHED, self.logic.entity_state(ENTITY_A))
+
     def test_raising_setpoint_while_off_keeps_off(self):
         self.logic.on_entity_changed(ENTITY_A, "cool", 22.0, 22.0)  # NOT_MANAGED → COOLING
         self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)  # COOLING → OFF
