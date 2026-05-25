@@ -7,7 +7,8 @@ action dispatch. All business decisions and logging live in ``daikin_ac_control.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+import traceback
+from typing import Any, Dict, List, Tuple
 
 from daikin_ac_control.config import AppConfig, parse_app_config
 from daikin_ac_control.logic import (
@@ -56,22 +57,12 @@ class DaikinACControl(hass.Hass):
 
         for entity_id in config.ac_entities:
             self._validate_entity(entity_id, config)
-            self.listen_state(self._on_entity_event, entity_id, entity_id=entity_id)
-            self.listen_state(
-                self._on_entity_event,
-                entity_id,
-                attribute="current_temperature",
-                entity_id=entity_id,
-            )
-            self.listen_state(
-                self._on_entity_event,
-                entity_id,
-                attribute="temperature",
-                entity_id=entity_id,
-            )
+            self.listen_state(self._on_entity_changed, entity_id)
+            self.listen_state(self._on_entity_changed, entity_id, attribute="current_temperature")
+            self.listen_state(self._on_entity_changed, entity_id, attribute="temperature")
 
         current_mode = self.get_state(config.ac_mode_entity) or ""
-        self._on_mode_change(config.ac_mode_entity, "state", current_mode, current_mode, {})
+        self._on_mode_change(config.ac_mode_entity, "state", None, current_mode, {})
 
         self.log(f"DaikinACControl initialized: mode_entity={config.ac_mode_entity}, "
                  f"entities={config.ac_entities}, "
@@ -99,65 +90,62 @@ class DaikinACControl(hass.Hass):
         """
         Handle global AC mode select entity state changes.
         """
-        self._execute_actions(self._logic.on_mode_change(new or ""))
-        if self._logic.mode_is_cold:
-            for entity_id in self._ac_entities:
-                self._on_entity_changed(entity_id)
+        try:
+            self._execute_actions(self._logic.on_mode_change(new or ""))
+            if self._logic.mode_is_cold:
+                for entity_id in self._ac_entities:
+                    self._on_entity_changed(entity_id, None, None, None, {})
+        except Exception as exc:
+            self._report_error(f"_on_mode_change(new={new!r})", exc)
 
-    def _on_entity_event(
+    def _on_entity_changed(
         self,
-        entity: str,
-        attribute: str,
+        entity_id: str,
+        attribute: Any,
         old: Any,
         new: Any,
         kwargs: Dict[str, Any],
     ) -> None:
         """
         Handle any state or attribute change on a managed climate entity (hvac_mode,
-        current_temperature, or target temperature setpoint).
+        current_temperature, or target temperature setpoint). Also called directly on startup
+        and after a mode change to cold to seed the logic with current HA state.
         """
-        self._on_entity_changed(kwargs["entity_id"])
-
-    def _on_entity_changed(self, entity_id: str) -> None:
-        """
-        Read current entity state from Home Assistant and feed it to the logic layer.
-        """
-        raw = self.get_state(entity_id, attribute="all")
-        if raw is None:
-            return
-        hvac_mode: str = raw.get("state") or ""
-        attrs: Dict[str, Any] = raw.get("attributes") or {}
-        current_temp: Optional[float] = _to_float(attrs.get("current_temperature"))
-        target_temp: Optional[float] = _to_float(attrs.get("temperature"))
-        self._execute_actions(
-            self._logic.on_entity_changed(entity_id, hvac_mode, current_temp, target_temp))
+        try:
+            raw = self.get_state(entity_id, attribute="all")
+            if raw is None:
+                return
+            hvac_mode: str = raw.get("state") or ""
+            attrs: Dict[str, Any] = raw.get("attributes") or {}
+            self._execute_actions(
+                self._logic.on_entity_changed(entity_id, hvac_mode,
+                                              attrs.get("current_temperature"),
+                                              attrs.get("temperature")))
+        except Exception as exc:
+            self._report_error(f"_on_entity_changed(entity={entity_id!r})", exc)
 
     def _execute_actions(self, actions: List[Tuple[str, Action]]) -> None:
         """
         Execute a list of (entity_id, action) pairs returned by the logic layer.
         """
         for entity_id, action in actions:
-            self._execute(entity_id, action)
+            if action.kind == ACTION_SET_COOL:
+                self.call_service("climate/set_hvac_mode", entity_id=entity_id, hvac_mode="cool")
+            elif action.kind == ACTION_SET_FAN_ONLY:
+                self.call_service("climate/set_hvac_mode", entity_id=entity_id,
+                                  hvac_mode="fan_only")
+            elif action.kind == ACTION_TURN_OFF:
+                self.call_service("climate/turn_off", entity_id=entity_id)
 
-    def _execute(self, entity_id: str, action: Action) -> None:
+    def _report_error(self, context: str, exc: Exception) -> None:
         """
-        Translate one declarative action into a Home Assistant service call.
+        Log an unhandled exception with full traceback and send a persistent HA notification.
         """
-        if action.kind == ACTION_SET_COOL:
-            self.call_service("climate/set_hvac_mode", entity_id=entity_id, hvac_mode="cool")
-        elif action.kind == ACTION_SET_FAN_ONLY:
-            self.call_service("climate/set_hvac_mode", entity_id=entity_id, hvac_mode="fan_only")
-        elif action.kind == ACTION_TURN_OFF:
-            self.call_service("climate/turn_off", entity_id=entity_id)
-
-
-def _to_float(value: Any) -> Optional[float]:
-    """
-    Safely convert a value to float, returning ``None`` on failure.
-    """
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+        tb = traceback.format_exc()
+        self.log(f"Unhandled exception in {context}: {type(exc).__name__}: {exc}\n{tb}",
+                 level="ERROR")
+        self.call_service(
+            "persistent_notification/create",
+            title="DaikinACControl error",
+            message=f"{context}\n{type(exc).__name__}: {exc}",
+        )
