@@ -13,7 +13,6 @@ from enum import Enum
 from typing import Callable, Dict, List, Optional, Tuple
 
 ACTION_SET_COOL = "set_cool"
-ACTION_SET_FAN_ONLY = "set_fan_only"
 ACTION_TURN_OFF = "turn_off"
 
 AC_MODE_COLD = "0"
@@ -36,15 +35,12 @@ class EntityState(Enum):
     """
     Per-entity management state tracked by the app.
 
-    ``IDLE``: entity is not being managed (not in cooling mode, or user took manual control).
-    ``COOLING``: entity is in cool mode; Daikin is working; app monitors temperature only.
-    ``VENTILATION``: app switched the entity to fan-only to prevent overshoot.
+    ``COOLING``: entity is in cool mode; app monitors temperature.
     ``OFF``: app turned the entity off; waiting for room to warm before resuming cooling.
     """
 
     IDLE = "idle"
     COOLING = "cooling"
-    VENTILATION = "ventilation"
     OFF = "off"
 
 
@@ -56,26 +52,20 @@ class ACEntityLogic:
     target_temperature) and returns declarative actions. All business decisions live here;
     no I/O is performed.
 
-    Manual override detection relies on the invariant that each non-IDLE state expects a specific
-    hvac_mode from the entity:
-    - ``COOLING``     expects ``cool``
-    - ``VENTILATION`` expects ``fan_only``
-    - ``OFF``         expects ``off``
-
-    Any deviation from the expected mode is treated as a manual change by the user and causes a
-    transition to IDLE (or back to COOLING if the user manually restored cool mode).
+    Whenever the entity is in ``cool`` mode, the off hysteresis is enforced on every update.
+    While app-managed in ``OFF``, the on hysteresis is evaluated on each update. Manual
+    ``fan_only`` or ``off`` disables management until the entity re-enters ``cool`` mode.
     """
 
-    def __init__(self, ventilation_hysteresis: float, on_off_hysteresis: float) -> None:
+    def __init__(self, off_hysteresis: float, on_hysteresis: float) -> None:
         """
         Create state machine for one entity.
 
-        ``ventilation_hysteresis``: degrees below setpoint at which the app switches to fan-only.
-        ``on_off_hysteresis``: degrees below setpoint at which the app turns the entity off, and
-            degrees above setpoint at which the app turns it back on.
+        ``off_hysteresis``: degrees below setpoint at which the app turns the entity off.
+        ``on_hysteresis``: degrees above setpoint at which the app turns the entity back on.
         """
-        self._ventilation_hysteresis = ventilation_hysteresis
-        self._on_off_hysteresis = on_off_hysteresis
+        self._off_hysteresis = off_hysteresis
+        self._on_hysteresis = on_hysteresis
         self._state = EntityState.IDLE
 
     @property
@@ -112,89 +102,44 @@ class ACEntityLogic:
         Returns declarative actions for the adapter to execute; returns an empty list if no
         state change is needed.
         """
-        if self._state == EntityState.IDLE:
-            return self._from_idle(observed_hvac_mode)
-        if self._state == EntityState.COOLING:
-            return self._from_cooling(observed_hvac_mode, current_temp, target_temp)
-        if self._state == EntityState.VENTILATION:
-            return self._from_ventilation(observed_hvac_mode, current_temp, target_temp)
-        if self._state == EntityState.OFF:
-            return self._from_off(observed_hvac_mode, current_temp, target_temp)
-        return []  # pragma: no cover
-
-    def _from_idle(self, hvac_mode: str) -> List[Action]:
-        if hvac_mode == HVAC_COOL:
+        if observed_hvac_mode == HVAC_COOL:
             self._state = EntityState.COOLING
+            return self._from_cooling(current_temp, target_temp)
+
+        if observed_hvac_mode == HVAC_OFF and self._state == EntityState.OFF:
+            return self._from_off(current_temp, target_temp)
+
+        if observed_hvac_mode in (HVAC_FAN_ONLY, HVAC_OFF):
+            self._state = EntityState.IDLE
+            return []
+
+        if self._state != EntityState.IDLE:
+            self._state = EntityState.IDLE
+
         return []
 
     def _from_cooling(
         self,
-        hvac_mode: str,
         current_temp: Optional[float],
         target_temp: Optional[float],
     ) -> List[Action]:
-        if hvac_mode != HVAC_COOL:
-            self._state = EntityState.IDLE
-            return []
-
         if current_temp is None or target_temp is None:
             return []
 
-        delta = current_temp - target_temp
-        if delta < -self._on_off_hysteresis:
-            # Room is already far below target; skip ventilation and turn off directly.
+        if current_temp - target_temp < -self._off_hysteresis:
             self._state = EntityState.OFF
             return [Action(ACTION_TURN_OFF)]
-        if delta < -self._ventilation_hysteresis:
-            self._state = EntityState.VENTILATION
-            return [Action(ACTION_SET_FAN_ONLY)]
-        return []
-
-    def _from_ventilation(
-        self,
-        hvac_mode: str,
-        current_temp: Optional[float],
-        target_temp: Optional[float],
-    ) -> List[Action]:
-        if hvac_mode != HVAC_FAN_ONLY:
-            if hvac_mode == HVAC_COOL:
-                # User manually restored cooling; resume management from COOLING.
-                self._state = EntityState.COOLING
-            else:
-                self._state = EntityState.IDLE
-            return []
-
-        if current_temp is None or target_temp is None:
-            return []
-
-        delta = current_temp - target_temp
-        if delta < -self._on_off_hysteresis:
-            self._state = EntityState.OFF
-            return [Action(ACTION_TURN_OFF)]
-        if delta > self._on_off_hysteresis:
-            self._state = EntityState.COOLING
-            return [Action(ACTION_SET_COOL)]
         return []
 
     def _from_off(
         self,
-        hvac_mode: str,
         current_temp: Optional[float],
         target_temp: Optional[float],
     ) -> List[Action]:
-        if hvac_mode != HVAC_OFF:
-            if hvac_mode == HVAC_COOL:
-                # User manually turned it back on in cooling; resume management.
-                self._state = EntityState.COOLING
-            else:
-                self._state = EntityState.IDLE
-            return []
-
         if current_temp is None or target_temp is None:
             return []
 
-        delta = current_temp - target_temp
-        if delta > self._on_off_hysteresis:
+        if current_temp - target_temp > self._on_hysteresis:
             self._state = EntityState.COOLING
             return [Action(ACTION_SET_COOL)]
         return []
@@ -211,22 +156,22 @@ class DaikinACLogic:
     def __init__(
         self,
         ac_entities: List[str],
-        ventilation_hysteresis: float,
-        on_off_hysteresis: float,
+        off_hysteresis: float,
+        on_hysteresis: float,
         log: Callable[[str], None] = lambda _: None,
     ) -> None:
         """
         Create the coordinator.
 
         ``ac_entities``: list of climate entity IDs to manage.
-        ``ventilation_hysteresis``: degrees below setpoint at which to switch to fan-only.
-        ``on_off_hysteresis``: degrees below setpoint to turn off; degrees above to turn back on.
+        ``off_hysteresis``: degrees below setpoint at which to turn off.
+        ``on_hysteresis``: degrees above setpoint at which to turn back on.
         ``log``: optional callable for diagnostic output; receives a single message string.
         """
         self._log = log
         self._ac_mode: str = ""
         self._entities: Dict[str, ACEntityLogic] = {
-            entity_id: ACEntityLogic(ventilation_hysteresis, on_off_hysteresis)
+            entity_id: ACEntityLogic(off_hysteresis, on_hysteresis)
             for entity_id in ac_entities
         }
 
@@ -237,12 +182,11 @@ class DaikinACLogic:
         """
         return self._ac_mode == AC_MODE_COLD
 
-    def entity_state(self, entity_id: str) -> Optional[EntityState]:
+    def entity_state(self, entity_id: str) -> EntityState:
         """
-        Return the current management state for ``entity_id``, or ``None`` if not tracked.
+        Return the current management state for ``entity_id``.
         """
-        entity = self._entities.get(entity_id)
-        return entity.state if entity is not None else None
+        return self._entities[entity_id].state
 
     def on_mode_change(self, new_mode: str) -> List[Tuple[str, Action]]:
         """
@@ -253,9 +197,11 @@ class DaikinACLogic:
         """
         self._ac_mode = new_mode
         self._log(f"AC mode: {new_mode!r}")
+
         if self._ac_mode != AC_MODE_COLD:
             for entity_logic in self._entities.values():
                 entity_logic.reset()
+
         return []
 
     def on_entity_changed(
@@ -269,16 +215,17 @@ class DaikinACLogic:
         Process an observed entity state snapshot.
 
         Returns ``(entity_id, action)`` pairs for the adapter to execute. Returns an empty list
-        when the global mode is not "cold" or the entity is not tracked.
+        when the global mode is not cold.
         """
         if self._ac_mode != AC_MODE_COLD:
             return []
-        entity_logic = self._entities.get(entity_id)
-        if entity_logic is None:
-            return []
+
+        entity_logic = self._entities[entity_id]
         self._log(f"[{entity_id}] hvac={hvac_mode!r} temp={current_temp} setpoint={target_temp}"
                   f" state={entity_logic.state.value}")
+
         actions = entity_logic.update(hvac_mode, current_temp, target_temp)
         for action in actions:
             self._log(f"[{entity_id}] → {action.kind} (new state: {entity_logic.state.value})")
+
         return [(entity_id, action) for action in actions]

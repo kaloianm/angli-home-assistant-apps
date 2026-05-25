@@ -6,8 +6,8 @@ VALID_ARGS = {
     "ac_mode": "select.climate_mode",
     "ac_entities": ["climate.living_room_ac", "climate.bedroom_ac"],
     "settings": {
-        "switch_to_ventilation_hysteresis": 0.5,
-        "on_off_ac_hysteresis": 1.0,
+        "off_hysteresis": 0.7,
+        "on_hysteresis": 0.3,
     },
 }
 
@@ -18,8 +18,8 @@ class TestConfigParsing(unittest.TestCase):
         cfg = parse_app_config(VALID_ARGS)
         self.assertEqual("select.climate_mode", cfg.ac_mode_entity)
         self.assertEqual(["climate.living_room_ac", "climate.bedroom_ac"], cfg.ac_entities)
-        self.assertAlmostEqual(0.5, cfg.settings.switch_to_ventilation_hysteresis)
-        self.assertAlmostEqual(1.0, cfg.settings.on_off_ac_hysteresis)
+        self.assertAlmostEqual(0.7, cfg.settings.off_hysteresis)
+        self.assertAlmostEqual(0.3, cfg.settings.on_hysteresis)
 
     def test_ac_mode_as_single_element_list(self):
         args = {**VALID_ARGS, "ac_mode": ["select.climate_mode"]}
@@ -62,71 +62,40 @@ class TestConfigParsing(unittest.TestCase):
             parse_app_config(args)
 
     def test_settings_as_list_is_rejected(self):
-        args = {**VALID_ARGS, "settings": [{"switch_to_ventilation_hysteresis": 0.5}]}
+        args = {**VALID_ARGS, "settings": [{"off_hysteresis": 0.7}]}
         with self.assertRaisesRegex(ValueError, "settings must be a mapping"):
             parse_app_config(args)
 
-    def test_missing_switch_hysteresis_is_rejected(self):
-        args = {**VALID_ARGS, "settings": {"on_off_ac_hysteresis": 1.0}}
-        with self.assertRaisesRegex(ValueError, "switch_to_ventilation_hysteresis is required"):
+    def test_missing_off_hysteresis_is_rejected(self):
+        args = {**VALID_ARGS, "settings": {"on_hysteresis": 0.3}}
+        with self.assertRaisesRegex(ValueError, "off_hysteresis is required"):
             parse_app_config(args)
 
-    def test_missing_on_off_hysteresis_is_rejected(self):
-        args = {**VALID_ARGS, "settings": {"switch_to_ventilation_hysteresis": 0.5}}
-        with self.assertRaisesRegex(ValueError, "on_off_ac_hysteresis is required"):
+    def test_missing_on_hysteresis_is_rejected(self):
+        args = {**VALID_ARGS, "settings": {"off_hysteresis": 0.7}}
+        with self.assertRaisesRegex(ValueError, "on_hysteresis is required"):
             parse_app_config(args)
 
-    def test_non_positive_switch_hysteresis_is_rejected(self):
-        args = {
-            **VALID_ARGS, "settings": {
-                "switch_to_ventilation_hysteresis": 0,
-                "on_off_ac_hysteresis": 1.0
-            }
-        }
-        with self.assertRaisesRegex(ValueError, "switch_to_ventilation_hysteresis must be > 0"):
+    def test_non_positive_off_hysteresis_is_rejected(self):
+        args = {**VALID_ARGS, "settings": {"off_hysteresis": 0, "on_hysteresis": 0.3}}
+        with self.assertRaisesRegex(ValueError, "off_hysteresis must be > 0"):
             parse_app_config(args)
 
-    def test_switch_hysteresis_equal_to_on_off_hysteresis_is_rejected(self):
-        args = {
-            **VALID_ARGS, "settings": {
-                "switch_to_ventilation_hysteresis": 1.0,
-                "on_off_ac_hysteresis": 1.0
-            }
-        }
-        with self.assertRaisesRegex(ValueError, "switch_to_ventilation_hysteresis must be <"):
-            parse_app_config(args)
-
-    def test_switch_hysteresis_greater_than_on_off_hysteresis_is_rejected(self):
-        args = {
-            **VALID_ARGS, "settings": {
-                "switch_to_ventilation_hysteresis": 1.5,
-                "on_off_ac_hysteresis": 1.0
-            }
-        }
-        with self.assertRaisesRegex(ValueError, "switch_to_ventilation_hysteresis must be <"):
+    def test_non_positive_on_hysteresis_is_rejected(self):
+        args = {**VALID_ARGS, "settings": {"off_hysteresis": 0.7, "on_hysteresis": 0}}
+        with self.assertRaisesRegex(ValueError, "on_hysteresis must be > 0"):
             parse_app_config(args)
 
     def test_non_numeric_hysteresis_is_rejected(self):
-        args = {
-            **VALID_ARGS, "settings": {
-                "switch_to_ventilation_hysteresis": "warm",
-                "on_off_ac_hysteresis": 1.0
-            }
-        }
-        with self.assertRaisesRegex(ValueError,
-                                    "switch_to_ventilation_hysteresis must be a number"):
+        args = {**VALID_ARGS, "settings": {"off_hysteresis": "warm", "on_hysteresis": 0.3}}
+        with self.assertRaisesRegex(ValueError, "off_hysteresis must be a number"):
             parse_app_config(args)
 
     def test_float_values_accepted_as_strings(self):
-        args = {
-            **VALID_ARGS, "settings": {
-                "switch_to_ventilation_hysteresis": "0.5",
-                "on_off_ac_hysteresis": "1.0"
-            }
-        }
+        args = {**VALID_ARGS, "settings": {"off_hysteresis": "0.7", "on_hysteresis": "0.3"}}
         cfg = parse_app_config(args)
-        self.assertAlmostEqual(0.5, cfg.settings.switch_to_ventilation_hysteresis)
-        self.assertAlmostEqual(1.0, cfg.settings.on_off_ac_hysteresis)
+        self.assertAlmostEqual(0.7, cfg.settings.off_hysteresis)
+        self.assertAlmostEqual(0.3, cfg.settings.on_hysteresis)
 
     def test_single_ac_entity_accepted(self):
         args = {**VALID_ARGS, "ac_entities": ["climate.only_room_ac"]}

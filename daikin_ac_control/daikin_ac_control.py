@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Tuple
 from daikin_ac_control.config import AppConfig, parse_app_config
 from daikin_ac_control.logic import (
     ACTION_SET_COOL,
-    ACTION_SET_FAN_ONLY,
     ACTION_TURN_OFF,
     Action,
     DaikinACLogic,
@@ -48,8 +47,8 @@ class DaikinACControl(hass.Hass):
 
         self._logic = DaikinACLogic(
             ac_entities=config.ac_entities,
-            ventilation_hysteresis=config.settings.switch_to_ventilation_hysteresis,
-            on_off_hysteresis=config.settings.on_off_ac_hysteresis,
+            off_hysteresis=config.settings.off_hysteresis,
+            on_hysteresis=config.settings.on_hysteresis,
             log=self.log,
         )
 
@@ -66,8 +65,8 @@ class DaikinACControl(hass.Hass):
 
         self.log(f"DaikinACControl initialized: mode_entity={config.ac_mode_entity}, "
                  f"entities={config.ac_entities}, "
-                 f"ventilation_hysteresis={config.settings.switch_to_ventilation_hysteresis}, "
-                 f"on_off_hysteresis={config.settings.on_off_ac_hysteresis}")
+                 f"off_hysteresis={config.settings.off_hysteresis}, "
+                 f"on_hysteresis={config.settings.on_hysteresis}")
 
     def _validate_entity(self, entity_id: str, config: AppConfig) -> None:
         """
@@ -131,9 +130,6 @@ class DaikinACControl(hass.Hass):
         for entity_id, action in actions:
             if action.kind == ACTION_SET_COOL:
                 self.call_service("climate/set_hvac_mode", entity_id=entity_id, hvac_mode="cool")
-            elif action.kind == ACTION_SET_FAN_ONLY:
-                self.call_service("climate/set_hvac_mode", entity_id=entity_id,
-                                  hvac_mode="fan_only")
             elif action.kind == ACTION_TURN_OFF:
                 self.call_service("climate/turn_off", entity_id=entity_id)
 

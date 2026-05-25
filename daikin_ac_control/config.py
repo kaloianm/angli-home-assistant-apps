@@ -14,8 +14,8 @@ class Settings:
     Temperature hysteresis thresholds for AC control decisions.
     """
 
-    switch_to_ventilation_hysteresis: float
-    on_off_ac_hysteresis: float
+    off_hysteresis: float
+    on_hysteresis: float
 
 
 @dataclass(frozen=True)
@@ -86,14 +86,9 @@ def _parse_settings(raw: Dict[str, Any]) -> Settings:
     """
     Parse and validate the settings block.
     """
-    switch_hysteresis = _parse_positive_float(raw, "switch_to_ventilation_hysteresis")
-    on_off_hysteresis = _parse_positive_float(raw, "on_off_ac_hysteresis")
-    if switch_hysteresis >= on_off_hysteresis:
-        raise ValueError(
-            "settings.switch_to_ventilation_hysteresis must be < settings.on_off_ac_hysteresis")
     return Settings(
-        switch_to_ventilation_hysteresis=switch_hysteresis,
-        on_off_ac_hysteresis=on_off_hysteresis,
+        off_hysteresis=_parse_positive_float(raw, "off_hysteresis"),
+        on_hysteresis=_parse_positive_float(raw, "on_hysteresis"),
     )
 
 
