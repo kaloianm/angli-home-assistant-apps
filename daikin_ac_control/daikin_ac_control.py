@@ -10,7 +10,7 @@ from __future__ import annotations
 import traceback
 from typing import Any, Dict, List, Tuple
 
-from daikin_ac_control.config import AppConfig, parse_app_config
+from daikin_ac_control.config import parse_app_config
 from daikin_ac_control.logic import (
     ACTION_SET_COOL,
     ACTION_TURN_OFF,
@@ -42,7 +42,6 @@ class DaikinACControl(hass.Hass):
         # pylint: disable=attribute-defined-outside-init
         config = parse_app_config(self.args or {})
 
-        self._ac_mode_entity: str = config.ac_mode_entity
         self._ac_entities: List[str] = config.ac_entities
 
         self._logic = DaikinACLogic(
@@ -55,7 +54,7 @@ class DaikinACControl(hass.Hass):
         self.listen_state(self._on_mode_change, config.ac_mode_entity)
 
         for entity_id in config.ac_entities:
-            self._validate_entity(entity_id, config)
+            self._validate_entity(entity_id)
             self.listen_state(self._on_entity_changed, entity_id)
             self.listen_state(self._on_entity_changed, entity_id, attribute="current_temperature")
             self.listen_state(self._on_entity_changed, entity_id, attribute="temperature")
@@ -68,7 +67,7 @@ class DaikinACControl(hass.Hass):
                  f"off_hysteresis={config.settings.off_hysteresis}, "
                  f"on_hysteresis={config.settings.on_hysteresis}")
 
-    def _validate_entity(self, entity_id: str, config: AppConfig) -> None:
+    def _validate_entity(self, entity_id: str) -> None:
         """
         Log a warning for any configured entity that does not exist in Home Assistant.
         """
@@ -80,11 +79,11 @@ class DaikinACControl(hass.Hass):
 
     def _on_mode_change(
         self,
-        entity: str,
-        attribute: str,
-        old: Any,
+        _entity: str,
+        _attribute: str,
+        _old: Any,
         new: Any,
-        kwargs: Dict[str, Any],
+        _kwargs: Dict[str, Any],
     ) -> None:
         """
         Handle global AC mode select entity state changes.
@@ -100,10 +99,10 @@ class DaikinACControl(hass.Hass):
     def _on_entity_changed(
         self,
         entity_id: str,
-        attribute: Any,
-        old: Any,
-        new: Any,
-        kwargs: Dict[str, Any],
+        _attribute: Any,
+        _old: Any,
+        _new: Any,
+        _kwargs: Dict[str, Any],
     ) -> None:
         """
         Handle any state or attribute change on a managed climate entity (hvac_mode,
