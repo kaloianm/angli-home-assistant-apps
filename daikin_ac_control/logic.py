@@ -9,11 +9,14 @@ the returned actions.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Tuple
 
 ACTION_SET_COOL = "set_cool"
 ACTION_TURN_OFF = "turn_off"
+
+CONTROL_MIN_INTERVAL_SECONDS = 60.0
 
 AC_MODE_COLD = "0"
 
@@ -31,17 +34,54 @@ class Action:
     kind: str
 
 
+class ControlRateLimitError(Exception):
+    """
+    Raised when turn_off or set_cool is requested sooner than the minimum control interval.
+    """
+
+
+class ControlRateLimiter:
+    """
+    Enforces a minimum interval between turn_off and set_cool commands per entity.
+    """
+
+    def __init__(self, min_interval_seconds: float = CONTROL_MIN_INTERVAL_SECONDS) -> None:
+        self._min_interval_seconds = min_interval_seconds
+        self._last_at: Dict[str, datetime] = {}
+
+    def check(self, entity_id: str, now: datetime) -> None:
+        """
+        Raise ``ControlRateLimitError`` if ``entity_id`` was controlled too recently.
+        """
+        last_at = self._last_at.get(entity_id)
+        if last_at is None:
+            return
+        elapsed = (now - last_at).total_seconds()
+        if elapsed < self._min_interval_seconds:
+            raise ControlRateLimitError(
+                f"{entity_id}: control action {elapsed:.1f}s after previous "
+                f"(minimum {self._min_interval_seconds}s)")
+
+    def record(self, entity_id: str, now: datetime) -> None:
+        """
+        Record that a control action was issued for ``entity_id`` at ``now``.
+        """
+        self._last_at[entity_id] = now
+
+
 class EntityState(Enum):
     """
     Per-entity management state tracked by the app.
 
     ``COOLING``: entity is in cool mode; app monitors temperature.
     ``OFF``: app turned the entity off; waiting for room to warm before resuming cooling.
+    ``DISABLED``: unrecoverable error; no transitions out until AppDaemon restart.
     """
 
     IDLE = "idle"
     COOLING = "cooling"
     OFF = "off"
+    DISABLED = "disabled"
 
 
 class ACEntityLogic:
@@ -75,6 +115,12 @@ class ACEntityLogic:
         """
         return self._state
 
+    def disable(self) -> None:
+        """
+        Permanently stop management for this entity until the app is restarted.
+        """
+        self._state = EntityState.DISABLED
+
     def reset(self) -> None:
         """
         Reset to IDLE, discarding any accumulated state.
@@ -82,6 +128,8 @@ class ACEntityLogic:
         Called when the global AC mode leaves "cold" so the app stops managing the entity.
         No actions are emitted; the entity is left in whatever state it is in.
         """
+        if self._state == EntityState.DISABLED:
+            return
         self._state = EntityState.IDLE
 
     def update(
@@ -102,6 +150,9 @@ class ACEntityLogic:
         Returns declarative actions for the adapter to execute; returns an empty list if no
         state change is needed.
         """
+        if self._state == EntityState.DISABLED:
+            return []
+
         if observed_hvac_mode == HVAC_COOL:
             self._state = EntityState.COOLING
             return self._from_cooling(current_temp, target_temp)
@@ -187,6 +238,13 @@ class DaikinACLogic:
         Return the current management state for ``entity_id``.
         """
         return self._entities[entity_id].state
+
+    def disable(self, entity_id: str) -> None:
+        """
+        Permanently stop management for ``entity_id`` until the app is restarted.
+        """
+        self._entities[entity_id].disable()
+        self._log(f"[{entity_id}] disabled due to error")
 
     def on_mode_change(self, new_mode: str) -> List[Tuple[str, Action]]:
         """

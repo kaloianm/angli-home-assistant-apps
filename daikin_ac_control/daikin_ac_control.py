@@ -8,13 +8,14 @@ action dispatch. All business decisions and logging live in ``daikin_ac_control.
 from __future__ import annotations
 
 import traceback
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from daikin_ac_control.config import parse_app_config
 from daikin_ac_control.logic import (
     ACTION_SET_COOL,
     ACTION_TURN_OFF,
     Action,
+    ControlRateLimiter,
     DaikinACLogic,
 )
 
@@ -43,6 +44,7 @@ class DaikinACControl(hass.Hass):
         config = parse_app_config(self.args or {})
 
         self._ac_entities: List[str] = config.ac_entities
+        self._rate_limiter = ControlRateLimiter()
 
         self._logic = DaikinACLogic(
             ac_entities=config.ac_entities,
@@ -120,7 +122,7 @@ class DaikinACControl(hass.Hass):
                                               attrs.get("current_temperature"),
                                               attrs.get("temperature")))
         except Exception as exc:
-            self._report_error(f"_on_entity_changed(entity={entity_id!r})", exc)
+            self._report_error(f"_on_entity_changed(entity={entity_id!r})", exc, entity_id)
 
     def _execute_actions(self, actions: List[Tuple[str, Action]]) -> None:
         """
@@ -128,17 +130,50 @@ class DaikinACControl(hass.Hass):
         """
         for entity_id, action in actions:
             if action.kind == ACTION_SET_COOL:
-                self.call_service("climate/set_hvac_mode", entity_id=entity_id, hvac_mode="cool")
+                self._issue_control_action(
+                    entity_id,
+                    lambda: self.call_service("climate/set_hvac_mode", entity_id=entity_id,
+                                              hvac_mode="cool"),
+                )
             elif action.kind == ACTION_TURN_OFF:
-                self.call_service("climate/turn_off", entity_id=entity_id)
+                self._issue_control_action(
+                    entity_id,
+                    lambda: self.call_service("climate/turn_off", entity_id=entity_id),
+                )
 
-    def _report_error(self, context: str, exc: Exception) -> None:
+    def _issue_control_action(self, entity_id: str, call_service: Callable[[], None]) -> None:
         """
-        Log an unhandled exception with full traceback and send a persistent HA notification.
+        Apply rate limiting, call Home Assistant, and record the control timestamp.
+        """
+        now = self.datetime()
+        self._rate_limiter.check(entity_id, now)
+        call_service()
+        self._rate_limiter.record(entity_id, now)
+
+    def _report_error(
+        self,
+        context: str,
+        exc: Exception,
+        entity_id: Optional[str] = None,
+    ) -> None:
+        """
+        Log an unhandled exception, disable the affected entity, turn it off, and notify HA.
         """
         tb = traceback.format_exc()
         self.log(f"Unhandled exception in {context}: {type(exc).__name__}: {exc}\n{tb}",
                  level="ERROR")
+
+        if entity_id is not None:
+            self._logic.disable(entity_id)
+            try:
+                self.call_service("climate/turn_off", entity_id=entity_id)
+            except Exception as turn_off_exc:
+                self.log(
+                    f"Failed to turn off {entity_id}: "
+                    f"{type(turn_off_exc).__name__}: {turn_off_exc}",
+                    level="ERROR",
+                )
+
         self.call_service(
             "persistent_notification/create",
             title="DaikinACControl error",

@@ -1,10 +1,14 @@
 import unittest
+from datetime import datetime
 
 from daikin_ac_control.logic import (
     AC_MODE_COLD,
     ACTION_SET_COOL,
     ACTION_TURN_OFF,
+    CONTROL_MIN_INTERVAL_SECONDS,
     ACEntityLogic,
+    ControlRateLimitError,
+    ControlRateLimiter,
     DaikinACLogic,
     EntityState,
 )
@@ -394,6 +398,78 @@ class TestSetpointChanges(unittest.TestCase):
         actions = self.logic.on_entity_changed(ENTITY_A, "off", 21.2, 23.0)
         self.assertEqual([], actions)
         self.assertEqual(EntityState.OFF, self.logic.entity_state(ENTITY_A))
+
+
+class TestControlRateLimiter(unittest.TestCase):
+    # Minimum interval between turn_off and set_cool commands per entity.
+
+    def test_first_action_is_allowed(self):
+        limiter = ControlRateLimiter()
+        now = datetime(2026, 1, 1, 12, 0, 0)
+        limiter.check(ENTITY_A, now)
+        limiter.record(ENTITY_A, now)
+
+    def test_second_action_within_interval_raises(self):
+        limiter = ControlRateLimiter()
+        start = datetime(2026, 1, 1, 12, 0, 0)
+        limiter.record(ENTITY_A, start)
+        with self.assertRaises(ControlRateLimitError):
+            limiter.check(ENTITY_A, datetime(2026, 1, 1, 12, 0, 30))
+
+    def test_second_action_after_interval_is_allowed(self):
+        limiter = ControlRateLimiter()
+        start = datetime(2026, 1, 1, 12, 0, 0)
+        limiter.record(ENTITY_A, start)
+        limiter.check(ENTITY_A, datetime(2026, 1, 1, 12, 1, 0))
+
+    def test_entities_are_rate_limited_independently(self):
+        limiter = ControlRateLimiter()
+        now = datetime(2026, 1, 1, 12, 0, 0)
+        limiter.record(ENTITY_A, now)
+        limiter.check(ENTITY_B, now)
+
+    def test_default_interval_is_sixty_seconds(self):
+        self.assertEqual(60.0, CONTROL_MIN_INTERVAL_SECONDS)
+
+
+class TestDaikinACLogicDisable(unittest.TestCase):
+    # disable(entity_id) stops management for that entity until restart.
+
+    def setUp(self):
+        self.logic = DaikinACLogic(
+            ac_entities=[ENTITY_A, ENTITY_B],
+            off_hysteresis=OFF_HYST,
+            on_hysteresis=ON_HYST,
+        )
+        self.logic.on_mode_change(AC_MODE_COLD)
+
+    def test_disable_stops_entity_updates(self):
+        self.logic.disable(ENTITY_A)
+        self.assertEqual(EntityState.DISABLED, self.logic.entity_state(ENTITY_A))
+        actions = self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)
+        self.assertEqual([], actions)
+
+    def test_disable_does_not_affect_other_entities(self):
+        self.logic.disable(ENTITY_A)
+        actions = self.logic.on_entity_changed(ENTITY_B, "cool", 21.2, 22.0)
+        self.assertEqual([(ENTITY_B, ACTION_TURN_OFF)], _entity_kinds(actions))
+        self.assertEqual(EntityState.OFF, self.logic.entity_state(ENTITY_B))
+
+    def test_disabled_entity_stays_disabled_on_cool(self):
+        self.logic.disable(ENTITY_A)
+        self.logic.on_entity_changed(ENTITY_A, "cool", 23.0, 22.0)
+        self.assertEqual(EntityState.DISABLED, self.logic.entity_state(ENTITY_A))
+
+    def test_disabled_entity_stays_disabled_on_manual_mode(self):
+        self.logic.disable(ENTITY_A)
+        self.logic.on_entity_changed(ENTITY_A, "fan_only", 23.0, 22.0)
+        self.assertEqual(EntityState.DISABLED, self.logic.entity_state(ENTITY_A))
+
+    def test_disabled_entity_survives_mode_change(self):
+        self.logic.disable(ENTITY_A)
+        self.logic.on_mode_change("1")
+        self.logic.on_mode_change(AC_MODE_COLD)
+        self.assertEqual(EntityState.DISABLED, self.logic.entity_state(ENTITY_A))
 
 
 if __name__ == "__main__":
