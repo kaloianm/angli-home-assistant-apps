@@ -55,9 +55,27 @@ The app never commands `fan_only`; it only switches between `cool` and off.
 
 ### Global Mode Changes
 
-When the mode entity changes away from `0`, the app discards all per-entity state and stops
+When the mode entity changes away from cold, the app discards all per-entity state and stops
 acting. Entities are left in whatever state they are in at that point. When the mode returns to
-`0`, the app initialises fresh from the current observed entity states.
+cold, the app initialises fresh from the current observed entity states.
+
+### Managed Binary Sensors
+
+For each configured climate entity, the app publishes a transient AppDaemon binary sensor:
+
+```
+binary_sensor.<climate_object_id>_cooling_limiter_managed
+```
+
+Example: `climate.living_room_ac` → `binary_sensor.living_room_ac_cooling_limiter_managed`
+
+| State | Meaning |
+|---|---|
+| `on` | App is actively managing the unit (`COOLING` or `LOWER_TEMP_REACHED`) |
+| `off` | App is not managing the unit |
+
+These sensors are recreated at AppDaemon startup and are not persisted across restarts. Each
+sensor exposes `climate_entity` and `management_state` attributes for the underlying logic state.
 
 ## Configuration
 

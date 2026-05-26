@@ -85,6 +85,12 @@ class EntityState(Enum):
     LOWER_TEMP_REACHED = "lower_temp_reached"
     DISABLED = "disabled"
 
+    def is_managed(self) -> bool:
+        """
+        Whether the app is actively tracking this entity and will act on updates.
+        """
+        return self in (EntityState.COOLING, EntityState.LOWER_TEMP_REACHED)
+
 
 class ACEntityLogic:
     """
@@ -240,6 +246,12 @@ class DaikinACLogic:
         Return the current management state for ``entity_id``.
         """
         return self._entities[entity_id].state
+
+    def entity_is_managed(self, entity_id: str) -> bool:
+        """
+        Return whether ``entity_id`` is actively tracked and will receive control actions.
+        """
+        return self._entities[entity_id].state.is_managed()
 
     def disable(self, entity_id: str) -> None:
         """

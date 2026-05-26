@@ -95,6 +95,9 @@ class DaikinCoolingLimiter(hass.Hass):
             if self._logic.mode_is_cold:
                 for entity_id in self._ac_entities:
                     self._on_entity_changed(entity_id, None, None, None, {})
+            else:
+                for entity_id in self._ac_entities:
+                    self._publish_managed_sensor(entity_id)
         except Exception as exc:
             self._report_error(f"_on_mode_change(new={new!r})", exc)
 
@@ -121,6 +124,7 @@ class DaikinCoolingLimiter(hass.Hass):
                 self._logic.on_entity_changed(entity_id, hvac_mode,
                                               attrs.get("current_temperature"),
                                               attrs.get("temperature")))
+            self._publish_managed_sensor(entity_id)
         except Exception as exc:
             self._report_error(f"_on_entity_changed(entity={entity_id!r})", exc, entity_id)
 
@@ -173,9 +177,32 @@ class DaikinCoolingLimiter(hass.Hass):
                     f"{type(turn_off_exc).__name__}: {turn_off_exc}",
                     level="ERROR",
                 )
+            self._publish_managed_sensor(entity_id)
 
         self.call_service(
             "persistent_notification/create",
             title="DaikinCoolingLimiter error",
             message=f"{context}\n{type(exc).__name__}: {exc}",
+        )
+
+    def _managed_sensor_id(self, climate_entity_id: str) -> str:
+        """
+        AppDaemon entity ID for the per-climate managed binary sensor.
+        """
+        object_id = climate_entity_id.split(".", 1)[1]
+        return f"binary_sensor.{object_id}_cooling_limiter_managed"
+
+    def _publish_managed_sensor(self, climate_entity_id: str) -> None:
+        """
+        Publish a transient binary sensor reflecting whether the app manages ``climate_entity_id``.
+        """
+        managed = self._logic.entity_is_managed(climate_entity_id)
+        self.set_state(
+            self._managed_sensor_id(climate_entity_id),
+            state="on" if managed else "off",
+            attributes={
+                "friendly_name": f"{climate_entity_id} cooling limiter managed",
+                "climate_entity": climate_entity_id,
+                "management_state": self._logic.entity_state(climate_entity_id).value,
+            },
         )

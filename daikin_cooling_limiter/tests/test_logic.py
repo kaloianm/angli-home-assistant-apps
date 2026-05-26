@@ -270,6 +270,42 @@ class TestDaikinACLogicModeHandling(unittest.TestCase):
         self.assertEqual(EntityState.NOT_MANAGED, logic.entity_state(ENTITY_A))
 
 
+class TestEntityIsManaged(unittest.TestCase):
+    # entity_is_managed reflects COOLING and LOWER_TEMP_REACHED states.
+
+    def setUp(self):
+        self.logic = DaikinACLogic(
+            ac_entities=[ENTITY_A],
+            off_hysteresis=OFF_HYST,
+            on_hysteresis=ON_HYST,
+        )
+        self.logic.on_mode_change(AC_MODE_COLD)
+
+    def test_cooling_is_managed(self):
+        self.logic.on_entity_changed(ENTITY_A, "cool", 23.0, 22.0)
+        self.assertTrue(EntityState.COOLING.is_managed())
+        self.assertTrue(self.logic.entity_is_managed(ENTITY_A))
+
+    def test_lower_temp_reached_is_managed(self):
+        self.logic.on_entity_changed(ENTITY_A, "cool", 21.2, 22.0)
+        self.assertTrue(EntityState.LOWER_TEMP_REACHED.is_managed())
+        self.assertTrue(self.logic.entity_is_managed(ENTITY_A))
+
+    def test_not_managed_when_idle(self):
+        self.assertFalse(EntityState.NOT_MANAGED.is_managed())
+        self.assertFalse(self.logic.entity_is_managed(ENTITY_A))
+
+    def test_not_managed_when_disabled(self):
+        self.logic.disable(ENTITY_A)
+        self.assertFalse(EntityState.DISABLED.is_managed())
+        self.assertFalse(self.logic.entity_is_managed(ENTITY_A))
+
+    def test_not_managed_when_global_mode_not_cold(self):
+        self.logic.on_entity_changed(ENTITY_A, "cool", 23.0, 22.0)
+        self.logic.on_mode_change("heat")
+        self.assertFalse(self.logic.entity_is_managed(ENTITY_A))
+
+
 class TestDaikinACLogicEntityUpdates(unittest.TestCase):
     # End-to-end entity updates through the coordinator with global mode cold.
 
