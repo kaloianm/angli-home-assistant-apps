@@ -13,6 +13,7 @@ from extractor_fan_control.logic import (
     TIMER_DEADLINE,
     ExtractorFanPairLogic,
     LogicConfig,
+    PairState,
 )
 
 
@@ -35,22 +36,26 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         self.assertIn(ACTION_SET_TIMER, _kinds(actions_on))
         self.assertEqual(TIMER_ACTIVATION,
                          _timer_actions(actions_on, ACTION_SET_TIMER)[0].timer_name)
+        self.assertEqual(PairState.WAITING_FOR_ACTIVATION, self.logic.state)
 
         actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=10))
         self.assertIn(ACTION_CANCEL_TIMER, _kinds(actions_off))
         self.assertEqual(TIMER_ACTIVATION,
                          _timer_actions(actions_off, ACTION_CANCEL_TIMER)[0].timer_name)
         self.assertNotIn(ACTION_FAN_ON, _kinds(actions_on + actions_off))
+        self.assertEqual(PairState.IDLE, self.logic.state)
 
     def test_activated_but_short_visit_turns_off_immediately(self):
         self.logic.on_light_on(self.t0)
         actions_activation = self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
         self.assertIn(ACTION_FAN_ON, _kinds(actions_activation))
         self.assertIn(ACTION_START_KEEPALIVE, _kinds(actions_activation))
+        self.assertEqual(PairState.RUNNING_LIGHT, self.logic.state)
 
         actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=40))
         self.assertIn(ACTION_FAN_OFF, _kinds(actions_off))
         self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(actions_off))
+        self.assertEqual(PairState.IDLE, self.logic.state)
 
     def test_long_visit_keeps_fan_for_same_duration_after_light_off(self):
         self.logic.on_light_on(self.t0)
@@ -58,6 +63,7 @@ class TestExtractorFanPairLogic(unittest.TestCase):
 
         # Light was on for 2 minutes -> post-run must also be 2 minutes.
         self.logic.on_light_off(self.t0 + timedelta(seconds=120))
+        self.assertEqual(PairState.POST_RUN, self.logic.state)
 
         actions_before_deadline = self.logic.on_time_tick(self.t0 + timedelta(seconds=239))
         self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_deadline))
@@ -65,6 +71,7 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         actions_at_deadline = self.logic.on_time_tick(self.t0 + timedelta(seconds=240))
         self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_deadline))
         self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(actions_at_deadline))
+        self.assertEqual(PairState.IDLE, self.logic.state)
 
     def test_long_visit_post_run_is_capped_to_ten_minutes_by_default(self):
         self.logic.on_light_on(self.t0)
@@ -100,6 +107,7 @@ class TestExtractorFanPairLogic(unittest.TestCase):
 
         # Schedule starts at t+500 for 900s (ends t+1400).
         self.logic.on_schedule_started(self.t0 + timedelta(seconds=500), duration_seconds=900)
+        self.assertEqual(PairState.COMBINED_RUN, self.logic.state)
 
         # Light turns off at t+700 after 700s on-time.
         # Capped post-run is 600s -> occupancy end t+1300.
@@ -130,7 +138,9 @@ class TestExtractorFanPairLogic(unittest.TestCase):
     def test_manual_override_is_authoritative_until_full_cycle_reset(self):
         self.logic.on_schedule_started(self.t0, duration_seconds=180)
         manual_off = self.logic.on_manual_fan_toggle(self.t0 + timedelta(seconds=1), fan_on=False)
-        self.assertIn(ACTION_FAN_OFF, _kinds(manual_off))
+        self.assertNotIn(ACTION_FAN_OFF, _kinds(manual_off))
+        self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(manual_off))
+        self.assertEqual(PairState.MANUAL_OVERRIDE, self.logic.state)
 
         # Demand exists but override blocks fan.
         blocked = self.logic.on_time_tick(self.t0 + timedelta(seconds=50))
@@ -217,6 +227,7 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         actions_start = self.logic.on_schedule_started(self.t0, duration_seconds=900)
         self.assertIn(ACTION_FAN_ON, _kinds(actions_start))
         self.assertIn(ACTION_START_KEEPALIVE, _kinds(actions_start))
+        self.assertEqual(PairState.SCHEDULED_RUN, self.logic.state)
 
         deadline_sets = _timer_actions(actions_start, ACTION_SET_TIMER)
         self.assertTrue(
@@ -229,6 +240,7 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         actions_at = self.logic.on_time_tick(self.t0 + timedelta(seconds=900))
         self.assertIn(ACTION_FAN_OFF, _kinds(actions_at))
         self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(actions_at))
+        self.assertEqual(PairState.IDLE, self.logic.state)
 
     def test_schedule_with_light_uses_later_end(self):
         self.logic.on_schedule_started(self.t0, duration_seconds=300)
@@ -249,36 +261,41 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         actions_at_occ_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=390))
         self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_occ_end))
 
-    def test_rapid_manual_toggle_oscillation_is_self_sustaining(self):
-        """Demonstrate that once the integration layer feeds false manual toggles (due to
-        expected_fan_state overwrite race), the logic amplifies them into an infinite FAN_ON /
-        FAN_OFF loop.
-
-        Scenario: daily schedule ran, deadline expired (fan is now off).
-        The integration layer's _on_fan_state misidentifies a delayed KNX state callback as a
-        manual toggle, feeding alternating on_manual_fan_toggle(True) /
-        on_manual_fan_toggle(False) calls.
+    def test_manual_toggle_callback_does_not_command_same_fan_state_back(self):
+        """Manual callbacks report the physical fan state, so the state machine must not echo the
+        same fan command back into KNX and create an ON/OFF loop.
         """
         self.logic.on_schedule_started(self.t0, duration_seconds=900)
         t_end = self.t0 + timedelta(seconds=900)
         self.logic.on_time_tick(t_end)
 
-        # At this point: fan is off, no demand, no override.
-        # Simulate false manual toggles as they would appear
-        # when expected_fan_state tracking breaks:
         t_race = t_end + timedelta(seconds=1)
         for i in range(5):
-            # False "on" callback -> treated as manual toggle ON
             actions_on = self.logic.on_manual_fan_toggle(t_race + timedelta(milliseconds=i * 2),
                                                          fan_on=True)
-            self.assertIn(ACTION_FAN_ON, _kinds(actions_on),
-                          f"iteration {i}: expected FAN_ON from false manual toggle")
+            self.assertNotIn(ACTION_FAN_ON, _kinds(actions_on),
+                             f"iteration {i}: must not echo FAN_ON")
+            self.assertIn(ACTION_START_KEEPALIVE, _kinds(actions_on),
+                          f"iteration {i}: manual ON should keep staircase alive")
 
-            # False "off" callback -> treated as manual toggle OFF
             actions_off = self.logic.on_manual_fan_toggle(
                 t_race + timedelta(milliseconds=i * 2 + 1), fan_on=False)
-            self.assertIn(ACTION_FAN_OFF, _kinds(actions_off),
-                          f"iteration {i}: expected FAN_OFF from false manual toggle")
+            self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_off),
+                             f"iteration {i}: must not echo FAN_OFF")
+            self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(actions_off),
+                          f"iteration {i}: manual OFF should stop keepalive")
+
+    def test_logic_logs_state_transitions_and_actions(self):
+        messages = []
+        logic = ExtractorFanPairLogic(LogicConfig(), log=messages.append)
+
+        logic.on_light_on(self.t0)
+        logic.on_time_tick(self.t0 + timedelta(seconds=10))
+
+        self.assertTrue(any("state idle -> waiting_for_activation" in msg for msg in messages))
+        self.assertTrue(
+            any("state waiting_for_activation -> running_light" in msg for msg in messages))
+        self.assertTrue(any("action fan_on" in msg for msg in messages))
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import unittest
 from datetime import datetime, timedelta
 
 from extractor_fan_control.config import PairConfig
+from extractor_fan_control.logic import ExtractorFanPairLogic, LogicConfig
 from extractor_fan_control.runtime import PairRuntime
 
 
@@ -19,7 +20,7 @@ class TestPairRuntimeExpectedStateTracking(unittest.TestCase):
                 daily_run_time="16:00",
                 daily_run_duration_seconds=900,
             ),
-            logic=None,
+            logic=ExtractorFanPairLogic(LogicConfig()),
         )
         self.t0 = datetime(2026, 4, 18, 16, 15, 0)
 

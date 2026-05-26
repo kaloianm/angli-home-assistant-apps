@@ -4,6 +4,7 @@ AppDaemon entry point for ExtractorFanControl.
 
 from __future__ import annotations
 
+import traceback
 from datetime import timedelta
 from typing import Any, Dict, Optional
 
@@ -61,7 +62,10 @@ class ExtractorFanControl(hass.Hass):
                     LogicConfig(
                         min_light_on_for_fan_seconds=pair_config.min_light_on_for_fan_seconds,
                         short_visit_threshold_seconds=pair_config.short_visit_threshold_seconds,
-                    )),
+                    ),
+                    log=lambda message, pair_name=pair_config.name: self.log(
+                        f"[{pair_name}] {message}"),
+                ),
             )
             self._runtime_by_name[pair_config.name] = runtime
 
@@ -109,22 +113,22 @@ class ExtractorFanControl(hass.Hass):
         """
         Process light ON/OFF state transitions for one pair.
         """
-        if new == old:
-            return
-        if new not in ("on", "off"):
-            return
+        pair_name = kwargs.get("pair_name")
+        try:
+            if new == old:
+                return
+            if new not in ("on", "off"):
+                return
 
-        pair_name = kwargs["pair_name"]
-        runtime = self._runtime_by_name[pair_name]
-        self.log(f"[{pair_name}] Light {new}")
-        now = self.datetime()
-        if runtime.logic is None:
-            return
-        if new == "on":
-            actions = runtime.logic.on_light_on(now)
-        else:
-            actions = runtime.logic.on_light_off(now)
-        self._apply_actions(runtime, actions)
+            runtime = self._runtime_by_name[pair_name]
+            now = self.datetime()
+            if new == "on":
+                actions = runtime.logic.on_light_on(now)
+            else:
+                actions = runtime.logic.on_light_off(now)
+            self._apply_actions(runtime, actions)
+        except Exception as exc:
+            self._report_error(f"_on_light_state(entity={entity!r}, new={new!r})", exc, pair_name)
 
     def _on_fan_state(
         self,
@@ -137,61 +141,72 @@ class ExtractorFanControl(hass.Hass):
         """
         Process manual fan toggles and forward them to pair logic.
         """
-        if new == old:
-            return
-        if new not in ("on", "off"):
-            return
+        pair_name = kwargs.get("pair_name")
+        try:
+            if new == old:
+                return
+            if new not in ("on", "off"):
+                return
 
-        pair_name = kwargs["pair_name"]
-        runtime = self._runtime_by_name[pair_name]
-        now = self.datetime()
+            runtime = self._runtime_by_name[pair_name]
+            now = self.datetime()
 
-        # Ignore known automation feedback callbacks for a short grace period.
-        if runtime.consume_expected_fan_state(new, now):
-            return
+            # Ignore known automation feedback callbacks for a short grace period.
+            if runtime.consume_expected_fan_state(new, now):
+                return
 
-        if runtime.logic is None:
-            return
-        actions = runtime.logic.on_manual_fan_toggle(now, fan_on=(new == "on"))
-        self._apply_actions(runtime, actions)
+            actions = runtime.logic.on_manual_fan_toggle(now, fan_on=(new == "on"))
+            self._apply_actions(runtime, actions)
+        except Exception as exc:
+            self._report_error(f"_on_fan_state(entity={entity!r}, new={new!r})", exc, pair_name)
 
     def _on_daily_schedule_start(self, kwargs: Dict[str, Any]) -> None:
         """
         Trigger scheduled run for one pair.
         """
-        runtime = self._runtime_by_name[kwargs["pair_name"]]
-        if runtime.logic is None or runtime.config.daily_run_duration_seconds is None:
-            return
-        actions = runtime.logic.on_schedule_started(
-            self.datetime(),
-            duration_seconds=runtime.config.daily_run_duration_seconds,
-        )
-        self._apply_actions(runtime, actions)
+        pair_name = kwargs.get("pair_name")
+        try:
+            runtime = self._runtime_by_name[pair_name]
+            if runtime.config.daily_run_duration_seconds is None:
+                return
+            actions = runtime.logic.on_schedule_started(
+                self.datetime(),
+                duration_seconds=runtime.config.daily_run_duration_seconds,
+            )
+            self._apply_actions(runtime, actions)
+        except Exception as exc:
+            self._report_error("_on_daily_schedule_start", exc, pair_name)
 
     def _on_pair_timer(self, kwargs: Dict[str, Any]) -> None:
         """
         Drive logic timer progression for activation/deadline events.
         """
-        runtime = self._runtime_by_name[kwargs["pair_name"]]
-        timer_name = kwargs["timer_name"]
-        if timer_name == TIMER_ACTIVATION:
-            runtime.activation_timer_handle = None
-        elif timer_name == TIMER_DEADLINE:
-            runtime.deadline_timer_handle = None
-        if runtime.logic is None:
-            return
-        actions = runtime.logic.on_time_tick(self.datetime())
-        self._apply_actions(runtime, actions)
+        pair_name = kwargs.get("pair_name")
+        try:
+            runtime = self._runtime_by_name[pair_name]
+            timer_name = kwargs["timer_name"]
+            if timer_name == TIMER_ACTIVATION:
+                runtime.activation_timer_handle = None
+            elif timer_name == TIMER_DEADLINE:
+                runtime.deadline_timer_handle = None
+            actions = runtime.logic.on_time_tick(self.datetime())
+            self._apply_actions(runtime, actions)
+        except Exception as exc:
+            self._report_error("_on_pair_timer", exc, pair_name)
 
     def _on_keepalive_tick(self, kwargs: Dict[str, Any]) -> None:
         """
         Send periodic ON pulse to keep KNX staircase output alive.
         """
-        runtime = self._runtime_by_name[kwargs["pair_name"]]
-        # run_every callbacks can still arrive right after cancellation; ignore those.
-        if runtime.keepalive_timer_handle is None or runtime.disabled:
-            return
-        self._turn_fan(runtime, on=True)
+        pair_name = kwargs.get("pair_name")
+        try:
+            runtime = self._runtime_by_name[pair_name]
+            # run_every callbacks can still arrive right after cancellation; ignore those.
+            if runtime.keepalive_timer_handle is None or runtime.disabled:
+                return
+            self._turn_fan(runtime, on=True)
+        except Exception as exc:
+            self._report_error("_on_keepalive_tick", exc, pair_name)
 
     def _apply_actions(self, runtime: PairRuntime, actions: list[Action]) -> None:
         """
@@ -232,6 +247,10 @@ class ExtractorFanControl(hass.Hass):
         """
         Permanently disable a pair due to rate limiting and notify.
         """
+        runtime.disabled = True
+        runtime.logic.disable()
+        self._cancel_timer(runtime, TIMER_ACTIVATION)
+        self._cancel_timer(runtime, TIMER_DEADLINE)
         self._stop_keepalive(runtime)
         self.log(
             f"[{runtime.config.name}] DISABLED: fan switch command rate "
@@ -246,6 +265,33 @@ class ExtractorFanControl(hass.Hass):
                      f"commands in {FAN_CMD_RATE_WINDOW_SECONDS} seconds. "
                      "This likely indicates a bug. Restart AppDaemon to "
                      "re-enable."),
+        )
+
+    def _report_error(
+        self,
+        context: str,
+        exc: Exception,
+        pair_name: Optional[str] = None,
+    ) -> None:
+        """
+        Log an unhandled callback exception, disable the affected pair, and notify Home Assistant.
+        """
+        tb = traceback.format_exc()
+        self.log(f"Unhandled exception in {context}: {type(exc).__name__}: {exc}\n{tb}",
+                 level="ERROR")
+
+        if pair_name is not None and pair_name in self._runtime_by_name:
+            runtime = self._runtime_by_name[pair_name]
+            runtime.disabled = True
+            runtime.logic.disable()
+            self._cancel_timer(runtime, TIMER_ACTIVATION)
+            self._cancel_timer(runtime, TIMER_DEADLINE)
+            self._stop_keepalive(runtime)
+
+        self.call_service(
+            "persistent_notification/create",
+            title="ExtractorFanControl error",
+            message=f"{context}\n{type(exc).__name__}: {exc}",
         )
 
     def _start_keepalive(self, runtime: PairRuntime) -> None:
