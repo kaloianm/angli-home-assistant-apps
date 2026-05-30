@@ -1,1 +1,0 @@
-"""Gradhermetic blind control package."""
