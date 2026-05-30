@@ -92,8 +92,7 @@ class ExtractorFanPairLogic:
     State machine for one light/fan pair.
 
     Notes:
-    - "manual override" is authoritative and is reset only after a full light OFF -> ON transition
-      after the override was set.
+    - "manual override" is reset when the light next turns off after the override was set.
     - Overlapping occupancy/scheduled demand is merged by latest end time.
     """
 
@@ -124,7 +123,6 @@ class ExtractorFanPairLogic:
 
         # Manual override lifecycle.
         self._manual_override: Optional[bool] = None
-        self._override_reset_ready = False
 
         # Output tracking for idempotent action emission.
         self._fan_output_on = False
@@ -173,7 +171,7 @@ class ExtractorFanPairLogic:
         Handle a light ON event.
 
         ``now`` is the event timestamp used for all duration math. This starts the activation timer
-        and may clear a manual override if an OFF->ON reset cycle had completed.
+        while preserving any active manual override.
         """
         actions: List[Action] = []
         self._log(f"event light_on at {now.isoformat()}")
@@ -185,12 +183,6 @@ class ExtractorFanPairLogic:
         self._light_is_on = True
         self._light_on_since = now
         self._activation_due_at = now + timedelta(seconds=self._config.min_light_on_for_fan_seconds)
-
-        # Manual override is cleared only after full OFF -> ON transition.
-        if self._manual_override is not None and self._override_reset_ready:
-            self._log("manual override cleared after OFF -> ON cycle")
-            self._manual_override = None
-            self._override_reset_ready = False
 
         return self._reconcile(now, previous_state)
 
@@ -218,8 +210,8 @@ class ExtractorFanPairLogic:
         self._activation_due_at = None
 
         if self._manual_override is not None:
-            self._override_reset_ready = True
-            self._log("manual override reset armed")
+            self._manual_override = None
+            self._log("manual override cleared after light off")
 
         if self._occupancy_active_while_light_on and light_on_since is not None:
             duration = now - light_on_since
@@ -264,14 +256,14 @@ class ExtractorFanPairLogic:
         Apply a manual fan override.
 
         ``fan_on`` is the user-forced target state (True/False).
-        Once set, manual override is authoritative and suppresses automation decisions until a full
-        light OFF->ON cycle resets it.
+        Once set, manual override is authoritative for occupancy demand until the next light-off
+        event resets it. Scheduled demand still keeps the fan running until the scheduled window
+        expires.
         ``now`` is still used for timer progression consistency.
         """
         self._log(f"event manual_fan_toggle fan_on={fan_on} at {now.isoformat()}")
         previous_state = self.state
         self._manual_override = fan_on
-        self._override_reset_ready = False
         # The callback already reports the fan's physical state. Recording it prevents the state
         # machine from commanding the same state back and amplifying delayed KNX feedback.
         self._fan_output_on = fan_on
@@ -350,18 +342,17 @@ class ExtractorFanPairLogic:
         """
         Compute target fan/keepalive/timer outputs from current state.
 
-        Manual override, when present, always wins over automatic demand.
-        Without override, fan runs if either occupancy or schedule demand is currently active.
+        Manual override, when present, wins over occupancy demand. Scheduled demand is stronger than
+        manual override and keeps the fan running until the schedule expires.
         """
+        occupancy_active = self._occupancy_active_while_light_on or (
+            self._occupancy_run_until is not None and now < self._occupancy_run_until)
+        schedule_active = (self._schedule_run_until is not None and now < self._schedule_run_until)
+
         if self._manual_override is not None:
-            # Manual override is authoritative by design.
-            target_fan_on = self._manual_override
-            target_keepalive_on = self._manual_override
+            target_fan_on = schedule_active or self._manual_override
+            target_keepalive_on = target_fan_on
         else:
-            occupancy_active = self._occupancy_active_while_light_on or (
-                self._occupancy_run_until is not None and now < self._occupancy_run_until)
-            schedule_active = (self._schedule_run_until is not None
-                               and now < self._schedule_run_until)
             # Merge demand sources: if either needs fan, fan should run.
             target_fan_on = occupancy_active or schedule_active
             target_keepalive_on = target_fan_on

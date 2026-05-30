@@ -1,94 +1,53 @@
-# extractor_fan_control
+# Extractor Fan Control
 
-AppDaemon app that controls KNX staircase-timer extractor fans from room light activity, with an
-optional daily freshness run.
+Extractor Fan Control runs bathroom extractor fans from room light activity, with an optional daily freshness run.
 
-## Problem
+It is intended for fans wired through staircase timers: turning the fan switch on starts the fan for a fixed actuator-side interval, and repeated on commands keep that interval alive.
 
-Bathroom extractor fans are wired through KNX staircase timers: an ON command starts the fan for a
-fixed actuator-side interval, and repeated ON pulses keep that interval alive. The desired automation
-is more nuanced than a simple light follower:
+Implementation notes, runtime internals, and test instructions live in [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
-- brief light usage should not start the fan;
-- real occupancy should start the fan after a threshold;
-- long visits should get a proportional post-run;
-- daily freshness runs should merge cleanly with occupancy demand;
-- manual fan toggles should temporarily override automation without causing command echo loops.
+## User-Facing Behavior
 
-## How It Works
+Each configured light/fan pair is managed independently.
 
-Each configured light/fan pair is managed independently. The pure logic state machine receives light
-events, fan switch events, daily schedule events, and timer ticks. It returns declarative actions for
-the AppDaemon adapter to execute.
+When the room light turns on, the fan does not start immediately. The light must stay on for
+`min_light_on_for_fan_seconds` (usually 5 seconds) before the app treats the room as occupied and turns the fan on.
 
-```
-light on
-  -> wait min_light_on_for_fan_seconds
-  -> fan on + keepalive pulses
+When the light turns off:
 
-light off after short visit
-  -> fan off
+- If the light was on for strictly less than `short_visit_threshold_seconds` (usually 1 minute), the fan is turned off immediately.
+- If the light was on for at least `short_visit_threshold_seconds`, the fan keeps running for a post-run period based on the light-on duration, capped at 10 minutes.
 
-light off after long visit
-  -> post-run for min(light-on duration, max_post_run_seconds)
+If a daily freshness run is configured, the fan turns on at `daily_run_time` and remains on until `daily_run_duration_seconds` has elapsed.
 
-daily schedule
-  -> fan on until daily_run_duration_seconds has elapsed
-```
+If a daily freshness run overlaps with occupancy-based demand, the fan stays on until both demands have ended. A scheduled freshness run is not canceled by a manual fan toggle, in other words if the freshness run is ongoing, turning off the light won't turn off the fan.
 
-When occupancy and daily schedule demand overlap, the fan stays on until both demand windows have
-expired.
+## Manual Fan Control
 
-### State Machine
+The existing fan switch remains user-controllable.
 
-Each pair exposes these internal states in logs:
+When a user manually toggles the fan switch, the app treats that fan state as an override. While the override is active, automation does not command the opposite fan state.
 
-```
-IDLE --(light on)--> WAITING_FOR_ACTIVATION --(threshold reached)--> RUNNING_LIGHT
-  ^                         |                                      |
-  |                         +--(light off before threshold)--------+
-  |                                                                |
-  +--(short visit light off)---------------------------------------+
-                                                                   |
-                                                                   +--(long visit light off)--> POST_RUN --(deadline)--> IDLE
-                                                                   |
-daily schedule --> SCHEDULED_RUN --(deadline)--> IDLE              |
-        |                                                          |
-        +---------- overlap with light/post-run ----------> COMBINED_RUN
+The manual override clears when the room light next turns off. After that, automation resumes including any normal post-run created by that light session.
 
-any state --(manual fan switch)--> MANUAL_OVERRIDE --(full light OFF -> ON cycle)--> current demand state
-```
+## Exposed Entities
 
-**IDLE**: No light, occupancy, schedule, or manual demand is active.
+This app does not create new Home Assistant entities.
 
-**WAITING_FOR_ACTIVATION**: Light is on, but has not yet stayed on long enough to start the fan.
+It uses these existing entities for each configured room:
 
-**RUNNING_LIGHT**: Light-based occupancy demand is active while the light remains on.
+- `light_entity`: room light used as the occupancy signal.
+- `fan_switch_entity`: fan switch controlled by the app and still available for manual override.
 
-**POST_RUN**: Light has turned off after a long visit; fan remains on until the computed post-run
-deadline.
+## Restart Behavior
 
-**SCHEDULED_RUN**: Daily freshness run is active without light-based demand.
+Runtime state is not persisted across AppDaemon restarts.
 
-**COMBINED_RUN**: Schedule and occupancy/post-run demand overlap; the later deadline wins.
+After restart, the app registers its listeners and daily schedules again, but it does not reconstruct an in-progress light session, post-run, manual override, or keepalive from current Home Assistant entity state. This means that the fan will turn off when the staircase timer expires. The next light, fan switch, or schedule event starts a new control decision.
 
-**MANUAL_OVERRIDE**: A user changed the fan switch. Automation follows that manual fan state and does
-not command the same state back into KNX. The override clears after a complete light OFF -> ON cycle.
+## YAML Configuration
 
-## KNX Keepalive
-
-The fan switch is expected to be backed by a KNX staircase function. While automation or manual ON
-override requires the fan to run, the app sends periodic ON pulses at:
-
-```
-staircase_interval_seconds - pulse_guard_seconds
-```
-
-For a 30 second staircase timer and 5 second guard, the app sends an ON pulse every 25 seconds.
-
-## Configuration
-
-Add the following to your private `apps/apps.yaml`:
+Add the following to `apps/apps.yaml`:
 
 ```yaml
 ExtractorFanControl:
@@ -125,34 +84,3 @@ ExtractorFanControl:
 | `pairs[].short_visit_threshold_seconds` | integer seconds | Light-on duration below which fan stops immediately when the light turns off. |
 | `pairs[].daily_run_time` | `HH:MM` string | Optional daily freshness run start time. Omit with duration to disable. |
 | `pairs[].daily_run_duration_seconds` | integer seconds | Optional daily freshness run duration. Omit with time to disable. |
-
-### KNX Actuator Settings
-
-The relay controlling the fan should be configured roughly as:
-
-- Feedback ON
-- Time delays OFF
-- Staircase function ON
-- Staircase time matching `staircase_interval_seconds`
-- Staircase time retriggerable ON
-- Switch-on delay OFF
-- Reaction to OFF telegram: switch off
-- End of staircase time: switch off
-
-## Installation
-
-This repository is used as a git submodule under `apps/public_apps` in the private Home Assistant
-config repo. AppDaemon resolves the module path as
-`extractor_fan_control.extractor_fan_control` from that location.
-
-## Running Tests
-
-From the repository root:
-
-```bash
-python -m pytest extractor_fan_control/tests/ -v
-```
-
-Tests cover light-based state transitions, post-run deadlines, daily schedule overlap, manual
-override behavior, config validation, and runtime fan command feedback handling. No AppDaemon
-installation is required to run them.

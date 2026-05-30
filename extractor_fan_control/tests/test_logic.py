@@ -135,29 +135,37 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         actions_schedule_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=300))
         self.assertIn(ACTION_FAN_OFF, _kinds(actions_schedule_end))
 
-    def test_manual_override_is_authoritative_until_full_cycle_reset(self):
-        self.logic.on_schedule_started(self.t0, duration_seconds=180)
-        manual_off = self.logic.on_manual_fan_toggle(self.t0 + timedelta(seconds=1), fan_on=False)
+    def test_manual_override_clears_when_light_turns_off(self):
+        self.logic.on_light_on(self.t0)
+        self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
+
+        manual_off = self.logic.on_manual_fan_toggle(self.t0 + timedelta(seconds=20), fan_on=False)
         self.assertNotIn(ACTION_FAN_OFF, _kinds(manual_off))
         self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(manual_off))
         self.assertEqual(PairState.MANUAL_OVERRIDE, self.logic.state)
 
-        # Demand exists but override blocks fan.
         blocked = self.logic.on_time_tick(self.t0 + timedelta(seconds=50))
         self.assertEqual([], blocked)
 
-        self.logic.on_light_on(self.t0 + timedelta(seconds=60))
-        still_blocked = self.logic.on_time_tick(self.t0 + timedelta(seconds=80))
-        self.assertNotIn(ACTION_FAN_ON, _kinds(still_blocked))
-        self.assertNotIn(ACTION_START_KEEPALIVE, _kinds(still_blocked))
+        # Light off clears the override and lets normal long-visit post-run take over.
+        actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=90))
+        self.assertIn(ACTION_FAN_ON, _kinds(actions_off))
+        self.assertIn(ACTION_START_KEEPALIVE, _kinds(actions_off))
+        self.assertEqual(PairState.POST_RUN, self.logic.state)
 
-        # OFF marks reset-ready; next ON clears override.
-        self.logic.on_light_off(self.t0 + timedelta(seconds=90))
-        on_reset = self.logic.on_light_on(self.t0 + timedelta(seconds=91))
-        self.assertIn(ACTION_FAN_ON, _kinds(on_reset))
-        self.assertIn(ACTION_START_KEEPALIVE, _kinds(on_reset))
-        after_reset = self.logic.on_time_tick(self.t0 + timedelta(seconds=106))
-        self.assertNotIn(ACTION_FAN_OFF, _kinds(after_reset))
+    def test_schedule_demand_survives_manual_override(self):
+        self.logic.on_schedule_started(self.t0, duration_seconds=180)
+        manual_off = self.logic.on_manual_fan_toggle(self.t0 + timedelta(seconds=1), fan_on=False)
+        self.assertNotIn(ACTION_FAN_OFF, _kinds(manual_off))
+        self.assertIn(ACTION_FAN_ON, _kinds(manual_off))
+        self.assertEqual(PairState.MANUAL_OVERRIDE, self.logic.state)
+
+        before_schedule_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=179))
+        self.assertNotIn(ACTION_FAN_OFF, _kinds(before_schedule_end))
+
+        at_schedule_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=180))
+        self.assertIn(ACTION_FAN_OFF, _kinds(at_schedule_end))
+        self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(at_schedule_end))
 
     def test_repeated_ticks_are_idempotent(self):
         self.logic.on_light_on(self.t0)
