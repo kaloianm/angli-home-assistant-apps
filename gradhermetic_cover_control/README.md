@@ -1,21 +1,18 @@
 # Gradhermetic Cover Control
 
-Gradhermetic Cover Control wraps an existing Home Assistant blind entity and exposes a user-facing cover that understands [Gradhermetic slat mode](https://gradhermetic.com/en/downloads).
+Gradhermetic Cover Control wraps an existing Home Assistant blind entity and exposes a user-facing cover that understands [Gradhermetic slat mode](https://gradhermetic.com/en/downloads). The physical Gradhermetic cover is a motor-driven blind with ordinary up and down travel; a specific sequence of movements latches the mechanism in and out of slat mode. Once in slat mode, further up and down movements open and close the slats instead of changing the overall blind position.
 
 The wrapped blind may be backed by any Home Assistant integration, as long as the underlying entity can report and accept regular blind position commands.
 
 ## User-Facing Contract
 
-Each configured blind exposes one virtual cover entity. The virtual cover behaves like a normal Home Assistant cover for regular open, close, stop, and set-position commands.
+Each configured blind exposes one virtual cover entity. The virtual cover supports the standard Home Assistant cover services: `cover.open_cover`, `cover.close_cover`, `cover.stop_cover`, `cover.toggle`, and `cover.set_cover_position`.
 
-The application also exposes controls for slat mode:
+The application also registers a custom Home Assistant service, `gradhermetic_cover_control.set_slat_mode`, which accepts `true` to enter slat mode and `false` to leave it. Entering slat mode moves the blind through the mechanical sequence required to engage slat control; leaving slat mode returns the virtual cover to regular position control.
 
-- `Enter Slat Mode` moves the blind through the mechanical sequence required to engage slat control.
-- `Leave Slat Mode` exits slat behavior and returns the virtual cover to regular position control.
-- Step up and step down commands use regular blind movement outside slat mode.
-- Step up and step down commands use shorter movements while slat mode is active.
+Outside slat mode, the standard cover services target the full blind travel range: for example, `cover.open_cover` opens the blind to `100%`, and `cover.close_cover` closes it to `0%`. Inside slat mode, the same services target the configured slat-control range instead: for example, `cover.open_cover` moves toward `tilt_upper_pct`, and `cover.close_cover` moves toward `tilt_lower_pct`, so those movements open and close the slats rather than changing the overall blind height.
 
-Entering slat mode avoids excessive downward movement. If the application is unsure where the blind is, it recovers by moving upward first.
+Entering slat mode avoids excessive downward movement. If the application is unsure where the blind is, it recovers by moving upward to fully-open first.
 
 ## Position And Restart Behavior
 
