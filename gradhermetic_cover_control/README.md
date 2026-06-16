@@ -1,26 +1,86 @@
 # Gradhermetic Cover Control
 
-Gradhermetic Cover Control wraps an existing Home Assistant blind entity and exposes a user-facing cover that understands [Gradhermetic slat mode](https://gradhermetic.com/en/downloads). The physical Gradhermetic cover is a motor-driven blind with ordinary up and down travel; a specific sequence of movements latches the mechanism in and out of slat mode. Once in slat mode, further up and down movements open and close the slats instead of changing the overall blind position.
+Gradhermetic Cover Control wraps an existing Home Assistant blind entity and exposes a user-facing cover that understands Gradhermetic **tilt mode** (slat-orientation control). See the [Gradhermetic downloads](https://gradhermetic.com/en/downloads) for the physical product. The physical Gradhermetic cover is a motor-driven blind with ordinary up and down travel; a specific sequence of movements latches the mechanism in and out of tilt mode. Once in tilt mode, further up and down movements change the slat orientation instead of the overall blind position.
 
 The wrapped blind may be backed by any Home Assistant integration, as long as the underlying entity can report and accept regular blind position commands.
 
 ## User-Facing Contract
 
-Each configured blind exposes one virtual cover entity. The virtual cover supports the standard Home Assistant cover services: `cover.open_cover`, `cover.close_cover`, `cover.stop_cover`, `cover.toggle`, and `cover.set_cover_position`.
+Each configured blind exposes one virtual cover entity, published to Home Assistant via MQTT discovery. The virtual cover supports the standard Home Assistant cover services: `cover.open_cover`, `cover.close_cover`, `cover.stop_cover`, `cover.toggle`, and `cover.set_cover_position`.
 
-The application also registers a custom Home Assistant service, `gradhermetic_cover_control.set_slat_mode`, which accepts `true` to enter slat mode and `false` to leave it. Entering slat mode moves the blind through the mechanical sequence required to engage slat control; leaving slat mode returns the virtual cover to regular position control.
+The application also registers a custom Home Assistant service, `gradhermetic_cover_control.set_tilt_mode`, which accepts `true` to enter tilt mode and `false` to leave it. Entering tilt mode moves the blind through the mechanical sequence required to engage slat control; leaving tilt mode returns the virtual cover to regular position control.
 
-Outside slat mode, the standard cover services target the full blind travel range: for example, `cover.open_cover` opens the blind to `100%`, and `cover.close_cover` closes it to `0%`. Inside slat mode, the same services target the configured slat-control range instead: for example, `cover.open_cover` moves toward `tilt_upper_pct`, and `cover.close_cover` moves toward `tilt_lower_pct`, so those movements open and close the slats rather than changing the overall blind height.
+The guiding principle for every control surface is **up = more light, down = less light** — applied to the whole blind's height when outside the tilt zone, and to the slat angle when inside it.
 
-Entering slat mode avoids excessive downward movement. If the application is unsure where the blind is, it recovers by moving upward to fully-open first.
+### Outside tilt mode
+
+The standard cover services target the full blind travel range:
+
+- `cover.open_cover` opens the blind fully (`100%`).
+- `cover.close_cover` closes the blind fully (`0%`).
+- `cover.set_cover_position` moves to the requested absolute position.
+
+### Inside tilt mode
+
+Once latched, the same services control slat orientation within the narrow **tilt zone** between `tilt_zone_lower_pct` and `tilt_zone_upper_pct`:
+
+- `cover.open_cover` orients the slats perpendicular to the window (most light) — the blind sits at `tilt_zone_lower_pct`.
+- `cover.close_cover` orients the slats parallel to the window (least light) — the blind sits at `tilt_zone_upper_pct`.
+- `cover.set_cover_position` interpolates between these two ends: `100%` maps to `tilt_zone_lower_pct` (slats fully open / perpendicular) and `0%` maps to `tilt_zone_upper_pct` (slats fully closed / parallel).
+
+Note the inversion relative to normal travel: inside the tilt zone a *higher* absolute blind position means *more closed* slats.
+
+## Entering And Leaving Tilt Mode
+
+The latch sequence assumes the blind starts **outside** the tilt zone. This is important: the mechanism only latches when the full down-then-up motion is performed across the lower edge of the zone.
+
+To enter tilt mode:
+
+1. Move down to `tilt_zone_lower_pct - tilt_zone_epsilon_pct`. If the blind is already below `tilt_zone_lower_pct`, this step is already satisfied and is skipped.
+2. Move up to `tilt_zone_upper_pct`. The mechanism is now latched in tilt mode, with the slats parallel (closed).
+
+To leave tilt mode:
+
+- Move up to above `tilt_zone_upper_pct` (specifically `tilt_zone_upper_pct + tilt_zone_epsilon_pct`). Leaving is always an upward move; the application never drives downward to disengage.
+
+`tilt_zone_epsilon_pct` is the clearance margin used to cleanly cross the lower edge when engaging and the upper edge when disengaging.
+
+Entering tilt mode avoids excessive downward movement. If the application is unsure where the blind is, it first recovers by moving fully open (see "Position And Restart Behavior") before running the latch sequence.
+
+## Wall-Button (KNX) Control
+
+The application can be driven by a two-button KNX wall switch (an up button and a down button, each distinguishing a short press from a long press). This maps onto the two standard KNX blind communication objects:
+
+- A **"Move"** group address that receives **long** presses.
+- A **"Stop/Step"** group address that receives **short** presses.
+
+In both cases the telegram's value selects the direction (up = more light, down = less light). These group addresses are surfaced to the application as `knx_event`s on the Home Assistant event bus.
+
+### Long press — jump to an extreme
+
+- **Long up** drives the blind fully open (`100%`). If it is currently in tilt mode, this naturally leaves tilt mode (the exit is upward anyway).
+- **Long down** drives the blind fully closed (`0%`). If it is currently in tilt mode, the blind first rises out of the zone (the latch only releases upward) and then descends.
+
+### Short press — stop, or step in the more-light / less-light direction
+
+A short press is evaluated in this priority order:
+
+1. **If the blind is currently moving, stop it.** (This matches the native KNX "Stop/Step" behavior.)
+2. **Otherwise, if inside the tilt zone, step the slats** by `tilt_step_pct` — up steps toward open (more light), down steps toward closed (less light).
+3. **Otherwise (idle, outside the tilt zone), enter the tilt zone** when the press points *toward* it:
+   - From above the zone, a **down** press enters tilt mode at the most-closed end (its near edge).
+   - From below the zone, an **up** press enters tilt mode at the most-open end (its near edge).
+   - A short press pointing *away* from the zone (when already past it) does nothing — long press covers the extremes.
+
+Stepping naturally crosses the zone boundaries: an up step at the open edge of the zone leaves tilt mode upward and resumes whole-blind control, and a down press from just above the zone enters it. Boundary crossings execute the full engage/disengage sequence rather than a small `tilt_step_pct` nudge.
 
 ## Position And Restart Behavior
 
-The application durably remembers the last virtual position it commanded for each blind.
+The application durably remembers the last virtual position it commanded for each blind, persisted as MQTT retained state.
 
-After Home Assistant or AppDaemon restarts, the application compares its stored position with the position reported by the underlying blind controller. If they do not match, the application moves upward until the physical controller and stored virtual position are aligned.
+After Home Assistant or AppDaemon restarts, the application compares its stored position with the position reported by the underlying blind controller. If they do not match, the application issues a full `cover.open_cover` (it sends the open command rather than a concrete target position) so the physical blind drives to fully open, then recalibrates both its stored position and its assumption of the controller's position to `100%`.
 
-This upward-only recovery rule protects the Gradhermetic mechanism from accidental extra downward movement while the blind may already be in or near slat mode.
+This upward-only recovery rule protects the Gradhermetic mechanism from accidental extra downward movement while the blind may already be in or near the tilt zone.
 
 ## YAML Configuration
 
@@ -36,15 +96,17 @@ gradhermetic_living_room:
   virtual_id: living_room
   virtual_name: "Living Room Blind"
 
-  # Mechanical slat-mode zone and movement tuning.
-  tilt_lower_pct: 3.0
-  tilt_upper_pct: 10.0
-  epsilon_pct: 2.0
+  # Mechanical tilt-zone bounds and movement tuning.
+  tilt_zone_upper_pct: 44.0
+  tilt_zone_lower_pct: 38.0
+  tilt_zone_epsilon_pct: 2.0
 
-  # Total travel time for 0 -> 100%, used when movement must be timed.
-  full_travel_time_secs: 60.0
+  # Slat step size for short presses while inside the tilt zone.
+  tilt_step_pct: 1.0
 
-  # Step sizes for regular position movement and slat-mode movement.
-  step_pct: 5.0
-  slat_step_pct: 1.0
+  # Optional KNX wall-button group addresses. The "move" address receives long
+  # presses; the "step" address receives short presses. Direction (up/down) is
+  # carried by the telegram value.
+  knx_move_address: "1/2/3"
+  knx_step_address: "1/2/4"
 ```
