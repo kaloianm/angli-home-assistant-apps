@@ -20,15 +20,11 @@ When the light turns off:
 
 If a daily freshness run is configured, the fan turns on at `daily_run_time` and remains on until `daily_run_duration_seconds` has elapsed.
 
-If a daily freshness run overlaps with occupancy-based demand, the fan stays on until both demands have ended. A scheduled freshness run is not canceled by a manual fan toggle, in other words if the freshness run is ongoing, turning off the light won't turn off the fan.
+If a daily freshness run overlaps with occupancy-based demand, the fan stays on until both demands have ended. In other words, if the freshness run is ongoing, turning off the light won't turn off the fan.
 
 ## Manual Fan Control
 
-The existing fan switch remains user-controllable.
-
-When a user manually toggles the fan switch, the app treats that fan state as an override. While the override is active, automation does not command the opposite fan state.
-
-The manual override clears when the room light next turns off. After that, automation resumes including any normal post-run created by that light session.
+The app fully owns the fan switch and does not observe manual toggles. You can still operate the switch by hand, but the app does not track it: a manual ON simply runs the fan for one KNX staircase interval, and while the app has active demand its keepalive re-asserts the fan within one keepalive interval. Automation never reacts to a manual toggle, so a hand toggle can never suppress a light-driven run or trigger the fan on its own.
 
 ## Exposed Entities
 
@@ -37,13 +33,13 @@ This app does not create new Home Assistant entities.
 It uses these existing entities for each configured room:
 
 - `light_entity`: room light used as the occupancy signal.
-- `fan_switch_entity`: fan switch controlled by the app and still available for manual override.
+- `fan_switch_entity`: fan switch controlled by the app.
 
 ## Restart Behavior
 
 Runtime state is not persisted across AppDaemon restarts.
 
-After restart, the app registers its listeners and daily schedules again, but it does not reconstruct an in-progress light session, post-run, manual override, or keepalive from current Home Assistant entity state. This means that the fan will turn off when the staircase timer expires. The next light, fan switch, or schedule event starts a new control decision.
+After restart, the app registers its listeners and daily schedules again, but it does not reconstruct an in-progress light session, post-run, or keepalive from current Home Assistant entity state. This means that the fan will turn off when the staircase timer expires. The next light or schedule event starts a new control decision.
 
 ## YAML Configuration
 

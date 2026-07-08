@@ -72,9 +72,6 @@ class ExtractorFanControl(hass.Hass):
             runtime.light_listener_handle = self.listen_state(self._on_light_state,
                                                               pair_config.light_entity,
                                                               pair_name=pair_config.name)
-            runtime.fan_listener_handle = self.listen_state(self._on_fan_state,
-                                                            pair_config.fan_switch_entity,
-                                                            pair_name=pair_config.name)
             if pair_config.daily_run_time and pair_config.daily_run_duration_seconds:
                 runtime.daily_schedule_handle = self.run_daily(
                     self._on_daily_schedule_start,
@@ -129,36 +126,6 @@ class ExtractorFanControl(hass.Hass):
             self._apply_actions(runtime, actions)
         except Exception as exc:
             self._report_error(f"_on_light_state(entity={entity!r}, new={new!r})", exc, pair_name)
-
-    def _on_fan_state(
-        self,
-        entity: str,
-        attribute: str,
-        old: Any,
-        new: Any,
-        kwargs: Dict[str, Any],
-    ) -> None:
-        """
-        Process manual fan toggles and forward them to pair logic.
-        """
-        pair_name = kwargs.get("pair_name")
-        try:
-            if new == old:
-                return
-            if new not in ("on", "off"):
-                return
-
-            runtime = self._runtime_by_name[pair_name]
-            now = self.datetime()
-
-            # Ignore known automation feedback callbacks for a short grace period.
-            if runtime.consume_expected_fan_state(new, now):
-                return
-
-            actions = runtime.logic.on_manual_fan_toggle(now, fan_on=(new == "on"))
-            self._apply_actions(runtime, actions)
-        except Exception as exc:
-            self._report_error(f"_on_fan_state(entity={entity!r}, new={new!r})", exc, pair_name)
 
     def _on_daily_schedule_start(self, kwargs: Dict[str, Any]) -> None:
         """
@@ -241,7 +208,6 @@ class ExtractorFanControl(hass.Hass):
         service = "switch/turn_on" if on else "switch/turn_off"
         self.log(f"[{runtime.config.name}] Fan {service}")
         self.call_service(service, entity_id=runtime.config.fan_switch_entity)
-        runtime.record_expected_fan_state("on" if on else "off", now)
 
     def _disable_pair(self, runtime: PairRuntime) -> None:
         """

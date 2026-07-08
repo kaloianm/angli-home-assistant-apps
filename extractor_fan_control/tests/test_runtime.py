@@ -4,10 +4,14 @@ from datetime import datetime, timedelta
 
 from extractor_fan_control.config import PairConfig
 from extractor_fan_control.logic import ExtractorFanPairLogic, LogicConfig
-from extractor_fan_control.runtime import PairRuntime
+from extractor_fan_control.runtime import (
+    FAN_CMD_RATE_LIMIT,
+    FAN_CMD_RATE_WINDOW_SECONDS,
+    PairRuntime,
+)
 
 
-class TestPairRuntimeExpectedStateTracking(unittest.TestCase):
+class TestPairRuntimeRateLimiting(unittest.TestCase):
 
     def setUp(self):
         self.runtime = PairRuntime(
@@ -24,20 +28,28 @@ class TestPairRuntimeExpectedStateTracking(unittest.TestCase):
         )
         self.t0 = datetime(2026, 4, 18, 16, 15, 0)
 
-    def test_matches_automation_feedback_out_of_order(self):
-        self.runtime.record_expected_fan_state("off", self.t0)
-        self.runtime.record_expected_fan_state("on", self.t0 + timedelta(milliseconds=20))
+    def test_commands_under_limit_do_not_trip(self):
+        for i in range(FAN_CMD_RATE_LIMIT):
+            tripped = self.runtime.record_fan_command(self.t0 + timedelta(seconds=i))
+            self.assertFalse(tripped)
+        self.assertFalse(self.runtime.disabled)
 
-        # Simulate feedback arriving out of command order from the bus.
-        self.assertTrue(
-            self.runtime.consume_expected_fan_state("on", self.t0 + timedelta(milliseconds=100)))
-        self.assertTrue(
-            self.runtime.consume_expected_fan_state("off", self.t0 + timedelta(milliseconds=120)))
+    def test_exceeding_limit_in_window_trips_and_disables(self):
+        # FAN_CMD_RATE_LIMIT commands are allowed; the next one within the window trips.
+        for i in range(FAN_CMD_RATE_LIMIT):
+            self.assertFalse(self.runtime.record_fan_command(self.t0 + timedelta(milliseconds=i)))
+        tripped = self.runtime.record_fan_command(self.t0 + timedelta(seconds=1))
+        self.assertTrue(tripped)
+        self.assertTrue(self.runtime.disabled)
 
-    def test_expired_expected_state_is_not_matched(self):
-        self.runtime.record_expected_fan_state("on", self.t0)
-        self.assertFalse(
-            self.runtime.consume_expected_fan_state("on", self.t0 + timedelta(seconds=3)))
+    def test_old_commands_outside_window_are_pruned(self):
+        # Fill the window, then let it fully elapse; subsequent commands start fresh.
+        for i in range(FAN_CMD_RATE_LIMIT):
+            self.runtime.record_fan_command(self.t0 + timedelta(milliseconds=i))
+        later = self.t0 + timedelta(seconds=FAN_CMD_RATE_WINDOW_SECONDS + 1)
+        for i in range(FAN_CMD_RATE_LIMIT):
+            self.assertFalse(self.runtime.record_fan_command(later + timedelta(milliseconds=i)))
+        self.assertFalse(self.runtime.disabled)
 
 
 if __name__ == "__main__":

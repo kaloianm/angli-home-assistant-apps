@@ -35,14 +35,13 @@ class PairState(Enum):
     POST_RUN = "post_run"
     SCHEDULED_RUN = "scheduled_run"
     COMBINED_RUN = "combined_run"
-    MANUAL_OVERRIDE = "manual_override"
     DISABLED = "disabled"
 
     def is_managed(self) -> bool:
         """
         Whether automation currently owns fan output decisions.
         """
-        return self not in (PairState.IDLE, PairState.MANUAL_OVERRIDE, PairState.DISABLED)
+        return self not in (PairState.IDLE, PairState.DISABLED)
 
 
 @dataclass(frozen=True)
@@ -92,7 +91,7 @@ class ExtractorFanPairLogic:
     State machine for one light/fan pair.
 
     Notes:
-    - "manual override" is reset when the light next turns off after the override was set.
+    - The app fully owns the fan switch; it does not observe or track manual toggles.
     - Overlapping occupancy/scheduled demand is merged by latest end time.
     """
 
@@ -121,9 +120,6 @@ class ExtractorFanPairLogic:
         self._occupancy_run_until: Optional[datetime] = None
         self._schedule_run_until: Optional[datetime] = None
 
-        # Manual override lifecycle.
-        self._manual_override: Optional[bool] = None
-
         # Output tracking for idempotent action emission.
         self._fan_output_on = False
         self._keepalive_output_on = False
@@ -139,8 +135,6 @@ class ExtractorFanPairLogic:
         """
         if self._disabled:
             return PairState.DISABLED
-        if self._manual_override is not None:
-            return PairState.MANUAL_OVERRIDE
         schedule_active = self._schedule_run_until is not None
         occupancy_post_active = self._occupancy_run_until is not None
         if self._light_is_on and not self._occupancy_active_while_light_on:
@@ -170,8 +164,7 @@ class ExtractorFanPairLogic:
         """
         Handle a light ON event.
 
-        ``now`` is the event timestamp used for all duration math. This starts the activation timer
-        while preserving any active manual override.
+        ``now`` is the event timestamp used for all duration math. This starts the activation timer.
         """
         actions: List[Action] = []
         self._log(f"event light_on at {now.isoformat()}")
@@ -209,10 +202,6 @@ class ExtractorFanPairLogic:
         self._light_on_since = None
         self._activation_due_at = None
 
-        if self._manual_override is not None:
-            self._manual_override = None
-            self._log("manual override cleared after light off")
-
         if self._occupancy_active_while_light_on and light_on_since is not None:
             duration = now - light_on_since
             if duration < timedelta(seconds=self._config.short_visit_threshold_seconds):
@@ -249,24 +238,6 @@ class ExtractorFanPairLogic:
         else:
             self._log("ignored schedule run that would not extend deadline")
 
-        return self._reconcile(now, previous_state)
-
-    def on_manual_fan_toggle(self, now: datetime, *, fan_on: bool) -> List[Action]:
-        """
-        Apply a manual fan override.
-
-        ``fan_on`` is the user-forced target state (True/False).
-        Once set, manual override is authoritative for occupancy demand until the next light-off
-        event resets it. Scheduled demand still keeps the fan running until the scheduled window
-        expires.
-        ``now`` is still used for timer progression consistency.
-        """
-        self._log(f"event manual_fan_toggle fan_on={fan_on} at {now.isoformat()}")
-        previous_state = self.state
-        self._manual_override = fan_on
-        # The callback already reports the fan's physical state. Recording it prevents the state
-        # machine from commanding the same state back and amplifying delayed KNX feedback.
-        self._fan_output_on = fan_on
         return self._reconcile(now, previous_state)
 
     def on_time_tick(self, now: datetime) -> List[Action]:
@@ -342,20 +313,15 @@ class ExtractorFanPairLogic:
         """
         Compute target fan/keepalive/timer outputs from current state.
 
-        Manual override, when present, wins over occupancy demand. Scheduled demand is stronger than
-        manual override and keeps the fan running until the schedule expires.
+        Fan output is a simple merge of demand sources: if occupancy or schedule needs the fan, it
+        runs. The keepalive follows the fan so the KNX staircase output stays energized.
         """
         occupancy_active = self._occupancy_active_while_light_on or (
             self._occupancy_run_until is not None and now < self._occupancy_run_until)
         schedule_active = (self._schedule_run_until is not None and now < self._schedule_run_until)
 
-        if self._manual_override is not None:
-            target_fan_on = schedule_active or self._manual_override
-            target_keepalive_on = target_fan_on
-        else:
-            # Merge demand sources: if either needs fan, fan should run.
-            target_fan_on = occupancy_active or schedule_active
-            target_keepalive_on = target_fan_on
+        target_fan_on = occupancy_active or schedule_active
+        target_keepalive_on = target_fan_on
 
         activation_timer = (
             # Activation timer exists only while waiting to decide if this light session
