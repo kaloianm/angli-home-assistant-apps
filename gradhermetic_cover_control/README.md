@@ -14,7 +14,7 @@ Tilt mode is toggled by firing a `gradhermetic_command` event with `command: set
 
 > The app additionally calls AppDaemon's `register_service` for `gradhermetic_cover_control/set_tilt_mode`, but that registers a service in AppDaemon's own namespace, not a Home Assistant service callable from HA scripts or the UI. Prefer the event form above from Home Assistant.
 
-For step and tilt from the UI, the app watches three `input_button` helpers per blind: `..._step_up` and `..._step_down` route to the short-press logic below (step slats, or enter/leave the tilt zone at its edges), and `..._tilt` toggles tilt mode. They behave exactly like a KNX wall button — pressing step up/down is the same control as short-pressing the physical switch.
+For step and tilt from the UI, the app watches three `input_button` helpers per blind. `..._tilt` toggles tilt mode (enter/leave). `..._step_up` and `..._step_down` adjust **slats only**: while latched they step the slat angle by `tilt_step_pct` and clamp at both zone edges, and while not latched they do nothing. Unlike a KNX wall button (below), the step helpers never enter or leave tilt and never move the whole blind — entering and leaving tilt is the tilt helper's job. This split exists because the UI has a dedicated tilt control, whereas a two-button wall switch does not and must reach tilt through its step presses.
 
 The guiding principle for every control surface is **up = more light, down = less light** — applied to the whole blind's height when outside the tilt zone, and to the slat angle when inside it.
 

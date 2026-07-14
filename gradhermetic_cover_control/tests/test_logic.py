@@ -179,6 +179,55 @@ class TestInsideTilt(unittest.TestCase):
         self.assertFalse(self.logic.in_tilt)
 
 
+class TestSlatStepHelper(unittest.TestCase):
+    """The dedicated ``..._step_up`` / ``..._step_down`` helpers: slats only, never cross zones."""
+
+    def setUp(self):
+        self.logic = GradhermeticCoverLogic(_config())
+        self.logic.seed_state(100.0, False)
+        run_plan(self.logic, self.logic.on_set_tilt_mode(True))  # latched, virtual 0 / real UPPER.
+
+    def test_step_up_moves_toward_open(self):
+        actions = self.logic.on_slat_step(DIRECTION_UP)
+        self.assertEqual(ACTION_MOVE_TO, actions[0].kind)
+        self.assertAlmostEqual(UPPER - (STEP / 100.0) * (UPPER - LOWER), actions[0].position)
+        run_plan(self.logic, actions)
+        self.assertTrue(self.logic.in_tilt)
+
+    def test_step_down_moves_toward_closed(self):
+        run_plan(self.logic, self.logic.on_open())  # virtual 100 / real LOWER (fully open).
+        actions = self.logic.on_slat_step(DIRECTION_DOWN)
+        self.assertEqual(ACTION_MOVE_TO, actions[0].kind)
+        self.assertAlmostEqual(UPPER - ((100.0 - STEP) / 100.0) * (UPPER - LOWER), actions[0].position)
+        run_plan(self.logic, actions)
+        self.assertTrue(self.logic.in_tilt)
+
+    def test_step_up_at_open_edge_clamps_and_stays_in_tilt(self):
+        run_plan(self.logic, self.logic.on_open())  # virtual 100 / real LOWER (fully open).
+        self.assertEqual([], self.logic.on_slat_step(DIRECTION_UP))
+        self.assertTrue(self.logic.in_tilt)
+        self.assertAlmostEqual(LOWER, self.logic.last_position)
+
+    def test_step_down_at_closed_edge_is_noop(self):
+        # setUp leaves the slats at virtual 0 (closed edge).
+        self.assertEqual([], self.logic.on_slat_step(DIRECTION_DOWN))
+        self.assertTrue(self.logic.in_tilt)
+
+    def test_step_ignored_outside_tilt(self):
+        self.logic.seed_state(80.0, False)  # whole-blind control, not latched.
+        self.assertEqual([], self.logic.on_slat_step(DIRECTION_UP))
+        self.assertEqual([], self.logic.on_slat_step(DIRECTION_DOWN))
+
+    def test_step_ignored_while_moving(self):
+        self.logic.on_real_position(42.0, True)  # blind reports it is travelling.
+        self.assertEqual([], self.logic.on_slat_step(DIRECTION_UP))
+
+    def test_step_ignored_while_plan_pending(self):
+        self.logic.on_set_position(50.0)  # starts a plan; no feedback yet.
+        self.assertTrue(self.logic.has_pending_plan)
+        self.assertEqual([], self.logic.on_slat_step(DIRECTION_UP))
+
+
 class TestKnxLongPress(unittest.TestCase):
 
     def setUp(self):

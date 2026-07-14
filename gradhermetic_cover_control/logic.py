@@ -352,6 +352,11 @@ class GradhermeticCoverLogic:
         """
         Handle a short wall-button press, in priority order: stop, else step slats, else enter the
         tilt zone when the press points toward it.
+
+        This is the two-button KNX wall-switch control, which has no dedicated tilt button, so a
+        short press must also get in and out of tilt: it crosses the zone boundaries (entering from
+        outside when the press points toward the zone, leaving upward at the open edge). The
+        dedicated slat-step helpers use :meth:`on_slat_step` instead, which never crosses.
         """
         if self._disabled:
             return []
@@ -361,12 +366,33 @@ class GradhermeticCoverLogic:
             self._plan = None
             return [Action(ACTION_STOP)]
 
-        # 2. If latched in tilt, step the slats.
+        # 2. If latched in tilt, step the slats (leaving upward at the open edge).
         if self._in_tilt:
-            return self._step_slats(direction)
+            return self._step_slats(direction, cross_open_edge=True)
 
         # 3. Idle and outside the zone: enter tilt when the press points toward the zone.
         return self._enter_toward_zone(direction)
+
+    def on_slat_step(self, direction: str) -> List[Action]:
+        """
+        Handle a press of a dedicated slat-step helper (the ``..._step_up`` / ``..._step_down``
+        input_buttons).
+
+        Unlike a KNX wall-button short press (:meth:`on_knx_short`), this only ever adjusts slats: it
+        never enters or leaves tilt, and never stops an in-flight move. Entering and leaving tilt is
+        the job of the tilt helper (:meth:`on_set_tilt_mode`). Outside tilt, or while a move is in
+        progress, the press is ignored; inside tilt it steps one ``tilt_step_pct`` and clamps at both
+        zone edges.
+        """
+        if self._disabled:
+            return []
+        # Only adjust slats when idle and latched. Ignoring presses mid-plan avoids aborting an
+        # enter/leave/step sequence, and ignoring them outside tilt keeps the whole blind from moving.
+        if self._plan is not None or self._is_moving:
+            return []
+        if not self._in_tilt:
+            return []
+        return self._step_slats(direction, cross_open_edge=False)
 
     # -- Restart recovery --------------------------------------------------------------------------
 
@@ -525,10 +551,14 @@ class GradhermeticCoverLogic:
         return self._start_plan([_Step(STEP_MOVE_TO, self._leave_target())], final_in_tilt=False,
                                 final_virtual=self._leave_target())
 
-    def _step_slats(self, direction: str) -> List[Action]:
+    def _step_slats(self, direction: str, *, cross_open_edge: bool) -> List[Action]:
         """
-        Step the slats by one ``tilt_step_pct`` within the zone, crossing the open edge upward when
-        already fully open.
+        Step the slats by one ``tilt_step_pct`` within the zone.
+
+        ``cross_open_edge`` decides what an up step does when the slats are already fully open: the
+        KNX wall button leaves tilt upward (its only way back out), while the dedicated slat-step
+        helpers clamp and stay open. The closed edge always clamps -- there is nowhere lower to go
+        without driving the latch downward, which the mechanism forbids.
         """
         position = self._last_position
         if position is None:
@@ -536,8 +566,11 @@ class GradhermeticCoverLogic:
         current_virtual = self._real_to_virtual(position)
         if direction == DIRECTION_UP:
             if current_virtual >= 100.0 - _VIRTUAL_EPSILON:
-                # At the open edge already: an up step leaves tilt upward (boundary crossing).
-                return self._leave_tilt()
+                if cross_open_edge:
+                    # At the open edge already: an up step leaves tilt upward (boundary crossing).
+                    return self._leave_tilt()
+                # Slat-step helper: clamp, stay fully open.
+                return []
             target_virtual = min(100.0, current_virtual + self._cfg.tilt_step_pct)
         else:
             if current_virtual <= _VIRTUAL_EPSILON:

@@ -118,10 +118,13 @@ app filters by `virtual_id` and routes each to the logic engine. Position is ref
 `set_state` on `sensor.gradhermetic_<virtual_id>_position`, which the template cover displays.
 
 Step and tilt reach the app as `input_button` presses. The app watches
-`input_button.gradhermetic_<virtual_id>_step_up` / `_step_down` and routes each to the short-press
-logic (`on_knx_short`, up/down), and `..._tilt`, which toggles tilt mode (`on_set_tilt_mode` with the
-negation of the current `in_tilt`). Step up/down is therefore the same control as a KNX wall button —
-it steps slats inside the zone and enters/leaves the zone at its edges.
+`input_button.gradhermetic_<virtual_id>_step_up` / `_step_down` and routes each to `on_slat_step`
+(up/down), and `..._tilt`, which toggles tilt mode (`on_set_tilt_mode` with the negation of the
+current `in_tilt`). `on_slat_step` is slat-only: it steps the angle by `tilt_step_pct` and clamps at
+both zone edges when latched, and is a no-op when not latched or while a plan is in flight. It
+deliberately differs from a KNX wall-button short press (`on_knx_short`), which additionally crosses
+the zone boundaries (entering from outside, leaving upward at the open edge) because a two-button
+wall switch has no separate tilt control. The UI does — `..._tilt` — so its step helpers stay pure.
 
 Tilt mode is also toggled from Home Assistant with a `gradhermetic_command` event carrying
 `command: set_tilt_mode` and `enabled: true|false` — this is the HA-facing entry point. A call whose

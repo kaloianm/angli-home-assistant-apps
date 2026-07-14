@@ -9,9 +9,10 @@ declare -- the app publishes it directly via ``set_state`` onto ``sensor.gradher
 which the template cover reads.
 
 Slat stepping and tilt engagement are exposed as dumb ``input_button`` helpers the app listens on:
-``..._step_up`` / ``..._step_down`` route to the same short-press logic as a KNX wall button (so they
-step slats, enter the tilt zone, or leave it depending on state), and ``..._tilt`` toggles tilt mode.
-All decision-making stays in the pure logic engine; this adapter only wires transport and drives the
+``..._step_up`` / ``..._step_down`` adjust slats only (step within the tilt zone, clamped at both
+edges; a no-op when not latched), and ``..._tilt`` toggles tilt mode. Unlike a KNX wall-button short
+press, the step helpers never enter or leave the zone -- that is the tilt helper's job. All
+decision-making stays in the pure logic engine; this adapter only wires transport and drives the
 real cover.
 """
 
@@ -305,11 +306,11 @@ class GradhermeticCoverControl(hass.Hass):
     def _on_step_button(self, entity: str, attribute: str, old: Any, new: Any,
                         kwargs: Dict[str, Any]) -> None:
         """
-        Route an ``input_button`` step press to the short-press (slat/tilt) logic.
+        Route an ``input_button`` step press to the slat-step logic.
 
-        The direction follows which helper fired; the logic decides whether the press steps the
-        slats, enters the tilt zone, leaves it, or stops an in-flight movement -- exactly as a KNX
-        wall-button short press would.
+        The direction follows which helper fired. Unlike a KNX wall-button short press, these helpers
+        only adjust slats within the tilt zone (clamping at both edges) and do nothing when the blind
+        is not latched -- entering and leaving tilt is the dedicated tilt helper's job.
         """
         try:
             if not self._is_button_press(old, new):
@@ -318,7 +319,7 @@ class GradhermeticCoverControl(hass.Hass):
                 self.log(f"[{self._config.virtual_id}] Ignoring step press during startup recovery")
                 return
             direction = DIRECTION_UP if entity == self._step_up_button else DIRECTION_DOWN
-            self._apply_actions(self._runtime.logic.on_knx_short(direction))
+            self._apply_actions(self._runtime.logic.on_slat_step(direction))
         except Exception as exc:
             self._report_error(f"_on_step_button(entity={entity!r})", exc)
 
