@@ -188,13 +188,17 @@ gradhermetic_living_room_tilt:
 
 ### 2. Template cover (a dumb forwarder, no logic)
 
+Modern Home Assistant configures template entities under the `template:` key, not `platform: template`
+under `cover:`. If a `template:` include already exists in `configuration.yaml`, add this as another
+list entry in that included file rather than a second `template:` key.
+
 ```yaml
-cover:
-  - platform: template
-    covers:
-      gradhermetic_living_room:
-        friendly_name: "Living Room Blind"
-        position_template: "{{ states('sensor.gradhermetic_living_room_position') | int(0) }}"
+template:
+  - cover:
+      - name: "Living Room Blind"
+        unique_id: gradhermetic_living_room
+        default_entity_id: cover.gradhermetic_living_room
+        position: "{{ states('sensor.gradhermetic_living_room_position') | int(0) }}"
         open_cover:
           - event: gradhermetic_command
             event_data: {virtual_id: living_room, command: open}
@@ -208,6 +212,9 @@ cover:
           - event: gradhermetic_command
             event_data: {virtual_id: living_room, command: set_position, position: "{{ position }}"}
 ```
+
+`default_entity_id` pins the entity id to `cover.gradhermetic_<virtual_id>` independent of `name` —
+`_service_targets_me` in the adapter and the dashboard tile both expect that exact id.
 
 ### 3. Dedicated KNX wall-button addresses
 
