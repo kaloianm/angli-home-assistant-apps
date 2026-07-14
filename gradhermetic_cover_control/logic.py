@@ -484,11 +484,15 @@ class GradhermeticCoverLogic:
 
         Latching requires a genuine down-then-up motion across the lower edge, so the sequence must
         approach that edge from above before dipping below it and rising back through it. Callers may
-        start anywhere, so we first ensure the blind is above the lower edge:
+        start anywhere, so we first ensure the blind is safely above the lower edge:
 
         - unknown position: recover fully open;
-        - at or below the lower edge: hop just above it;
-        - already above the lower edge: dip straight down.
+        - inside the ambiguity band: the latch may already be engaged (e.g. an earlier entry was
+          interrupted mid-rise, which physically latches the moment the rise crosses the lower
+          edge), so rise above the zone to release it first -- dipping down while latched is exactly
+          what the latch invariant forbids;
+        - clearly below the band: hop just above the lower edge;
+        - already above the zone: dip straight down.
 
         Then dip below the edge and rise to the upper edge to latch.
         """
@@ -497,8 +501,12 @@ class GradhermeticCoverLogic:
         lower = self._cfg.tilt_zone_lower_pct
         if pos is None:
             steps.append(_Step(STEP_OPEN_FULL, 100.0))
+        elif self._might_be_latched():
+            # Inside the band the mechanism might be latched; release it upward before dipping, since
+            # the latch only ever releases by rising above the upper edge.
+            steps.append(_Step(STEP_MOVE_TO, self._leave_target()))
         elif pos <= lower:
-            # Below/at the lower edge: hop just above it so the following dip crosses it downward.
+            # Below the band: hop just above the lower edge so the following dip crosses it downward.
             steps.append(_Step(STEP_MOVE_TO, lower + self._cfg.tilt_zone_epsilon_pct))
         steps.append(_Step(STEP_MOVE_TO, self._predip_target()))
         steps.append(_Step(STEP_MOVE_TO, self._cfg.tilt_zone_upper_pct))

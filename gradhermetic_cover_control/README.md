@@ -14,6 +14,8 @@ Tilt mode is toggled by firing a `gradhermetic_command` event with `command: set
 
 > The app additionally calls AppDaemon's `register_service` for `gradhermetic_cover_control/set_tilt_mode`, but that registers a service in AppDaemon's own namespace, not a Home Assistant service callable from HA scripts or the UI. Prefer the event form above from Home Assistant.
 
+For step and tilt from the UI, the app watches three `input_button` helpers per blind: `..._step_up` and `..._step_down` route to the short-press logic below (step slats, or enter/leave the tilt zone at its edges), and `..._tilt` toggles tilt mode. They behave exactly like a KNX wall button — pressing step up/down is the same control as short-pressing the physical switch.
+
 The guiding principle for every control surface is **up = more light, down = less light** — applied to the whole blind's height when outside the tilt zone, and to the slat angle when inside it.
 
 ### Outside tilt mode
@@ -40,7 +42,7 @@ The latch sequence assumes the blind starts **outside** the tilt zone. This is i
 
 To enter tilt mode the app performs a genuine down-then-up motion across the lower edge:
 
-1. Ensure the blind is above the lower edge so the dip crosses it downward. If the blind starts at or below `tilt_zone_lower_pct` it first hops up to `tilt_zone_lower_pct + tilt_zone_epsilon_pct`; if its position is unknown it recovers fully open first.
+1. Ensure the blind is safely above the lower edge so the dip crosses it downward. If the start position lies inside the ambiguity band (`[lower - epsilon, upper + epsilon]`) the latch might already be engaged — for example an earlier entry that was interrupted mid-rise physically latches the moment the rise crosses the lower edge — so the sequence first rises above the zone (`tilt_zone_upper_pct + tilt_zone_epsilon_pct`) to release the latch before dipping, since the latch only releases upward. If the blind instead starts clearly below the band it first hops up to `tilt_zone_lower_pct + tilt_zone_epsilon_pct`; if its position is unknown it recovers fully open first.
 2. Move down to `tilt_zone_lower_pct - tilt_zone_epsilon_pct` (dip below the lower edge).
 3. Move up to `tilt_zone_upper_pct`. The upward crossing of the lower edge latches the mechanism in tilt mode, with the slats parallel (closed).
 

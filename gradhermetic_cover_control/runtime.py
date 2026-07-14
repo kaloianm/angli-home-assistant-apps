@@ -32,6 +32,9 @@ class CoverRuntime:
     state_listener_handle: Optional[Any] = None
     command_listener_handle: Optional[Any] = None
     knx_listener_handle: Optional[Any] = None
+    step_up_listener_handle: Optional[Any] = None
+    step_down_listener_handle: Optional[Any] = None
+    tilt_listener_handle: Optional[Any] = None
     settle_timer_handle: Optional[Any] = None
 
     disabled: bool = False

@@ -20,11 +20,17 @@ small template cover (defined in the HA config) does two things and nothing else
 
 - Its `open_cover` / `close_cover` / `stop_cover` / `set_cover_position` actions fire a
   `gradhermetic_command` event that this app listens for.
-- Its `position_template` displays an `input_number` helper that this app writes when a movement
-  plan completes.
+- Its `position_template` reads `sensor.gradhermetic_<virtual_id>_position`, which the app publishes
+  itself via `set_state` when a movement plan completes. No `input_number` helper is involved — the
+  app owns the sensor.
 
-All decision-making stays in `logic.py`; the template contains no logic. The `set_cover_position`
-value, the open/close mapping, latching, and recovery are all decided by the Python app.
+Step and tilt controls are exposed the same broker-free way: three name-only `input_button` helpers
+(`..._step_up`, `..._step_down`, `..._tilt`) that carry no logic. The app listens for each press and
+routes it into the logic engine (see "Virtual Cover Wiring").
+
+All decision-making stays in `logic.py`; the template and helpers contain no logic. The
+`set_cover_position` value, the open/close mapping, latching, and recovery are all decided by the
+Python app.
 
 ## State Machine
 
@@ -48,11 +54,21 @@ The logic tracks:
 - `is_moving` — whether the blind is currently travelling, from controller feedback.
 - the pending movement plan, if any.
 
+The enter sequence assumes it starts above the lower edge, but the caller may start anywhere. If the
+start position lies inside the ambiguity band (`[lower - epsilon, upper + epsilon]`) the latch might
+already be engaged — an entry interrupted mid-rise physically latches the moment the rise crosses the
+lower edge — so `_enter_tilt` first rises above the zone to release the latch before dipping, since
+the latch only releases upward. From clearly below the band it hops just above the lower edge; from an
+unknown position it recovers fully open. Only then does it dip below the lower edge and rise to latch.
+
 A plan advances only when `on_real_position` reports the current waypoint reached (within
 `POSITION_TOLERANCE_PCT`) **and** the blind has settled (state no longer `opening`/`closing`). When
-the last waypoint completes, the terminal `in_tilt` is committed and the virtual position is written
-to the helper. The adapter arms a `SETTLE_TIMEOUT_SECONDS` fallback timer per move in case a final
-position update is never observed.
+the last waypoint completes, the terminal `in_tilt` is committed and the virtual position is
+published to `sensor.gradhermetic_<virtual_id>_position`. The adapter arms a
+`SETTLE_TIMEOUT_SECONDS` fallback timer per move in case a final position update is never observed.
+The timer is an **inactivity** timeout, not a hard travel-time cap: if it fires while the blind is
+still reporting motion the move is simply long, so it re-arms and keeps waiting rather than declaring
+a stall.
 
 ## Tilt-Zone Math
 
@@ -99,10 +115,15 @@ Two dedicated group addresses drive the app as `knx_event`s (telegram value `0 =
 Commands reach the app as a `gradhermetic_command` event carrying `virtual_id` and `command`
 (`open` / `close` / `stop` / `set_position` with `position`, or `set_tilt_mode` with `enabled`). The
 app filters by `virtual_id` and routes each to the logic engine. Position is reflected back with
-`input_number.set_value` on `input_number.gradhermetic_<virtual_id>_position`, which the template
-cover displays.
+`set_state` on `sensor.gradhermetic_<virtual_id>_position`, which the template cover displays.
 
-Tilt mode is toggled from Home Assistant with a `gradhermetic_command` event carrying
+Step and tilt reach the app as `input_button` presses. The app watches
+`input_button.gradhermetic_<virtual_id>_step_up` / `_step_down` and routes each to the short-press
+logic (`on_knx_short`, up/down), and `..._tilt`, which toggles tilt mode (`on_set_tilt_mode` with the
+negation of the current `in_tilt`). Step up/down is therefore the same control as a KNX wall button —
+it steps slats inside the zone and enters/leaves the zone at its edges.
+
+Tilt mode is also toggled from Home Assistant with a `gradhermetic_command` event carrying
 `command: set_tilt_mode` and `enabled: true|false` — this is the HA-facing entry point. A call whose
 `enabled` is missing is ignored (rather than silently coerced to "leave tilt").
 
@@ -133,6 +154,12 @@ commands within `COMMAND_RATE_WINDOW_SECONDS` (guarding against a plan whose way
 reached), the blind is disabled until AppDaemon restarts and a Home Assistant persistent notification
 is created.
 
+The `SETTLE_TIMEOUT_SECONDS` fallback timer only declares a stall — stopping the blind and raising an
+obstruction notification — when the blind has **settled** short of its target. A move still reporting
+motion when the timer fires is treated as merely long: the timer re-arms and waits, so a slow travel
+never triggers a false stall. A pending plan whose position has become unreadable (the cover went
+unavailable) is treated as a genuine stall rather than being left to hang silently.
+
 Unhandled callback exceptions likewise disable the blind until restart and create a persistent
 notification. Wrapping callbacks in `try/except` is the one sanctioned exception to the project's
 "let errors propagate" rule — it applies only at the AppDaemon callback boundary.
@@ -140,16 +167,23 @@ notification. Wrapping callbacks in `try/except` is the one sanctioned exception
 ## Home Assistant Wiring
 
 No broker or add-on is required — everything runs through the AppDaemon HASS plugin already in use.
-Three pieces live in the private HA config repo.
+Three pieces live in the private HA config repo. The position sensor
+(`sensor.gradhermetic_<id>_position`) needs no helper — the app publishes it.
 
-### 1. Position helper (`input_numbers.yaml`)
+### 1. Step/tilt trigger helpers (`input_buttons.yaml`)
+
+Name-only buttons; all logic lives in the app.
 
 ```yaml
-gradhermetic_living_room_position:
-  name: Gradhermetic Living Room Position
-  min: 0
-  max: 100
-  step: 1
+gradhermetic_living_room_step_up:
+  name: Living Room Blind Step Up
+  icon: mdi:chevron-up
+gradhermetic_living_room_step_down:
+  name: Living Room Blind Step Down
+  icon: mdi:chevron-down
+gradhermetic_living_room_tilt:
+  name: Living Room Blind Tilt
+  icon: mdi:angle-acute
 ```
 
 ### 2. Template cover (a dumb forwarder, no logic)
@@ -160,7 +194,7 @@ cover:
     covers:
       gradhermetic_living_room:
         friendly_name: "Living Room Blind"
-        position_template: "{{ states('input_number.gradhermetic_living_room_position') | int(0) }}"
+        position_template: "{{ states('sensor.gradhermetic_living_room_position') | int(0) }}"
         open_cover:
           - event: gradhermetic_command
             event_data: {virtual_id: living_room, command: open}

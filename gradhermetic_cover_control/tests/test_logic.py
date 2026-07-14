@@ -333,6 +333,57 @@ class TestLatchSafetyGuard(unittest.TestCase):
         self.assertAlmostEqual(UPPER + EPSILON, actions[0].position)
 
 
+class TestEnterTiltLatchGuard(unittest.TestCase):
+    """
+    Entering tilt from a position where the mechanism might already be latched must release the
+    latch upward before dipping, since driving down while latched is exactly what the invariant
+    forbids. The band here is [LOWER - EPSILON, UPPER + EPSILON] = [36, 46].
+    """
+
+    def setUp(self):
+        self.logic = GradhermeticCoverLogic(_config())
+
+    def test_enter_from_inside_band_releases_upward_first(self):
+        self.logic.seed_state(41.0, False)  # inside the band, latch state ambiguous
+        actions = run_plan(self.logic, self.logic.on_set_tilt_mode(True))
+        self.assertAlmostEqual(UPPER + EPSILON, _target_of(actions[0]))  # release upward first
+        self.assertAlmostEqual(LOWER - EPSILON, _target_of(actions[1]))  # then dip below lower edge
+        self.assertAlmostEqual(UPPER, _target_of(actions[2]))            # then rise to latch
+        self.assertTrue(self.logic.in_tilt)
+
+    def test_enter_from_just_below_band_hops_without_release(self):
+        self.logic.seed_state(30.0, False)  # clearly below the band
+        actions = run_plan(self.logic, self.logic.on_set_tilt_mode(True))
+        # No release step: it cannot be latched down here, so it just hops above the lower edge.
+        self.assertAlmostEqual(LOWER + EPSILON, _target_of(actions[0]))
+        self.assertAlmostEqual(LOWER - EPSILON, _target_of(actions[1]))
+
+    def test_enter_from_above_band_has_no_release_step(self):
+        self.logic.seed_state(80.0, False)  # clearly above the band
+        actions = self.logic.on_set_tilt_mode(True)
+        # Straight to the dip -- pins the no-regression behavior.
+        self.assertEqual(ACTION_MOVE_TO, actions[0].kind)
+        self.assertAlmostEqual(LOWER - EPSILON, actions[0].position)
+
+    def test_interrupted_latch_then_reenter_releases_upward(self):
+        # Start entering tilt from clearly above the zone.
+        self.logic.seed_state(80.0, False)
+        self.logic.on_set_tilt_mode(True)
+        # The dip below the lower edge completes...
+        self.logic.on_real_position(LOWER - EPSILON, True)
+        self.logic.on_real_position(LOWER - EPSILON, False)
+        # ...and the rise back up begins, physically latching as it crosses the lower edge.
+        self.logic.on_real_position(40.0, True)
+        # The user stops the blind mid-rise, abandoning the plan while it sits inside the band.
+        self.assertEqual([ACTION_STOP], _kinds(self.logic.on_knx_short(DIRECTION_UP)))
+        self.logic.on_real_position(40.0, False)  # settle
+        self.assertFalse(self.logic.has_pending_plan)
+        # A fresh enter-tilt request must release upward first, not drive down to the pre-dip.
+        actions = self.logic.on_set_tilt_mode(True)
+        self.assertEqual(ACTION_MOVE_TO, actions[0].kind)
+        self.assertAlmostEqual(UPPER + EPSILON, actions[0].position)
+
+
 class TestFeedbackRefresh(unittest.TestCase):
 
     def setUp(self):

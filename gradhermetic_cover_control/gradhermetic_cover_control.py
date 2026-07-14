@@ -2,9 +2,17 @@
 AppDaemon entry point for GradhermeticCoverControl.
 
 The virtual cover is surfaced to Home Assistant without MQTT: a small template cover (defined in the
-HA config) forwards user commands to this app as ``gradhermetic_command`` events and displays a
-position that this app writes into an ``input_number`` helper. All decision-making stays in the pure
-logic engine; this adapter only wires transport and drives the real cover.
+HA config) forwards user commands to this app as ``gradhermetic_command`` events. AppDaemon cannot
+register a controllable cover entity by itself, so that template is the one irreducible HA-side shim;
+everything else the app owns. The displayed position is not an ``input_number`` helper the user must
+declare -- the app publishes it directly via ``set_state`` onto ``sensor.gradhermetic_<id>_position``,
+which the template cover reads.
+
+Slat stepping and tilt engagement are exposed as dumb ``input_button`` helpers the app listens on:
+``..._step_up`` / ``..._step_down`` route to the same short-press logic as a KNX wall button (so they
+step slats, enter the tilt zone, or leave it depending on state), and ``..._tilt`` toggles tilt mode.
+All decision-making stays in the pure logic engine; this adapter only wires transport and drives the
+real cover.
 """
 
 from __future__ import annotations
@@ -68,7 +76,10 @@ class GradhermeticCoverControl(hass.Hass):
         # pylint: disable=attribute-defined-outside-init
         config = parse_app_config(self.args or {})
         self._config = config
-        self._position_helper = f"input_number.gradhermetic_{config.virtual_id}_position"
+        self._position_entity = f"sensor.gradhermetic_{config.virtual_id}_position"
+        self._step_up_button = f"input_button.gradhermetic_{config.virtual_id}_step_up"
+        self._step_down_button = f"input_button.gradhermetic_{config.virtual_id}_step_down"
+        self._tilt_button = f"input_button.gradhermetic_{config.virtual_id}_tilt"
         # Commands are ignored until startup recovery has established a known-safe state; a command
         # arriving in the recovery window would run against unseeded state and could clobber the
         # in-flight recovery plan.
@@ -93,6 +104,15 @@ class GradhermeticCoverControl(hass.Hass):
         self._runtime.state_listener_handle = self.listen_state(self._on_real_state,
                                                                 config.real_cover, attribute="all")
         self._runtime.command_listener_handle = self.listen_event(self._on_command, COMMAND_EVENT)
+
+        # Dashboard step/tilt controls: dumb input_button helpers whose presses route into the same
+        # logic the KNX wall button uses. Each press updates the helper's timestamp state.
+        self._runtime.step_up_listener_handle = self.listen_state(self._on_step_button,
+                                                                  self._step_up_button)
+        self._runtime.step_down_listener_handle = self.listen_state(self._on_step_button,
+                                                                    self._step_down_button)
+        self._runtime.tilt_listener_handle = self.listen_state(self._on_tilt_button,
+                                                               self._tilt_button)
 
         if config.knx_move_address or config.knx_step_address:
             self._runtime.knx_listener_handle = self.listen_event(self._on_knx, "knx_event")
@@ -164,7 +184,17 @@ class GradhermeticCoverControl(hass.Hass):
         if command == "stop":
             return runtime.logic.on_stop()
         if command == "set_position":
-            return runtime.logic.on_set_position(float(data["position"]))
+            # The event bus is open to any HA automation, so a malformed payload is bad input, not an
+            # app bug: ignore it rather than letting it reach _report_error and disable the blind.
+            raw_position = data.get("position")
+            try:
+                position = float(raw_position)
+            except (TypeError, ValueError):
+                self.log(
+                    f"[{runtime.config.virtual_id}] Ignoring set_position with invalid position "
+                    f"{raw_position!r}", level="WARNING")
+                return []
+            return runtime.logic.on_set_position(position)
         if command == "set_tilt_mode":
             if data.get("enabled") is None:
                 self.log(f"[{runtime.config.virtual_id}] Ignoring set_tilt_mode without 'enabled'",
@@ -196,17 +226,28 @@ class GradhermeticCoverControl(hass.Hass):
         """
         try:
             self._runtime.settle_timer_handle = None
+            logic = self._runtime.logic
             position, is_moving = self._read_real_position()
             if position is None:
+                # An unreadable position (cover unavailable) with a plan still pending is a genuine
+                # stall; surface it rather than leaving the plan hanging forever with no notice.
+                if logic.has_pending_plan:
+                    self._report_stall(None)
                 return
-            logic = self._runtime.logic
             had_plan = logic.has_pending_plan
             actions = logic.on_real_position(position, is_moving)
             self._apply_actions(actions)
             # A healthy plan either completes or advances to the next waypoint (which re-arms the
-            # settle timer). If it did neither, the current waypoint was never reached: surface it
-            # instead of pending forever, and stop the blind where it is.
+            # settle timer). If it did neither, the current waypoint was not reached yet.
             if had_plan and logic.has_pending_plan and not actions:
+                # The settle timeout is an inactivity timeout, not a hard travel-time cap: while the
+                # blind is still reporting motion the move is simply long, so re-arm and keep waiting
+                # rather than stopping it and raising a false obstruction alert.
+                if is_moving:
+                    self._restart_settle(self._runtime)
+                    return
+                # Settled but short of target: surface it instead of pending forever, and stop the
+                # blind where it is.
                 self._report_stall(position)
         except Exception as exc:
             self._report_error("_on_settle", exc)
@@ -239,6 +280,10 @@ class GradhermeticCoverControl(hass.Hass):
         try:
             destination = data.get("destination")
             config = self._config
+            # Guard against a telegram with no destination matching a None-valued address attribute
+            # when only one of the two KNX addresses is configured.
+            if destination is None:
+                return
             if destination not in (config.knx_move_address, config.knx_step_address):
                 return
             if not self._ready:
@@ -254,6 +299,60 @@ class GradhermeticCoverControl(hass.Hass):
             self._apply_actions(actions)
         except Exception as exc:
             self._report_error(f"_on_knx(destination={data.get('destination')!r})", exc)
+
+    # -- Dashboard step/tilt buttons ---------------------------------------------------------------
+
+    def _on_step_button(self, entity: str, attribute: str, old: Any, new: Any,
+                        kwargs: Dict[str, Any]) -> None:
+        """
+        Route an ``input_button`` step press to the short-press (slat/tilt) logic.
+
+        The direction follows which helper fired; the logic decides whether the press steps the
+        slats, enters the tilt zone, leaves it, or stops an in-flight movement -- exactly as a KNX
+        wall-button short press would.
+        """
+        try:
+            if not self._is_button_press(old, new):
+                return
+            if not self._ready:
+                self.log(f"[{self._config.virtual_id}] Ignoring step press during startup recovery")
+                return
+            direction = DIRECTION_UP if entity == self._step_up_button else DIRECTION_DOWN
+            self._apply_actions(self._runtime.logic.on_knx_short(direction))
+        except Exception as exc:
+            self._report_error(f"_on_step_button(entity={entity!r})", exc)
+
+    def _on_tilt_button(self, entity: str, attribute: str, old: Any, new: Any,
+                       kwargs: Dict[str, Any]) -> None:
+        """
+        Toggle tilt mode from the ``input_button`` tilt helper.
+        """
+        try:
+            if not self._is_button_press(old, new):
+                return
+            if not self._ready:
+                self.log(f"[{self._config.virtual_id}] Ignoring tilt press during startup recovery")
+                return
+            logic = self._runtime.logic
+            self._apply_actions(logic.on_set_tilt_mode(not logic.in_tilt))
+        except Exception as exc:
+            self._report_error("_on_tilt_button", exc)
+
+    @staticmethod
+    def _is_button_press(old: Any, new: Any) -> bool:
+        """
+        Whether an ``input_button`` state change represents a real press.
+
+        A real press is a timestamp -> different-timestamp transition. Transitions into or out of
+        unknown/unavailable/None (startup, HA helper reload, reconnect state restore) carry a fresh
+        timestamp on one side but are not presses, so both the old and the new state must be real
+        timestamps.
+        """
+        if new in (None, "unknown", "unavailable"):
+            return False
+        if old in (None, "unknown", "unavailable"):
+            return False
+        return new != old
 
     # -- Custom service ----------------------------------------------------------------------------
 
@@ -338,12 +437,21 @@ class GradhermeticCoverControl(hass.Hass):
 
     def _publish_virtual(self, virtual_position: Optional[float]) -> None:
         """
-        Reflect the virtual cover position into the helper the template cover displays.
+        Publish the virtual cover position the template cover displays.
+
+        The app owns this value directly via ``set_state`` -- no user-declared ``input_number`` helper
+        is required -- creating/updating ``sensor.gradhermetic_<id>_position`` in Home Assistant.
         """
         if virtual_position is None:
             return
-        self.call_service("input_number/set_value", entity_id=self._position_helper,
-                          value=int(round(_clamp_pct(virtual_position))))
+        self.set_state(
+            self._position_entity,
+            state=int(round(_clamp_pct(virtual_position))),
+            attributes={
+                "friendly_name": f"{self._config.virtual_name} Position",
+                "unit_of_measurement": "%",
+            },
+        )
 
     # -- Settle timer ------------------------------------------------------------------------------
 
@@ -430,7 +538,13 @@ def _knx_direction(data: Dict[str, Any]) -> Optional[str]:
         raw = raw[0] if raw else None
     if raw is None:
         return None
-    return DIRECTION_UP if int(raw) == 0 else DIRECTION_DOWN
+    # A malformed telegram value is bad external input, not an app bug: ignore it (the caller treats
+    # None as "no direction") rather than raising into _report_error and disabling the blind.
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return DIRECTION_UP if value == 0 else DIRECTION_DOWN
 
 
 def _as_bool(value: Any) -> bool:
