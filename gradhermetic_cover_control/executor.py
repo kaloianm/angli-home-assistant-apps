@@ -235,9 +235,9 @@ class Executor:
         movement = self._plan
         target = to_command(self._step().target)
         self._clear()
-        message = (f"did not reach {target}% within {SETTLE_TIMEOUT_SECONDS} seconds ({reason}) and "
-                   "was stopped. Check the blind for a mechanical obstruction or a misconfigured "
-                   "tilt zone.")
+        message = (f"did not reach {target}% within {SETTLE_TIMEOUT_SECONDS} seconds ({reason}) "
+                   "and was stopped. Check the blind for a mechanical obstruction or a "
+                   "misconfigured tilt zone.")
         self._log(f"ERROR: plan stalled short of {target}%: {reason}")
         return Outcome([
             Action(ACTION_STOP),

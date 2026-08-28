@@ -3,17 +3,21 @@ AppDaemon entry point for GradhermeticCoverControl.
 
 The virtual cover is surfaced to Home Assistant without MQTT: a small template cover (defined in the
 HA config) forwards user commands to this app as ``gradhermetic_command`` events. AppDaemon cannot
-register a controllable cover entity by itself, so that template is the one irreducible HA-side shim;
-everything else the app owns. The displayed position is not an ``input_number`` helper the user must
-declare -- the app publishes it directly via ``set_state`` onto ``sensor.gradhermetic_<id>_position``,
-which the template cover reads.
+register a controllable cover entity by itself, so that template is the one irreducible HA-side
+shim; everything else the app owns. The displayed position is not an ``input_number`` helper the
+user must declare -- the app publishes it directly via ``set_state`` onto
+``sensor.gradhermetic_<id>_position``, which the template cover reads.
 
 Slat stepping and tilt engagement are exposed as dumb ``input_button`` helpers the app listens on:
 ``..._step_up`` / ``..._step_down`` adjust slats only (step within the tilt zone, clamped at both
 edges; a no-op when not latched), and ``..._tilt`` toggles tilt mode. Unlike a KNX wall-button short
-press, the step helpers never enter or leave the zone -- that is the tilt helper's job. All
-decision-making stays in the pure logic engine; this adapter only wires transport and drives the
-real cover.
+press, the step helpers never enter or leave the zone -- that is the tilt helper's job.
+
+Every decision -- which sequence to run, when a waypoint is reached, when the settle timer is armed
+or cancelled, when a stall is declared -- is made in the pure core. What is left here is transport:
+listening and filtering, gating commands until startup recovery has run, decoding KNX telegrams and
+button presses, the command rate limit, the callback error boundary, and a one-to-one translation of
+:class:`Action` values into service calls.
 """
 
 from __future__ import annotations
@@ -94,21 +98,17 @@ class GradhermeticCoverControl(hass.Hass):
                 f"[{config.virtual_id}] Configured real_cover '{config.real_cover}' does not "
                 "exist in Home Assistant.", level="ERROR")
 
-        self._runtime.state_listener_handle = self.listen_state(self._on_real_state,
-                                                                config.real_cover, attribute="all")
-        self._runtime.command_listener_handle = self.listen_event(self._on_command, COMMAND_EVENT)
+        self.listen_state(self._on_real_state, config.real_cover, attribute="all")
+        self.listen_event(self._on_command, COMMAND_EVENT)
 
         # Dashboard step/tilt controls: dumb input_button helpers whose presses route into the same
         # logic the KNX wall button uses. Each press updates the helper's timestamp state.
-        self._runtime.step_up_listener_handle = self.listen_state(self._on_step_button,
-                                                                  self._step_up_button)
-        self._runtime.step_down_listener_handle = self.listen_state(self._on_step_button,
-                                                                    self._step_down_button)
-        self._runtime.tilt_listener_handle = self.listen_state(self._on_tilt_button,
-                                                               self._tilt_button)
+        self.listen_state(self._on_step_button, self._step_up_button)
+        self.listen_state(self._on_step_button, self._step_down_button)
+        self.listen_state(self._on_tilt_button, self._tilt_button)
 
         if config.knx_move_address or config.knx_step_address:
-            self._runtime.knx_listener_handle = self.listen_event(self._on_knx, "knx_event")
+            self.listen_event(self._on_knx, "knx_event")
 
         self.register_service("gradhermetic_cover_control/set_tilt_mode", self._on_set_tilt_mode)
 
@@ -163,8 +163,8 @@ class GradhermeticCoverControl(hass.Hass):
         if command == "stop":
             return runtime.logic.on_stop()
         if command == "set_position":
-            # The event bus is open to any HA automation, so a malformed payload is bad input, not an
-            # app bug: ignore it rather than letting it reach _report_error and disable the blind.
+            # The event bus is open to any HA automation, so a malformed payload is bad input, not
+            # an app bug: ignore it rather than letting it reach _report_error and disable it.
             raw_position = data.get("position")
             try:
                 position = float(raw_position)
@@ -250,9 +250,9 @@ class GradhermeticCoverControl(hass.Hass):
         """
         Route an ``input_button`` step press to the slat-step logic.
 
-        The direction follows which helper fired. Unlike a KNX wall-button short press, these helpers
-        only adjust slats within the tilt zone (clamping at both edges) and do nothing when the blind
-        is not latched -- entering and leaving tilt is the dedicated tilt helper's job.
+        The direction follows which helper fired. Unlike a KNX wall-button short press, these
+        helpers only adjust slats within the tilt zone (clamping at both edges) and do nothing when
+        the blind is not latched -- entering and leaving tilt is the dedicated tilt helper's job.
         """
         try:
             if not self._is_button_press(old, new):
@@ -398,8 +398,8 @@ class GradhermeticCoverControl(hass.Hass):
         """
         Publish the virtual cover position the template cover displays.
 
-        The app owns this value directly via ``set_state`` -- no user-declared ``input_number`` helper
-        is required -- creating/updating ``sensor.gradhermetic_<id>_position`` in Home Assistant.
+        The app owns this value directly via ``set_state`` -- no user-declared ``input_number``
+        helper is required -- creating ``sensor.gradhermetic_<id>_position`` in Home Assistant.
         """
         if virtual_position is None:
             return
@@ -478,14 +478,19 @@ class GradhermeticCoverControl(hass.Hass):
 def _extract_position(state: Any) -> Tuple[Optional[float], bool]:
     """
     Extract (current_position, is_moving) from a full Home Assistant cover state object.
+
+    A missing or unreadable position yields None, which the logic treats as "the cover is
+    unavailable": bad state from a flaky integration must not reach the error boundary and disable
+    the blind.
     """
     if not isinstance(state, dict):
         return None, False
     raw_position = state.get("attributes", {}).get("current_position")
     is_moving = state.get("state") in ("opening", "closing")
-    if raw_position is None:
+    try:
+        return float(raw_position), is_moving
+    except (TypeError, ValueError):
         return None, is_moving
-    return float(raw_position), is_moving
 
 
 def _knx_direction(data: Dict[str, Any]) -> Optional[str]:

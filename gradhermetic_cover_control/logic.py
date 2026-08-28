@@ -47,8 +47,6 @@ from gradhermetic_cover_control.executor import (
 )
 from gradhermetic_cover_control.geometry import Zone, clamp_pct
 from gradhermetic_cover_control.planner import (
-    DIRECTION_DOWN,
-    DIRECTION_UP,
     INTENT_CLOSE,
     INTENT_ENTER_TILT,
     INTENT_ENTER_TOWARD_ZONE,
@@ -72,6 +70,9 @@ class GradhermeticCoverLogic:
     """
     State machine translating user/KNX intent into blind movements for one Gradhermetic cover.
     """
+
+    # The event surface is wide by design: one method per thing that can happen to a blind.
+    # pylint: disable=too-many-public-methods
 
     def __init__(self, zone: Zone, log: Callable[[str], None] = lambda _: None) -> None:
         """
@@ -271,11 +272,11 @@ class GradhermeticCoverLogic:
         Handle a press of a dedicated slat-step helper (the ``..._step_up`` / ``..._step_down``
         input_buttons).
 
-        Unlike a KNX wall-button short press (:meth:`on_knx_short`), this only ever adjusts slats: it
-        never enters or leaves tilt, and never stops an in-flight move. Entering and leaving tilt is
-        the job of the tilt helper (:meth:`on_set_tilt_mode`). Outside tilt, or while a move is in
-        progress, the press is ignored; inside tilt it steps one ``tilt_step_pct`` and clamps at both
-        zone edges.
+        Unlike a KNX wall-button short press (:meth:`on_knx_short`), this only ever adjusts slats:
+        it never enters or leaves tilt, and never stops an in-flight move. Entering and leaving tilt
+        is the job of the tilt helper (:meth:`on_set_tilt_mode`). Outside tilt, or while a move is
+        in progress, the press is ignored; inside tilt it steps one ``tilt_step_pct`` and clamps at
+        both zone edges.
         """
         if self._disabled:
             return []
@@ -315,7 +316,7 @@ class GradhermeticCoverLogic:
         # No plan of our own: the real cover moved under external control.
         if was_moving and not is_moving and position is not None:
             if self._zone.in_band(position) and self._latch != LATCH_UNKNOWN:
-                # We did not see how it got here; a rise across the lower edge would have latched it.
+                # We did not see how it got here, and a rise across the lower edge latches.
                 self._latch = LATCH_UNKNOWN
                 self._log("latch belief cleared: external motion ended inside the tilt band")
             return self._publish_current()
@@ -418,8 +419,8 @@ class GradhermeticCoverLogic:
 
         A plan whose every target lies inside the zone is pure slat rotation and cannot have changed
         anything, so a confident belief survives its interruption -- otherwise stopping a slat move
-        would drop the blind out of tilt mode. Any other plan may have been interrupted mid-crossing,
-        which is exactly the case the latch invariant exists for.
+        would drop the blind out of tilt mode. Any other plan may have been interrupted
+        mid-crossing, which is exactly the case the latch invariant exists for.
         """
         if self._latch == LATCH_LATCHED and not planner.can_change_latch(self._zone, movement):
             return LATCH_LATCHED

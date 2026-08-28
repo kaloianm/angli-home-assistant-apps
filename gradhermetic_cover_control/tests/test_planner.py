@@ -277,7 +277,8 @@ class TestCanChangeLatch(unittest.TestCase):
                                                      Intent(INTENT_OPEN))))
 
     def test_sequences_crossing_an_edge_can(self):
-        self.assertTrue(can_change_latch(ZONE, plan(ZONE, _belief(80.0), Intent(INTENT_ENTER_TILT))))
+        self.assertTrue(
+            can_change_latch(ZONE, plan(ZONE, _belief(80.0), Intent(INTENT_ENTER_TILT))))
         self.assertTrue(
             can_change_latch(ZONE, plan(ZONE, _belief(UPPER, LATCH_LATCHED),
                                         Intent(INTENT_LEAVE_TILT))))

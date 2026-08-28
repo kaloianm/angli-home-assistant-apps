@@ -179,7 +179,7 @@ def plan(zone: Zone, belief: Belief, intent: Intent) -> Optional[Plan]:
     if intent.kind == INTENT_ENTER_TOWARD_ZONE:
         return _plan_enter_toward_zone(zone, belief, intent.direction)
     if intent.kind == INTENT_LONG_PRESS:
-        return _plan_long_press(zone, belief, intent.direction)
+        return _plan_long_press(belief, intent.direction)
     if intent.kind == INTENT_RECOVER:
         return _plan_recover()
     raise ValueError(f"unknown intent {intent.kind!r}")
@@ -309,7 +309,7 @@ def _plan_enter_toward_zone(zone: Zone, belief: Belief, direction: Optional[str]
     return None
 
 
-def _plan_long_press(zone: Zone, belief: Belief, direction: Optional[str]) -> Plan:
+def _plan_long_press(belief: Belief, direction: Optional[str]) -> Plan:
     """
     Long wall-button press: jump to an extreme, releasing the latch first when descending.
     """
@@ -392,7 +392,7 @@ def _check_slat_targets(zone: Zone, belief: Belief, movement: Plan) -> Optional[
 
 def _check_descents(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]:
     """
-    L1: a descent below the lower edge is preceded by a full open unless the latch is known released.
+    L1: a descent below the lower edge is preceded by a full open unless the latch is known clear.
 
     The hazard is *travel* below the lower edge while latched, so the check walks the plan tracking
     where the blind will be: a step whose target already equals the current position moves nothing

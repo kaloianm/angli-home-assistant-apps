@@ -171,7 +171,8 @@ class BlindSimulator:
         self._apply_latch(previous, self.physical)
         if self.latched and self.physical < self._zone.lower - _EPSILON:
             self.violations.append(
-                f"travelled to {self.physical} below the lower edge {self._zone.lower} while latched")
+                f"travelled to {self.physical}, below the lower edge {self._zone.lower}, while "
+                "latched")
 
         if abs(self._target - self.physical) < _EPSILON:
             self._target = None

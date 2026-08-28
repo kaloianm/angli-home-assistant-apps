@@ -13,9 +13,9 @@ from gradhermetic_cover_control.config import GradhermeticConfig
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 
 # If the app sends more than this many real-cover commands within the sliding window, the blind is
-# permanently disabled until AppDaemon is restarted. A runaway plan (for example a synchronous replan
-# loop) fires far faster than this, so the limit still trips within a second; the limit is sized to
-# leave headroom for legitimate rapid interaction such as a burst of wall-button slat steps.
+# permanently disabled until AppDaemon is restarted. A runaway plan (for example a synchronous
+# replan loop) fires far faster than this, so the limit still trips within a second; the limit is
+# sized to leave headroom for legitimate rapid interaction such as a burst of wall-button steps.
 COMMAND_RATE_LIMIT = 30
 COMMAND_RATE_WINDOW_SECONDS = 60
 
@@ -29,12 +29,8 @@ class CoverRuntime:
     config: GradhermeticConfig
     logic: GradhermeticCoverLogic
 
-    state_listener_handle: Optional[Any] = None
-    command_listener_handle: Optional[Any] = None
-    knx_listener_handle: Optional[Any] = None
-    step_up_listener_handle: Optional[Any] = None
-    step_down_listener_handle: Optional[Any] = None
-    tilt_listener_handle: Optional[Any] = None
+    # The one handle the app ever needs back: the settle timer is cancelled and re-armed on demand.
+    # Listener handles are never cancelled -- AppDaemon tears them down when the app is unloaded.
     settle_timer_handle: Optional[Any] = None
 
     disabled: bool = False

@@ -216,7 +216,8 @@ class TestInsideTilt(unittest.TestCase):
     def test_step_up_moves_toward_open(self):
         actions = self.logic.on_knx_short(DIRECTION_UP)
         self.assertEqual(ACTION_MOVE_TO, _moves(actions)[0].kind)
-        self.assertAlmostEqual(UPPER - (STEP / 100.0) * (UPPER - LOWER), _moves(actions)[0].position)
+        self.assertAlmostEqual(UPPER - (STEP / 100.0) * (UPPER - LOWER),
+                               _moves(actions)[0].position)
         run_plan(self.logic, actions)
         self.assertTrue(self.logic.in_tilt)
 
@@ -241,7 +242,8 @@ class TestSlatStepHelper(unittest.TestCase):
 
     def test_step_up_moves_toward_open(self):
         actions = self.logic.on_slat_step(DIRECTION_UP)
-        self.assertAlmostEqual(UPPER - (STEP / 100.0) * (UPPER - LOWER), _moves(actions)[0].position)
+        self.assertAlmostEqual(UPPER - (STEP / 100.0) * (UPPER - LOWER),
+                               _moves(actions)[0].position)
         run_plan(self.logic, actions)
         self.assertTrue(self.logic.in_tilt)
 
