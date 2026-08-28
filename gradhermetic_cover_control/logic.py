@@ -1,85 +1,71 @@
 """
-Pure business logic for Gradhermetic cover control.
+The state machine for one Gradhermetic cover.
 
-This module intentionally has no AppDaemon or Home Assistant dependencies. The runtime integration
-layer feeds events into ``GradhermeticCoverLogic`` and executes the returned declarative actions.
+This module holds the app's *belief* about the blind and routes events to the two pure modules that
+do the thinking: :mod:`planner` compiles an intent into a movement plan, :mod:`executor` drives that
+plan and decides every timing question. It has no AppDaemon or Home Assistant dependencies -- the
+adapter feeds events in and performs the returned actions.
 
-The Gradhermetic mechanism has two regimes:
+The belief has three parts:
 
-- Outside the tilt zone the virtual cover maps one-to-one to the blind's absolute travel position
-  (up = open = more light = 100).
-- Inside the narrow tilt zone ``[lower, upper]`` the blind is latched and further travel changes
-  slat orientation instead of height. There the virtual position is inverted: virtual 100 maps to
-  the lower edge (slats open / perpendicular / most light) and virtual 0 maps to the upper edge
-  (slats closed / parallel / least light).
+- ``position`` -- the last real travel position reported by the controller, or ``None`` once the
+  cover becomes unavailable. An unknown position makes every guard conservative automatically.
+- ``latch`` -- ``LATCHED`` / ``UNLATCHED`` / ``UNKNOWN``, event-sourced rather than derived from the
+  position, because a position inside the band is neither necessary nor sufficient for being
+  latched. Only a completed enter sequence establishes ``LATCHED``; everything else can only
+  degrade it.
+- ``is_moving`` -- whether the blind is travelling, from feedback.
 
-Latching into tilt mode requires a full down-then-up motion across the lower edge, so movements are
-modelled as an ordered list of waypoints (a "movement plan"). The adapter drives one waypoint at a
-time and feeds position feedback back in; the plan advances only once a waypoint is reached and the
-blind has settled.
+Latch transitions, in full:
+
+- to ``LATCHED``: a completed enter plan, and nothing else.
+- to ``UNLATCHED``: a completed plan that ends released, or feedback placing the blind clearly
+  outside the ambiguity band (a latched mechanism cannot rest there).
+- to ``UNKNOWN``: startup with the position unknown or inside the band; an interrupted plan that
+  could have crossed a zone edge; externally-caused motion ending inside the band; the cover
+  becoming unavailable.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from gradhermetic_cover_control.geometry import Zone
-
-ACTION_MOVE_TO = "move_to"
-ACTION_OPEN_FULL = "open_full"
-ACTION_CLOSE_FULL = "close_full"
-ACTION_STOP = "stop"
-ACTION_PUBLISH_POSITION = "publish_position"
-ACTION_PERSIST_STATE = "persist_state"
-
-STEP_MOVE_TO = "move_to"
-STEP_OPEN_FULL = "open_full"
-STEP_CLOSE_FULL = "close_full"
-
-DIRECTION_UP = "up"
-DIRECTION_DOWN = "down"
-
-NEAR_EDGE_OPEN = "open"
-NEAR_EDGE_CLOSED = "closed"
-
-# A reported position within this many percent of a waypoint target counts as "reached".
-POSITION_TOLERANCE_PCT = 1.5
-
-# Guard for floating-point edge comparisons on the virtual scale.
-_VIRTUAL_EPSILON = 1e-6
-
-
-@dataclass(frozen=True)
-class Action:
-    """
-    Declarative action produced by the logic engine.
-    """
-
-    kind: str
-    position: Optional[float] = None
-    in_tilt: Optional[bool] = None
-
-
-@dataclass(frozen=True)
-class _Step:
-    """
-    One waypoint in a movement plan.
-    """
-
-    kind: str
-    target: float
-
-
-@dataclass
-class _MovementPlan:
-    """
-    An ordered sequence of waypoints plus the state to commit once they all complete.
-    """
-
-    steps: List[_Step]
-    final_in_tilt: bool
-    final_virtual: float
+from gradhermetic_cover_control import planner
+from gradhermetic_cover_control.executor import (
+    ACTION_CANCEL_SETTLE_TIMER,
+    ACTION_NOTIFY,
+    ACTION_PUBLISH_POSITION,
+    ACTION_STOP,
+    NOTIFY_INVARIANT,
+    STATUS_ABANDONED,
+    STATUS_COMPLETED,
+    STATUS_STALLED,
+    Action,
+    Executor,
+    Outcome,
+    virtual_position,
+)
+from gradhermetic_cover_control.geometry import Zone, clamp_pct
+from gradhermetic_cover_control.planner import (
+    DIRECTION_DOWN,
+    DIRECTION_UP,
+    INTENT_CLOSE,
+    INTENT_ENTER_TILT,
+    INTENT_ENTER_TOWARD_ZONE,
+    INTENT_LEAVE_TILT,
+    INTENT_LONG_PRESS,
+    INTENT_OPEN,
+    INTENT_RECOVER,
+    INTENT_SET_POSITION,
+    INTENT_SLAT_STEP,
+    LATCH_LATCHED,
+    LATCH_UNKNOWN,
+    LATCH_UNLATCHED,
+    NEAR_EDGE_CLOSED,
+    Belief,
+    Intent,
+    Plan,
+)
 
 
 class GradhermeticCoverLogic:
@@ -87,30 +73,21 @@ class GradhermeticCoverLogic:
     State machine translating user/KNX intent into blind movements for one Gradhermetic cover.
     """
 
-    def __init__(
-        self,
-        zone: Zone,
-        log: Callable[[str], None] = lambda _: None,
-    ) -> None:
+    def __init__(self, zone: Zone, log: Callable[[str], None] = lambda _: None) -> None:
         """
         Create logic state for one blind.
 
-        ``zone`` holds the tilt-zone geometry. All runtime state is kept internally and every
-        public event method returns declarative actions.
+        ``zone`` holds the tilt-zone geometry. All runtime state is kept internally and every public
+        event method returns declarative actions.
         """
-        self._cfg = zone
+        self._zone = zone
         self._log = log
         self._disabled = False
 
-        # Authority for "where is the blind now" (real absolute travel position, 0-100), taken from
-        # controller feedback. None until the first feedback / seed.
-        self._last_position: Optional[float] = None
-        # Whether the mechanism is believed latched in tilt mode.
-        self._in_tilt = False
-        # Whether the blind is currently travelling, from controller feedback.
+        self._position: Optional[float] = None
+        self._latch = LATCH_UNKNOWN
         self._is_moving = False
-        # Pending movement plan, if any.
-        self._plan: Optional[_MovementPlan] = None
+        self._executor = Executor(zone, log)
 
     # -- Accessors ---------------------------------------------------------------------------------
 
@@ -119,14 +96,21 @@ class GradhermeticCoverLogic:
         """
         Most recent real travel position known to the logic.
         """
-        return self._last_position
+        return self._position
+
+    @property
+    def latch(self) -> str:
+        """
+        The latch belief: ``LATCHED``, ``UNLATCHED`` or ``UNKNOWN``.
+        """
+        return self._latch
 
     @property
     def in_tilt(self) -> bool:
         """
-        Whether the blind is believed latched in tilt mode.
+        Whether slat control applies. Only a confident latch belief offers it.
         """
-        return self._in_tilt
+        return self._latch == LATCH_LATCHED
 
     @property
     def is_moving(self) -> bool:
@@ -140,80 +124,60 @@ class GradhermeticCoverLogic:
         """
         Whether a movement plan is currently in progress.
         """
-        return self._plan is not None
+        return self._executor.has_plan
 
     def current_virtual_position(self) -> Optional[float]:
         """
         Virtual cover position for the current real position and mode, or None if unknown.
         """
-        if self._last_position is None:
+        if self._position is None:
             return None
-        if self._in_tilt:
-            return self._real_to_virtual(self._last_position)
-        return _clamp_pct(self._last_position)
+        return virtual_position(self._zone, self._latch, self._position)
 
-    # -- Tilt-zone math ----------------------------------------------------------------------------
-
-    def _virtual_to_real(self, virtual: float) -> float:
+    def belief(self) -> Belief:
         """
-        Map an in-tilt virtual position (0-100) to a real travel position within the zone.
+        The current belief, as the planner sees it.
         """
-        virtual = _clamp_pct(virtual)
-        span = self._cfg.tilt_zone_upper_pct - self._cfg.tilt_zone_lower_pct
-        return self._cfg.tilt_zone_upper_pct - (virtual / 100.0) * span
-
-    def _real_to_virtual(self, real: float) -> float:
-        """
-        Map an in-tilt real travel position within the zone to a virtual position (0-100).
-        """
-        span = self._cfg.tilt_zone_upper_pct - self._cfg.tilt_zone_lower_pct
-        return _clamp_pct((self._cfg.tilt_zone_upper_pct - real) / span * 100.0)
-
-    def _predip_target(self) -> float:
-        """
-        Real position just below the lower edge used to cleanly engage the latch.
-        """
-        return self._cfg.tilt_zone_lower_pct - self._cfg.tilt_zone_epsilon_pct
-
-    def _leave_target(self) -> float:
-        """
-        Real position just above the upper edge used to cleanly disengage the latch.
-        """
-        return self._cfg.tilt_zone_upper_pct + self._cfg.tilt_zone_epsilon_pct
-
-    def _position_in_band(self, position: float) -> bool:
-        """
-        Whether a real position falls inside the latch-ambiguity band ``[lower-eps, upper+eps]``.
-        """
-        return self._predip_target() <= position <= self._leave_target()
-
-    def _might_be_latched(self) -> bool:
-        """
-        Whether the mechanism could currently be latched.
-
-        The blind can only be latched while it sits inside the tilt band, so an unknown position or a
-        position inside the band is treated as possibly latched. Any downward move made while this is
-        true must first release the latch upward, mirroring the restart-recovery rule. This makes the
-        logic robust to a stale ``in_tilt`` flag (interrupted latch sequence, external move of the
-        real cover, or the brief startup window before recovery seeds state).
-        """
-        return self._last_position is None or self._position_in_band(self._last_position)
+        return Belief(position=self._position, latch=self._latch, is_moving=self._is_moving)
 
     # -- Lifecycle ---------------------------------------------------------------------------------
 
-    def seed_state(self, last_position: Optional[float], in_tilt: bool) -> None:
+    def seed_state(self, last_position: Optional[float], is_moving: bool = False) -> None:
         """
-        Seed persisted state after a restart, before any events are processed.
+        Establish the belief from a first position reading, before any events are processed.
+
+        State is never persisted across restarts, so the latch belief starts from the position
+        alone: clearly outside the band the mechanism cannot be latched, and anywhere else it is
+        genuinely unknown.
         """
-        self._last_position = last_position
-        self._in_tilt = in_tilt
+        self._position = last_position
+        self._is_moving = bool(is_moving) and last_position is not None
+        if last_position is not None and not self._zone.in_band(last_position):
+            self._latch = LATCH_UNLATCHED
+        else:
+            self._latch = LATCH_UNKNOWN
+
+    def on_startup(self, position: Optional[float], is_moving: bool = False) -> List[Action]:
+        """
+        Establish a known-safe state at startup, recovering upward when the latch is ambiguous.
+        """
+        if self._disabled:
+            return []
+        self.seed_state(position, is_moving)
+        if self._latch == LATCH_UNKNOWN:
+            self._log(f"startup position {position} is unknown or near the tilt zone; recovering "
+                      "fully open")
+            return self.on_recover()
+        self._log(f"startup position {position} is outside the tilt zone; resuming whole-height "
+                  "control")
+        return self._publish_current()
 
     def disable(self) -> List[Action]:
         """
         Permanently stop automation decisions for this blind until restart.
         """
         self._disabled = True
-        self._plan = None
+        self._executor.abandon()
         self._log("disabled")
         return []
 
@@ -226,13 +190,7 @@ class GradhermeticCoverLogic:
         Outside tilt this opens the blind fully; inside tilt it orients the slats perpendicular
         (virtual 100, the lower edge).
         """
-        if self._disabled:
-            return []
-        if self._in_tilt:
-            return self._start_plan([_Step(STEP_MOVE_TO, self._cfg.tilt_zone_lower_pct)],
-                                    final_in_tilt=True, final_virtual=100.0)
-        return self._start_plan([_Step(STEP_OPEN_FULL, 100.0)], final_in_tilt=False,
-                                final_virtual=100.0)
+        return self._run(Intent(INTENT_OPEN))
 
     def on_close(self) -> List[Action]:
         """
@@ -241,13 +199,7 @@ class GradhermeticCoverLogic:
         Outside tilt this closes the blind fully; inside tilt it orients the slats parallel
         (virtual 0, the upper edge).
         """
-        if self._disabled:
-            return []
-        if self._in_tilt:
-            return self._start_plan([_Step(STEP_MOVE_TO, self._cfg.tilt_zone_upper_pct)],
-                                    final_in_tilt=True, final_virtual=0.0)
-        return self._start_plan(self._guard_descent([_Step(STEP_CLOSE_FULL, 0.0)]),
-                                final_in_tilt=False, final_virtual=0.0)
+        return self._run(Intent(INTENT_CLOSE))
 
     def on_stop(self) -> List[Action]:
         """
@@ -255,43 +207,32 @@ class GradhermeticCoverLogic:
         """
         if self._disabled:
             return []
-        self._plan = None
-        return [Action(ACTION_STOP)]
+        self._abandon_plan()
+        return [Action(ACTION_STOP), Action(ACTION_CANCEL_SETTLE_TIMER)]
 
     def on_set_position(self, virtual_pct: float) -> List[Action]:
         """
         Handle ``cover.set_cover_position`` to an absolute virtual position.
 
-        Outside tilt the virtual position is the real position; inside tilt it interpolates the slat
-        angle between the zone edges.
+        Outside tilt the virtual position is the real position, snapped clear of the ambiguity band;
+        inside tilt it interpolates the slat angle between the zone edges.
         """
-        if self._disabled:
-            return []
-        virtual_pct = _clamp_pct(virtual_pct)
-        if self._in_tilt:
-            return self._start_plan([_Step(STEP_MOVE_TO, self._virtual_to_real(virtual_pct))],
-                                    final_in_tilt=True, final_virtual=virtual_pct)
-        # Outside tilt the virtual position is the real target. Only a downward move (or an unknown
-        # start) risks driving down while latched; an upward move self-releases across the upper edge.
-        steps = [_Step(STEP_MOVE_TO, virtual_pct)]
-        descending = self._last_position is None or virtual_pct < self._last_position
-        if descending:
-            steps = self._guard_descent(steps)
-        return self._start_plan(steps, final_in_tilt=False, final_virtual=virtual_pct)
+        return self._run(Intent(INTENT_SET_POSITION, virtual_pct=clamp_pct(virtual_pct)))
 
     def on_set_tilt_mode(self, enabled: bool) -> List[Action]:
         """
         Handle the custom ``set_tilt_mode`` service.
 
-        Entering latches the mechanism (landing slats closed); leaving disengages it upward.
+        Entering latches the mechanism (landing slats closed); leaving disengages it upward. Both
+        are no-ops when the blind is already in the requested mode.
         """
         if self._disabled:
             return []
-        if enabled and not self._in_tilt:
-            return self._enter_tilt(NEAR_EDGE_CLOSED)
-        if not enabled and self._in_tilt:
-            return self._leave_tilt()
-        return []
+        if enabled:
+            if self.in_tilt:
+                return []
+            return self._run(Intent(INTENT_ENTER_TILT, near_edge=NEAR_EDGE_CLOSED))
+        return self._run(Intent(INTENT_LEAVE_TILT))
 
     # -- KNX wall-button events --------------------------------------------------------------------
 
@@ -299,16 +240,10 @@ class GradhermeticCoverLogic:
         """
         Handle a long wall-button press: jump to an extreme.
 
-        Up drives fully open (leaving tilt naturally); down drives fully closed (rising out of the
-        zone first if latched, since the latch only releases upward).
+        Up drives fully open (leaving tilt naturally); down drives fully closed, releasing the latch
+        upward first whenever it might be engaged.
         """
-        if self._disabled:
-            return []
-        if direction == DIRECTION_UP:
-            return self._start_plan([_Step(STEP_OPEN_FULL, 100.0)], final_in_tilt=False,
-                                    final_virtual=100.0)
-        return self._start_plan(self._guard_descent([_Step(STEP_CLOSE_FULL, 0.0)]),
-                                final_in_tilt=False, final_virtual=0.0)
+        return self._run(Intent(INTENT_LONG_PRESS, direction=direction))
 
     def on_knx_short(self, direction: str) -> List[Action]:
         """
@@ -322,18 +257,14 @@ class GradhermeticCoverLogic:
         """
         if self._disabled:
             return []
-
         # 1. If the blind is moving, stop it (matches native KNX stop/step behavior).
         if self._is_moving:
-            self._plan = None
-            return [Action(ACTION_STOP)]
-
+            return self.on_stop()
         # 2. If latched in tilt, step the slats (leaving upward at the open edge).
-        if self._in_tilt:
-            return self._step_slats(direction, cross_open_edge=True)
-
+        if self.in_tilt:
+            return self._run(Intent(INTENT_SLAT_STEP, direction=direction, cross_open_edge=True))
         # 3. Idle and outside the zone: enter tilt when the press points toward the zone.
-        return self._enter_toward_zone(direction)
+        return self._run(Intent(INTENT_ENTER_TOWARD_ZONE, direction=direction))
 
     def on_slat_step(self, direction: str) -> List[Action]:
         """
@@ -348,220 +279,177 @@ class GradhermeticCoverLogic:
         """
         if self._disabled:
             return []
-        # Only adjust slats when idle and latched. Ignoring presses mid-plan avoids aborting an
-        # enter/leave/step sequence, and ignoring them outside tilt keeps the whole blind from moving.
-        if self._plan is not None or self._is_moving:
+        # Ignoring presses mid-plan avoids aborting an enter/leave/step sequence, and ignoring them
+        # outside tilt keeps the whole blind from moving.
+        if self.has_pending_plan or self._is_moving:
             return []
-        if not self._in_tilt:
-            return []
-        return self._step_slats(direction, cross_open_edge=False)
+        return self._run(Intent(INTENT_SLAT_STEP, direction=direction))
 
     # -- Restart recovery --------------------------------------------------------------------------
 
     def on_recover(self) -> List[Action]:
         """
-        Recover from an unknown/mismatched position by driving fully open (upward-only).
+        Recover from an unknown/ambiguous position by driving fully open (upward-only).
         """
-        if self._disabled:
-            return []
-        self._in_tilt = False
-        return self._start_plan([_Step(STEP_OPEN_FULL, 100.0)], final_in_tilt=False,
-                                final_virtual=100.0)
+        return self._run(Intent(INTENT_RECOVER))
 
     # -- Position feedback -------------------------------------------------------------------------
 
-    def on_real_position(self, position: float, is_moving: bool) -> List[Action]:
+    def on_real_position(self, position: Optional[float], is_moving: bool) -> List[Action]:
         """
-        Consume controller position feedback, advancing the movement plan when a waypoint is reached
-        and the blind has settled.
+        Consume controller position/motion feedback, advancing any plan in progress.
+
+        A ``None`` position means the cover became unavailable: the motion belief is cleared and the
+        latch belief degrades to unknown, so no later decision reasons from a stale position.
         """
         if self._disabled:
             return []
 
         was_moving = self._is_moving
-        self._last_position = position
-        self._is_moving = is_moving
+        had_plan = self.has_pending_plan
+        self._observe(position, is_moving)
 
-        if self._plan is not None:
-            return self._advance_plan(position, is_moving)
+        if had_plan:
+            return self._consume(self._executor.on_feedback(position, is_moving))
 
-        # No plan of our own: the real cover may have been driven externally. If it now sits clearly
-        # outside the tilt band it cannot be latched, so drop a stale in_tilt belief. We never set
-        # in_tilt from feedback -- entering the latch is always an explicit, app-driven sequence.
-        if self._in_tilt and not self._position_in_band(position):
-            self._in_tilt = False
-            self._log("cleared in_tilt: real position moved outside the tilt band")
-
-        # If the blind just came to rest (e.g. after a manual stop), publish and persist.
-        if was_moving and not is_moving:
-            return self._publish_and_persist()
+        # No plan of our own: the real cover moved under external control.
+        if was_moving and not is_moving and position is not None:
+            if self._zone.in_band(position) and self._latch != LATCH_UNKNOWN:
+                # We did not see how it got here; a rise across the lower edge would have latched it.
+                self._latch = LATCH_UNKNOWN
+                self._log("latch belief cleared: external motion ended inside the tilt band")
+            return self._publish_current()
         return []
 
-    # -- Internal plan handling --------------------------------------------------------------------
+    def on_settle_timer(self, position: Optional[float], is_moving: bool) -> List[Action]:
+        """
+        Consume a settle-timer firing, with the controller state read at the moment it fired.
 
-    def _advance_plan(self, position: float, is_moving: bool) -> List[Action]:
+        The executor decides what it means: keep waiting through a long travel, accept an actuator
+        that reported only its final state (or stopped a hair short), or declare a stall.
         """
-        Advance the pending plan by one waypoint if the current waypoint is reached and settled.
-        """
-        step = self._plan.steps[0]
-        if is_moving:
+        if self._disabled or not self.has_pending_plan:
             return []
-        if abs(position - step.target) > POSITION_TOLERANCE_PCT:
+        self._observe(position, is_moving)
+        return self._consume(self._executor.on_timer(position, is_moving))
+
+    # -- Internals ---------------------------------------------------------------------------------
+
+    def _run(self, intent: Intent) -> List[Action]:
+        """
+        Plan an intent from the current belief, check it, and start executing it.
+
+        A plan already in flight is replaced rather than queued: the replacement is derived from the
+        belief as it will be *after* the interruption, so it re-derives every safety guard. An
+        intent that plans to nothing leaves any in-flight plan alone.
+        """
+        if self._disabled:
             return []
+        belief = self._belief_after_interrupt()
+        movement = planner.plan(self._zone, belief, intent)
+        if movement is None:
+            return []
+        violation = planner.check_plan(self._zone, belief, movement)
+        if violation is not None:
+            return self._fail_invariant(violation)
+        self._abandon_plan()
+        return self._consume(self._executor.start(movement, self._position, self._is_moving))
 
-        self._plan.steps.pop(0)
-        if self._plan.steps:
-            return [self._step_action(self._plan.steps[0])]
-
-        # Plan complete: commit the terminal state.
-        self._in_tilt = self._plan.final_in_tilt
-        final_virtual = self._plan.final_virtual
-        self._plan = None
-        self._log(f"plan complete: in_tilt={self._in_tilt} virtual={final_virtual}")
-        return [
-            Action(ACTION_PUBLISH_POSITION, position=final_virtual),
-            Action(ACTION_PERSIST_STATE, position=self._last_position, in_tilt=self._in_tilt),
-        ]
-
-    def _publish_and_persist(self) -> List[Action]:
+    def _consume(self, outcome: Outcome) -> List[Action]:
         """
-        Emit publish + persist actions for the current resting position and mode.
+        Apply an executor outcome to the latch belief and return its actions.
         """
-        actions: List[Action] = []
-        virtual = self.current_virtual_position()
-        if virtual is not None:
-            actions.append(Action(ACTION_PUBLISH_POSITION, position=virtual))
-        actions.append(
-            Action(ACTION_PERSIST_STATE, position=self._last_position, in_tilt=self._in_tilt))
-        return actions
+        if outcome.status == STATUS_COMPLETED:
+            self._latch = outcome.plan.final_latch
+        elif outcome.status == STATUS_STALLED:
+            self._degrade_latch(outcome.plan)
+        return outcome.actions
 
-    def _guard_descent(self, steps: List[_Step]) -> List[_Step]:
+    def _observe(self, position: Optional[float], is_moving: bool) -> None:
         """
-        Prefix a downward movement with an upward latch release when the mechanism might be latched.
+        Fold a controller reading into the belief.
 
-        The latch only ever releases upward, so before driving down we first rise clear of the upper
-        edge whenever ``_might_be_latched`` holds. Rising from above the zone cannot re-latch (that
-        needs a down-then-up across the lower edge), so the subsequent descent is safe.
+        Feedback can only ever degrade the latch belief: a blind resting clear of the band cannot be
+        latched, and an unreadable position means we no longer know anything about it.
         """
-        if self._might_be_latched():
-            return [_Step(STEP_MOVE_TO, self._leave_target())] + steps
-        return steps
-
-    def _start_plan(self, steps: List[_Step], *, final_in_tilt: bool,
-                    final_virtual: float) -> List[Action]:
-        """
-        Begin a movement plan and emit the first waypoint's action.
-        """
-        self._plan = _MovementPlan(steps=steps, final_in_tilt=final_in_tilt,
-                                   final_virtual=final_virtual)
-        return [self._step_action(steps[0])]
-
-    def _step_action(self, step: _Step) -> Action:
-        """
-        Translate a plan step into its declarative action.
-        """
-        if step.kind == STEP_MOVE_TO:
-            return Action(ACTION_MOVE_TO, position=step.target)
-        if step.kind == STEP_OPEN_FULL:
-            return Action(ACTION_OPEN_FULL)
-        return Action(ACTION_CLOSE_FULL)
-
-    def _enter_tilt(self, near_edge: str) -> List[Action]:
-        """
-        Build and start the latch sequence, landing at the requested near edge.
-
-        Latching requires a genuine down-then-up motion across the lower edge, so the sequence must
-        approach that edge from above before dipping below it and rising back through it. Callers may
-        start anywhere, so we first ensure the blind is safely above the lower edge:
-
-        - unknown position: recover fully open;
-        - inside the ambiguity band: the latch may already be engaged (e.g. an earlier entry was
-          interrupted mid-rise, which physically latches the moment the rise crosses the lower
-          edge), so rise above the zone to release it first -- dipping down while latched is exactly
-          what the latch invariant forbids;
-        - clearly below the band: hop just above the lower edge;
-        - already above the zone: dip straight down.
-
-        Then dip below the edge and rise to the upper edge to latch.
-        """
-        steps: List[_Step] = []
-        pos = self._last_position
-        lower = self._cfg.tilt_zone_lower_pct
-        if pos is None:
-            steps.append(_Step(STEP_OPEN_FULL, 100.0))
-        elif self._might_be_latched():
-            # Inside the band the mechanism might be latched; release it upward before dipping, since
-            # the latch only ever releases by rising above the upper edge.
-            steps.append(_Step(STEP_MOVE_TO, self._leave_target()))
-        elif pos <= lower:
-            # Below the band: hop just above the lower edge so the following dip crosses it downward.
-            steps.append(_Step(STEP_MOVE_TO, lower + self._cfg.tilt_zone_epsilon_pct))
-        steps.append(_Step(STEP_MOVE_TO, self._predip_target()))
-        steps.append(_Step(STEP_MOVE_TO, self._cfg.tilt_zone_upper_pct))
-
-        if near_edge == NEAR_EDGE_OPEN:
-            steps.append(_Step(STEP_MOVE_TO, lower))
-            final_virtual = 100.0
-        else:
-            final_virtual = 0.0
-        return self._start_plan(steps, final_in_tilt=True, final_virtual=final_virtual)
-
-    def _leave_tilt(self) -> List[Action]:
-        """
-        Disengage the latch with a single upward move above the zone.
-        """
-        return self._start_plan([_Step(STEP_MOVE_TO, self._leave_target())], final_in_tilt=False,
-                                final_virtual=self._leave_target())
-
-    def _step_slats(self, direction: str, *, cross_open_edge: bool) -> List[Action]:
-        """
-        Step the slats by one ``tilt_step_pct`` within the zone.
-
-        ``cross_open_edge`` decides what an up step does when the slats are already fully open: the
-        KNX wall button leaves tilt upward (its only way back out), while the dedicated slat-step
-        helpers clamp and stay open. The closed edge always clamps -- there is nowhere lower to go
-        without driving the latch downward, which the mechanism forbids.
-        """
-        position = self._last_position
         if position is None:
-            position = self._cfg.tilt_zone_upper_pct
-        current_virtual = self._real_to_virtual(position)
-        if direction == DIRECTION_UP:
-            if current_virtual >= 100.0 - _VIRTUAL_EPSILON:
-                if cross_open_edge:
-                    # At the open edge already: an up step leaves tilt upward (boundary crossing).
-                    return self._leave_tilt()
-                # Slat-step helper: clamp, stay fully open.
-                return []
-            target_virtual = min(100.0, current_virtual + self._cfg.tilt_step_pct)
-        else:
-            if current_virtual <= _VIRTUAL_EPSILON:
-                # At the closed edge already: nothing more to close.
-                return []
-            target_virtual = max(0.0, current_virtual - self._cfg.tilt_step_pct)
-        return self._start_plan([_Step(STEP_MOVE_TO, self._virtual_to_real(target_virtual))],
-                                final_in_tilt=True, final_virtual=target_virtual)
+            if self._position is not None:
+                self._log("cover position unreadable; motion and latch beliefs cleared")
+            self._position = None
+            self._is_moving = False
+            self._latch = LATCH_UNKNOWN
+            return
+        self._position = position
+        self._is_moving = is_moving
+        if not self._zone.in_band(position) and self._latch != LATCH_UNLATCHED:
+            self._latch = LATCH_UNLATCHED
+            self._log(f"latch belief cleared: {position} rests outside the tilt band")
 
-    def _enter_toward_zone(self, direction: str) -> List[Action]:
+    def _abandon_plan(self) -> None:
         """
-        From outside the zone, enter tilt only when the press points toward the zone.
+        Drop any plan in flight, degrading the latch belief for the interruption.
+
+        The caller emits its own timer action -- a stop cancels the timer, a replacement re-arms it.
         """
-        pos = self._last_position
-        if pos is None:
-            # Position unknown: a short press cannot safely determine direction; do nothing.
+        outcome = self._executor.abandon()
+        if outcome.status == STATUS_ABANDONED:
+            self._degrade_latch(outcome.plan)
+
+    def _belief_after_interrupt(self) -> Belief:
+        """
+        The belief a replacement plan must be derived from: as if the plan in flight were abandoned.
+        """
+        pending = self._executor.plan
+        latch = self._latch if pending is None else self._degraded_latch(pending)
+        return Belief(position=self._position, latch=latch, is_moving=self._is_moving)
+
+    def _degrade_latch(self, movement: Plan) -> None:
+        """
+        Degrade the latch belief because ``movement`` was interrupted part-way.
+        """
+        degraded = self._degraded_latch(movement)
+        if degraded != self._latch:
+            self._log(f"latch belief {self._latch} -> {degraded}: {movement.kind} plan interrupted")
+            self._latch = degraded
+
+    def _degraded_latch(self, movement: Plan) -> str:
+        """
+        What the latch belief becomes if ``movement`` is abandoned where the blind is now.
+
+        A plan whose every target lies inside the zone is pure slat rotation and cannot have changed
+        anything, so a confident belief survives its interruption -- otherwise stopping a slat move
+        would drop the blind out of tilt mode. Any other plan may have been interrupted mid-crossing,
+        which is exactly the case the latch invariant exists for.
+        """
+        if self._latch == LATCH_LATCHED and not planner.can_change_latch(self._zone, movement):
+            return LATCH_LATCHED
+        if self._position is None or self._zone.in_band(self._position):
+            return LATCH_UNKNOWN
+        return LATCH_UNLATCHED
+
+    def _publish_current(self) -> List[Action]:
+        """
+        Emit the virtual position for where the blind rests now, if that is known.
+        """
+        virtual = self.current_virtual_position()
+        if virtual is None:
             return []
-        if pos > self._cfg.tilt_zone_upper_pct and direction == DIRECTION_DOWN:
-            # From above the zone, a down press enters at the most-closed near edge.
-            return self._enter_tilt(NEAR_EDGE_CLOSED)
-        if pos < self._cfg.tilt_zone_lower_pct and direction == DIRECTION_UP:
-            # From below the zone, an up press enters at the most-open near edge.
-            return self._enter_tilt(NEAR_EDGE_OPEN)
-        # Press points away from the zone (or already past it): long press covers the extremes.
-        return []
+        return [Action(ACTION_PUBLISH_POSITION, position=virtual)]
 
+    def _fail_invariant(self, violation: str) -> List[Action]:
+        """
+        Refuse a plan that failed a safety check, and disable the blind.
 
-def _clamp_pct(value: float) -> float:
-    """
-    Clamp a percentage into [0, 100].
-    """
-    return max(0.0, min(100.0, value))
+        Unreachable by construction -- the planner is written to satisfy every invariant and the
+        model tests prove it does -- so reaching here means a planner bug, and the safe response is
+        to stop deciding anything for this blind until a human looks at it.
+        """
+        self._log(f"ERROR: refusing a plan that violates {violation}")
+        self._disabled = True
+        self._executor.abandon()
+        return [
+            Action(ACTION_CANCEL_SETTLE_TIMER),
+            Action(ACTION_NOTIFY, notify_kind=NOTIFY_INVARIANT,
+                   message=(f"was disabled by a failed safety check: {violation}. This is a bug in "
+                            "the movement planner.")),
+        ]

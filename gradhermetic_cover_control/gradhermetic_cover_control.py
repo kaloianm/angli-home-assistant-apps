@@ -22,18 +22,21 @@ import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
 from gradhermetic_cover_control.config import parse_app_config
-from gradhermetic_cover_control.logic import (
+from gradhermetic_cover_control.executor import (
+    ACTION_ARM_SETTLE_TIMER,
+    ACTION_CANCEL_SETTLE_TIMER,
     ACTION_CLOSE_FULL,
     ACTION_MOVE_TO,
+    ACTION_NOTIFY,
     ACTION_OPEN_FULL,
-    ACTION_PERSIST_STATE,
     ACTION_PUBLISH_POSITION,
     ACTION_STOP,
-    DIRECTION_DOWN,
-    DIRECTION_UP,
+    NOTIFY_STALL,
     Action,
-    GradhermeticCoverLogic,
 )
+from gradhermetic_cover_control.geometry import to_command
+from gradhermetic_cover_control.logic import GradhermeticCoverLogic
+from gradhermetic_cover_control.planner import DIRECTION_DOWN, DIRECTION_UP
 from gradhermetic_cover_control.runtime import (
     COMMAND_RATE_LIMIT,
     COMMAND_RATE_WINDOW_SECONDS,
@@ -56,11 +59,6 @@ COMMAND_EVENT = "gradhermetic_command"
 
 # Seconds to wait after startup before running position recovery, letting entity state settle.
 RECOVERY_DELAY_SECONDS = 3
-
-# Fallback used to advance a movement plan if a final position update is never observed.
-SETTLE_TIMEOUT_SECONDS = 45
-
-_MOVE_SERVICES = ("cover/set_cover_position", "cover/open_cover", "cover/close_cover")
 
 
 class GradhermeticCoverControl(hass.Hass):
@@ -125,24 +123,12 @@ class GradhermeticCoverControl(hass.Hass):
         """
         Establish a known-safe state at startup.
 
-        State is not persisted across restarts. If the blind's real position is outside the tilt
-        zone it cannot be latched, so it is safe to resume whole-height control. If it is inside
-        (or near) the zone the latch state is ambiguous, so recover upward to a known state,
-        honoring the upward-only protection rule.
+        State is not persisted across restarts, so the logic decides from the first position reading
+        whether whole-height control can resume or the blind has to be recovered upward.
         """
-        runtime = self._runtime
         try:
-            position, _ = self._read_real_position()
-            ambiguous = position is None or runtime.config.zone.in_band(position)
-            runtime.logic.seed_state(position, False)
-            if ambiguous:
-                self.log(f"[{runtime.config.virtual_id}] Startup position {position} is unknown or "
-                         "near the tilt zone; recovering fully open.")
-                self._apply_actions(runtime.logic.on_recover())
-            else:
-                self.log(f"[{runtime.config.virtual_id}] Startup position {position} is outside "
-                         "the tilt zone; resuming whole-height control.")
-                self._publish_virtual(runtime.logic.current_virtual_position())
+            position, is_moving = self._read_real_position()
+            self._apply_actions(self._runtime.logic.on_startup(position, is_moving))
             self._ready = True  # pylint: disable=attribute-defined-outside-init
         except Exception as exc:
             self._report_error("_run_recovery", exc)
@@ -204,65 +190,29 @@ class GradhermeticCoverControl(hass.Hass):
                        kwargs: Dict[str, Any]) -> None:
         """
         Feed controller position/motion feedback into the logic engine.
+
+        A missing position (the cover went unavailable) is forwarded too, so the logic drops its
+        stale position and motion beliefs rather than reasoning from them indefinitely.
         """
         try:
             position, is_moving = _extract_position(new)
-            if position is None:
-                return
             self._apply_actions(self._runtime.logic.on_real_position(position, is_moving))
         except Exception as exc:
             self._report_error(f"_on_real_state(entity={entity!r})", exc)
 
     def _on_settle(self, kwargs: Dict[str, Any]) -> None:
         """
-        Advance a stalled plan using the controller's current reported position.
+        Hand a settle-timer firing to the logic, with the controller state read as it fired.
+
+        Reading here rather than relying on the last feedback event keeps the fallback honest even
+        if a state update never reached us -- which is the situation the timer exists for.
         """
         try:
             self._runtime.settle_timer_handle = None
-            logic = self._runtime.logic
             position, is_moving = self._read_real_position()
-            if position is None:
-                # An unreadable position (cover unavailable) with a plan still pending is a genuine
-                # stall; surface it rather than leaving the plan hanging forever with no notice.
-                if logic.has_pending_plan:
-                    self._report_stall(None)
-                return
-            had_plan = logic.has_pending_plan
-            actions = logic.on_real_position(position, is_moving)
-            self._apply_actions(actions)
-            # A healthy plan either completes or advances to the next waypoint (which re-arms the
-            # settle timer). If it did neither, the current waypoint was not reached yet.
-            if had_plan and logic.has_pending_plan and not actions:
-                # The settle timeout is an inactivity timeout, not a hard travel-time cap: while the
-                # blind is still reporting motion the move is simply long, so re-arm and keep waiting
-                # rather than stopping it and raising a false obstruction alert.
-                if is_moving:
-                    self._restart_settle(self._runtime)
-                    return
-                # Settled but short of target: surface it instead of pending forever, and stop the
-                # blind where it is.
-                self._report_stall(position)
+            self._apply_actions(self._runtime.logic.on_settle_timer(position, is_moving))
         except Exception as exc:
             self._report_error("_on_settle", exc)
-
-    def _report_stall(self, position: Optional[float]) -> None:
-        """
-        Abandon a stalled movement plan and notify Home Assistant.
-        """
-        runtime = self._runtime
-        self.log(
-            f"[{runtime.config.virtual_id}] Plan stalled: waypoint not reached within "
-            f"{SETTLE_TIMEOUT_SECONDS}s (position {position}). Stopping and clearing the plan.",
-            level="ERROR")
-        self._apply_actions(runtime.logic.on_stop())
-        self.call_service(
-            "persistent_notification/create",
-            title="GradhermeticCoverControl stalled",
-            message=(
-                f"Cover '{runtime.config.virtual_id}' did not reach its target position within "
-                f"{SETTLE_TIMEOUT_SECONDS} seconds and was stopped. Check the blind for a "
-                "mechanical obstruction or a misconfigured tilt zone."),
-        )
 
     # -- KNX ---------------------------------------------------------------------------------------
 
@@ -393,6 +343,9 @@ class GradhermeticCoverControl(hass.Hass):
     def _apply_actions(self, actions: List[Action]) -> None:
         """
         Translate declarative logic actions into AppDaemon side effects.
+
+        This is a mechanical one-to-one translation: every decision, including when the settle timer
+        is armed or cancelled, was made in the pure core.
         """
         runtime = self._runtime
         if runtime.disabled:
@@ -400,19 +353,21 @@ class GradhermeticCoverControl(hass.Hass):
         for action in actions:
             if action.kind == ACTION_MOVE_TO:
                 self._command(runtime, "cover/set_cover_position",
-                              position=int(round(_clamp_pct(action.position))))
+                              position=to_command(action.position))
             elif action.kind == ACTION_OPEN_FULL:
                 self._command(runtime, "cover/open_cover")
             elif action.kind == ACTION_CLOSE_FULL:
                 self._command(runtime, "cover/close_cover")
             elif action.kind == ACTION_STOP:
                 self._command(runtime, "cover/stop_cover")
-                self._cancel_settle(runtime)
             elif action.kind == ACTION_PUBLISH_POSITION:
                 self._publish_virtual(action.position)
-            elif action.kind == ACTION_PERSIST_STATE:
-                # State is intentionally not persisted; startup recovery re-establishes safe state.
-                pass
+            elif action.kind == ACTION_ARM_SETTLE_TIMER:
+                self._arm_settle(runtime, action.seconds)
+            elif action.kind == ACTION_CANCEL_SETTLE_TIMER:
+                self._cancel_settle(runtime)
+            elif action.kind == ACTION_NOTIFY:
+                self._notify(runtime, action.notify_kind, action.message)
 
     def _command(self, runtime: CoverRuntime, service: str, **data: Any) -> None:
         """
@@ -425,8 +380,19 @@ class GradhermeticCoverControl(hass.Hass):
             return
         self.log(f"[{runtime.config.virtual_id}] {service} {data or ''}")
         self.call_service(service, entity_id=runtime.config.real_cover, **data)
-        if service in _MOVE_SERVICES:
-            self._restart_settle(runtime)
+
+    def _notify(self, runtime: CoverRuntime, kind: Optional[str], message: Optional[str]) -> None:
+        """
+        Render a logic notification as a Home Assistant persistent notification.
+        """
+        title = ("GradhermeticCoverControl stalled"
+                 if kind == NOTIFY_STALL else "GradhermeticCoverControl error")
+        self.log(f"[{runtime.config.virtual_id}] {kind}: {message}", level="ERROR")
+        self.call_service(
+            "persistent_notification/create",
+            title=title,
+            message=f"Cover '{runtime.config.virtual_id}' {message}",
+        )
 
     def _publish_virtual(self, virtual_position: Optional[float]) -> None:
         """
@@ -439,7 +405,7 @@ class GradhermeticCoverControl(hass.Hass):
             return
         self.set_state(
             self._position_entity,
-            state=int(round(_clamp_pct(virtual_position))),
+            state=to_command(virtual_position),
             attributes={
                 "friendly_name": f"{self._config.virtual_name} Position",
                 "unit_of_measurement": "%",
@@ -448,12 +414,12 @@ class GradhermeticCoverControl(hass.Hass):
 
     # -- Settle timer ------------------------------------------------------------------------------
 
-    def _restart_settle(self, runtime: CoverRuntime) -> None:
+    def _arm_settle(self, runtime: CoverRuntime, seconds: Optional[float]) -> None:
         """
         (Re)start the settle timer used as a plan-advancement fallback.
         """
         self._cancel_settle(runtime)
-        runtime.settle_timer_handle = self.run_in(self._on_settle, SETTLE_TIMEOUT_SECONDS)
+        runtime.settle_timer_handle = self.run_in(self._on_settle, seconds)
 
     def _cancel_settle(self, runtime: CoverRuntime) -> None:
         """
@@ -549,10 +515,3 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     return str(value).strip().lower() in ("true", "on", "yes", "1")
-
-
-def _clamp_pct(value: float) -> float:
-    """
-    Clamp a percentage into [0, 100].
-    """
-    return max(0.0, min(100.0, value))

@@ -223,8 +223,9 @@ class Executor:
         self._log(f"plan complete: latch={movement.final_latch} position={position}")
         actions = [Action(ACTION_CANCEL_SETTLE_TIMER)]
         if position is not None:
-            actions.append(Action(ACTION_PUBLISH_POSITION,
-                                  position=self.virtual_position(movement.final_latch, position)))
+            actions.append(
+                Action(ACTION_PUBLISH_POSITION,
+                       position=virtual_position(self._zone, movement.final_latch, position)))
         return Outcome(actions, STATUS_COMPLETED, movement)
 
     def _stall(self, reason: str) -> Outcome:
@@ -244,17 +245,17 @@ class Executor:
             Action(ACTION_NOTIFY, notify_kind=NOTIFY_STALL, message=message),
         ], STATUS_STALLED, movement)
 
-    def virtual_position(self, latch: str, position: float) -> float:
-        """
-        Map a real position to the virtual position the user-facing cover shows.
+def virtual_position(zone: Zone, latch: str, position: float) -> float:
+    """
+    Map a real position to the virtual position the user-facing cover shows.
 
-        Publishing what the blind actually reports -- rather than what was commanded -- keeps the
-        published value and the app's own belief identical, which is what makes them comparable in
-        the model tests.
-        """
-        if latch == LATCH_LATCHED:
-            return self._zone.real_to_virtual(position)
-        return clamp_pct(position)
+    Publishing what the blind actually reports -- rather than what was commanded -- keeps the
+    published value and the app's own belief identical, which is what makes them comparable in the
+    model tests.
+    """
+    if latch == LATCH_LATCHED:
+        return zone.real_to_virtual(position)
+    return clamp_pct(position)
 
 
 def _command(step: Step) -> Action:
