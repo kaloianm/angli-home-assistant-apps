@@ -3,7 +3,8 @@ import unittest
 from datetime import datetime, timedelta
 
 from gradhermetic_cover_control.config import GradhermeticConfig
-from gradhermetic_cover_control.logic import GradhermeticCoverLogic, LogicConfig
+from gradhermetic_cover_control.geometry import Zone
+from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 from gradhermetic_cover_control.runtime import (
     COMMAND_RATE_LIMIT,
     COMMAND_RATE_WINDOW_SECONDS,
@@ -12,21 +13,17 @@ from gradhermetic_cover_control.runtime import (
 
 
 def _runtime():
+    zone = Zone(tilt_zone_upper_pct=44.0, tilt_zone_lower_pct=38.0, tilt_zone_epsilon_pct=2.0,
+                tilt_step_pct=20.0)
     config = GradhermeticConfig(
         real_cover="cover.living_room_blind",
         virtual_id="living_room",
         virtual_name="Living Room Blind",
-        tilt_zone_upper_pct=44.0,
-        tilt_zone_lower_pct=38.0,
-        tilt_zone_epsilon_pct=2.0,
-        tilt_step_pct=20.0,
+        zone=zone,
         knx_move_address=None,
         knx_step_address=None,
     )
-    logic = GradhermeticCoverLogic(
-        LogicConfig(tilt_zone_upper_pct=44.0, tilt_zone_lower_pct=38.0, tilt_zone_epsilon_pct=2.0,
-                    tilt_step_pct=20.0))
-    return CoverRuntime(config=config, logic=logic)
+    return CoverRuntime(config=config, logic=GradhermeticCoverLogic(zone))
 
 
 class TestCommandRateLimiting(unittest.TestCase):

@@ -1,5 +1,9 @@
 """
 Pure config models and parsing for GradhermeticCoverControl.
+
+This module only reads and type-checks the ``apps.yaml`` args. Every rule relating the tilt-zone
+numbers to each other lives in :mod:`geometry`, which this module delegates to by constructing a
+:class:`~gradhermetic_cover_control.geometry.Zone`.
 """
 
 from __future__ import annotations
@@ -7,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from gradhermetic_cover_control.logic import POSITION_TOLERANCE_PCT
+from gradhermetic_cover_control.geometry import Zone
 
 
 @dataclass(frozen=True)
@@ -19,10 +23,7 @@ class GradhermeticConfig:
     real_cover: str
     virtual_id: str
     virtual_name: str
-    tilt_zone_upper_pct: float
-    tilt_zone_lower_pct: float
-    tilt_zone_epsilon_pct: float
-    tilt_step_pct: float
+    zone: Zone
     knx_move_address: Optional[str]
     knx_step_address: Optional[str]
 
@@ -34,10 +35,10 @@ class GradhermeticConfig:
                 f"real_cover={self.real_cover}, "
                 f"virtual_id={self.virtual_id}, "
                 f"virtual_name={self.virtual_name}, "
-                f"tilt_zone_upper_pct={self.tilt_zone_upper_pct}, "
-                f"tilt_zone_lower_pct={self.tilt_zone_lower_pct}, "
-                f"tilt_zone_epsilon_pct={self.tilt_zone_epsilon_pct}, "
-                f"tilt_step_pct={self.tilt_step_pct}, "
+                f"tilt_zone_upper_pct={self.zone.tilt_zone_upper_pct}, "
+                f"tilt_zone_lower_pct={self.zone.tilt_zone_lower_pct}, "
+                f"tilt_zone_epsilon_pct={self.zone.tilt_zone_epsilon_pct}, "
+                f"tilt_step_pct={self.zone.tilt_step_pct}, "
                 f"knx_move_address={self.knx_move_address}, "
                 f"knx_step_address={self.knx_step_address}"
                 ")")
@@ -51,42 +52,22 @@ def parse_app_config(args: Dict[str, Any]) -> GradhermeticConfig:
     virtual_id = _require_non_empty_str(args, "virtual_id")
     virtual_name = _require_non_empty_str(args, "virtual_name")
 
-    tilt_zone_upper_pct = _parse_percentage(args, "tilt_zone_upper_pct")
-    tilt_zone_lower_pct = _parse_percentage(args, "tilt_zone_lower_pct")
-    if tilt_zone_lower_pct >= tilt_zone_upper_pct:
-        raise ValueError("tilt_zone_lower_pct must be smaller than tilt_zone_upper_pct")
-
-    tilt_zone_epsilon_pct = _parse_positive_float(args, "tilt_zone_epsilon_pct")
-    if tilt_zone_epsilon_pct <= POSITION_TOLERANCE_PCT:
-        raise ValueError(
-            f"tilt_zone_epsilon_pct must be > {POSITION_TOLERANCE_PCT} (the position-feedback "
-            "tolerance) so the dip and leave margins reliably clear the zone edges")
-    if tilt_zone_lower_pct - tilt_zone_epsilon_pct < 0.0:
-        raise ValueError("tilt_zone_lower_pct - tilt_zone_epsilon_pct must be >= 0")
-    if tilt_zone_upper_pct + tilt_zone_epsilon_pct > 100.0:
-        raise ValueError("tilt_zone_upper_pct + tilt_zone_epsilon_pct must be <= 100")
-
-    tilt_step_pct = _parse_positive_float(args, "tilt_step_pct")
-    min_step_pct = 100.0 / (tilt_zone_upper_pct - tilt_zone_lower_pct)
-    if tilt_step_pct < min_step_pct:
-        raise ValueError(
-            f"tilt_step_pct must be >= {min_step_pct:.2f} so one step moves the actuator at least "
-            f"one reported percent within the {tilt_zone_upper_pct - tilt_zone_lower_pct:.0f}% "
-            "tilt zone")
-
-    knx_move_address = _optional_str(args, "knx_move_address")
-    knx_step_address = _optional_str(args, "knx_step_address")
+    # Read each number in isolation here (present, numeric, in range); Zone owns every rule that
+    # relates them to one another and raises naming the same apps.yaml keys.
+    zone = Zone(
+        tilt_zone_upper_pct=_parse_percentage(args, "tilt_zone_upper_pct"),
+        tilt_zone_lower_pct=_parse_percentage(args, "tilt_zone_lower_pct"),
+        tilt_zone_epsilon_pct=_parse_positive_float(args, "tilt_zone_epsilon_pct"),
+        tilt_step_pct=_parse_positive_float(args, "tilt_step_pct"),
+    )
 
     return GradhermeticConfig(
         real_cover=real_cover,
         virtual_id=virtual_id,
         virtual_name=virtual_name,
-        tilt_zone_upper_pct=tilt_zone_upper_pct,
-        tilt_zone_lower_pct=tilt_zone_lower_pct,
-        tilt_zone_epsilon_pct=tilt_zone_epsilon_pct,
-        tilt_step_pct=tilt_step_pct,
-        knx_move_address=knx_move_address,
-        knx_step_address=knx_step_address,
+        zone=zone,
+        knx_move_address=_optional_str(args, "knx_move_address"),
+        knx_step_address=_optional_str(args, "knx_step_address"),
     )
 
 

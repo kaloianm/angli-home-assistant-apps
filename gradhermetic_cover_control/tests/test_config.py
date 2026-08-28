@@ -24,8 +24,8 @@ class TestConfigParsing(unittest.TestCase):
         self.assertEqual("cover.living_room_blind", config.real_cover)
         self.assertEqual("living_room", config.virtual_id)
         self.assertEqual("Living Room Blind", config.virtual_name)
-        self.assertEqual(44.0, config.tilt_zone_upper_pct)
-        self.assertEqual(38.0, config.tilt_zone_lower_pct)
+        self.assertEqual(44.0, config.zone.tilt_zone_upper_pct)
+        self.assertEqual(38.0, config.zone.tilt_zone_lower_pct)
         self.assertEqual("1/2/3", config.knx_move_address)
         self.assertEqual("1/2/4", config.knx_step_address)
 
@@ -74,9 +74,11 @@ class TestConfigParsing(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "tilt_step_pct must be > 0"):
             parse_app_config(_valid_args(tilt_step_pct=0.0))
 
-    def test_epsilon_must_exceed_tolerance(self):
-        with self.assertRaisesRegex(ValueError, "tilt_zone_epsilon_pct must be >"):
-            parse_app_config(_valid_args(tilt_zone_epsilon_pct=1.0))
+    def test_epsilon_below_minimum_raises(self):
+        # Delegated to geometry: a margin under one whole percent cannot carry the rounded command
+        # clear of the zone edge it must cross.
+        with self.assertRaisesRegex(ValueError, "tilt_zone_epsilon_pct must be >="):
+            parse_app_config(_valid_args(tilt_zone_epsilon_pct=0.5))
 
     def test_step_must_move_actuator(self):
         # Span is 6, so any step below 100/6 ~= 16.7 never moves the integer-reporting actuator.

@@ -1,5 +1,6 @@
 import unittest
 
+from gradhermetic_cover_control.geometry import Zone
 from gradhermetic_cover_control.logic import (
     ACTION_CLOSE_FULL,
     ACTION_MOVE_TO,
@@ -10,7 +11,6 @@ from gradhermetic_cover_control.logic import (
     DIRECTION_DOWN,
     DIRECTION_UP,
     GradhermeticCoverLogic,
-    LogicConfig,
 )
 
 # Geometry used throughout: zone [38, 44], epsilon 2, step 20. Span = 6, so the minimum step that
@@ -22,8 +22,8 @@ STEP = 20.0
 
 
 def _config():
-    return LogicConfig(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
-                       tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP)
+    return Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
+                tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP)
 
 
 def _kinds(actions):
@@ -452,23 +452,6 @@ class TestFeedbackRefresh(unittest.TestCase):
         run_plan(self.logic, self.logic.on_set_tilt_mode(True))
         self.logic.on_real_position(UPPER, False)  # still inside the band
         self.assertTrue(self.logic.in_tilt)
-
-
-class TestConfigValidation(unittest.TestCase):
-
-    def test_epsilon_not_exceeding_tolerance_raises(self):
-        with self.assertRaises(ValueError):
-            LogicConfig(tilt_zone_upper_pct=44.0, tilt_zone_lower_pct=38.0,
-                        tilt_zone_epsilon_pct=1.0, tilt_step_pct=STEP).validate()
-
-    def test_step_below_actuator_resolution_raises(self):
-        with self.assertRaises(ValueError):
-            LogicConfig(tilt_zone_upper_pct=44.0, tilt_zone_lower_pct=38.0,
-                        tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=1.0).validate()
-
-    def test_valid_geometry_passes(self):
-        LogicConfig(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
-                    tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP).validate()
 
 
 if __name__ == "__main__":

@@ -33,7 +33,6 @@ from gradhermetic_cover_control.logic import (
     DIRECTION_UP,
     Action,
     GradhermeticCoverLogic,
-    LogicConfig,
 )
 from gradhermetic_cover_control.runtime import (
     COMMAND_RATE_LIMIT,
@@ -87,12 +86,7 @@ class GradhermeticCoverControl(hass.Hass):
         self._ready = False
 
         logic = GradhermeticCoverLogic(
-            LogicConfig(
-                tilt_zone_upper_pct=config.tilt_zone_upper_pct,
-                tilt_zone_lower_pct=config.tilt_zone_lower_pct,
-                tilt_zone_epsilon_pct=config.tilt_zone_epsilon_pct,
-                tilt_step_pct=config.tilt_step_pct,
-            ),
+            config.zone,
             log=lambda message: self.log(f"[{config.virtual_id}] {message}"),
         )
         self._runtime = CoverRuntime(config=config, logic=logic)
@@ -139,9 +133,7 @@ class GradhermeticCoverControl(hass.Hass):
         runtime = self._runtime
         try:
             position, _ = self._read_real_position()
-            low = runtime.config.tilt_zone_lower_pct - runtime.config.tilt_zone_epsilon_pct
-            high = runtime.config.tilt_zone_upper_pct + runtime.config.tilt_zone_epsilon_pct
-            ambiguous = position is None or low <= position <= high
+            ambiguous = position is None or runtime.config.zone.in_band(position)
             runtime.logic.seed_state(position, False)
             if ambiguous:
                 self.log(f"[{runtime.config.virtual_id}] Startup position {position} is unknown or "

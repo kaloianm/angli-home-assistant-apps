@@ -24,6 +24,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
+from gradhermetic_cover_control.geometry import Zone
+
 ACTION_MOVE_TO = "move_to"
 ACTION_OPEN_FULL = "open_full"
 ACTION_CLOSE_FULL = "close_full"
@@ -46,45 +48,6 @@ POSITION_TOLERANCE_PCT = 1.5
 
 # Guard for floating-point edge comparisons on the virtual scale.
 _VIRTUAL_EPSILON = 1e-6
-
-
-@dataclass(frozen=True)
-class LogicConfig:
-    """
-    Tilt-zone geometry for one blind.
-    """
-
-    tilt_zone_upper_pct: float
-    tilt_zone_lower_pct: float
-    tilt_zone_epsilon_pct: float
-    tilt_step_pct: float
-
-    def validate(self) -> None:
-        """
-        Validate geometry invariants.
-        """
-        if not 0.0 <= self.tilt_zone_lower_pct < self.tilt_zone_upper_pct <= 100.0:
-            raise ValueError("require 0 <= tilt_zone_lower_pct < tilt_zone_upper_pct <= 100")
-        if self.tilt_zone_epsilon_pct <= 0.0:
-            raise ValueError("tilt_zone_epsilon_pct must be > 0")
-        if self.tilt_zone_epsilon_pct <= POSITION_TOLERANCE_PCT:
-            raise ValueError(
-                f"tilt_zone_epsilon_pct must be > POSITION_TOLERANCE_PCT ({POSITION_TOLERANCE_PCT}) "
-                "so the dip and leave margins clear the zone edges beyond position-feedback tolerance"
-            )
-        if self.tilt_zone_lower_pct - self.tilt_zone_epsilon_pct < 0.0:
-            raise ValueError("tilt_zone_lower_pct - tilt_zone_epsilon_pct must be >= 0")
-        if self.tilt_zone_upper_pct + self.tilt_zone_epsilon_pct > 100.0:
-            raise ValueError("tilt_zone_upper_pct + tilt_zone_epsilon_pct must be <= 100")
-        if self.tilt_step_pct <= 0.0:
-            raise ValueError("tilt_step_pct must be > 0")
-        # A step must map to at least one whole reported percent of real travel, otherwise the
-        # actuator (which reports integer positions) never moves and the slats never change.
-        min_step = 100.0 / (self.tilt_zone_upper_pct - self.tilt_zone_lower_pct)
-        if self.tilt_step_pct < min_step:
-            raise ValueError(
-                f"tilt_step_pct must be >= {min_step:.2f} so one step moves the actuator at least "
-                "one reported percent within the tilt zone")
 
 
 @dataclass(frozen=True)
@@ -126,17 +89,16 @@ class GradhermeticCoverLogic:
 
     def __init__(
         self,
-        config: LogicConfig,
+        zone: Zone,
         log: Callable[[str], None] = lambda _: None,
     ) -> None:
         """
         Create logic state for one blind.
 
-        ``config`` holds the tilt-zone geometry. All runtime state is kept internally and every
+        ``zone`` holds the tilt-zone geometry. All runtime state is kept internally and every
         public event method returns declarative actions.
         """
-        config.validate()
-        self._cfg = config
+        self._cfg = zone
         self._log = log
         self._disabled = False
 
