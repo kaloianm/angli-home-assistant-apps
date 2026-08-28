@@ -1,17 +1,27 @@
 # Gradhermetic Cover Control Implementation
 
-This app is split into a pure state machine and a thin AppDaemon adapter.
+This app is a pure core with a thin AppDaemon adapter around it. Every decision — which sequence to
+run, whether a waypoint has been reached, when to give up on a move — is made in code with no I/O in
+it, so all of it is testable without an AppDaemon installation.
 
-- `logic.py` contains `GradhermeticCoverLogic`, which receives user, command, KNX, and
-  position-feedback events and returns declarative actions. It owns the tilt-zone math and the latch
-  sequencing.
-- `gradhermetic_cover_control.py` adapts those actions to AppDaemon: listening for command and KNX
-  events, the custom service, real-cover service calls, position display, and persistent
-  notifications.
-- `config.py` parses and validates one blind's `apps.yaml` configuration.
-- `runtime.py` stores AppDaemon callback handles and a command rate limiter.
+| Module | Responsibility | Purity |
+|---|---|---|
+| `geometry.py` | `Zone`: the virtual↔real mapping, band and zone predicates, the named dip/release targets, band snapping, and all validation of the configured numbers | pure |
+| `planner.py` | `plan(zone, belief, intent) -> Plan`: every movement sequence and every latch guard, plus `check_plan`, which restates the safety argument as executable invariants | pure |
+| `executor.py` | Drives one `Plan`: step activation and arrival, settle-timer decisions, stall detection. Consumes feedback and timer events, emits `Action`s | pure |
+| `logic.py` | `GradhermeticCoverLogic`: holds the belief and routes events to intents, composing planner and executor. The adapter talks only to this | pure |
+| `gradhermetic_cover_control.py` | AppDaemon adapter: listeners, service calls, `set_state`, notifications, timers. Makes no decisions | I/O |
+| `config.py` | Parses `apps.yaml` args; the numeric rules are delegated to `geometry` | pure |
+| `runtime.py` | The settle-timer handle and the command rate limiter | state |
 
 Each app instance manages exactly one blind.
+
+The adapter's whole vocabulary is the `Action` list the core returns: `move_to` / `open_full` /
+`close_full` / `stop` become real-cover service calls, `publish_position` becomes a `set_state`,
+`arm_settle_timer` / `cancel_settle_timer` become `run_in` / `cancel_timer`, and `notify` becomes a
+persistent notification. What is left in the adapter is transport only: listening and filtering,
+gating commands until startup recovery has run, decoding KNX telegrams and button presses, the
+command rate limit, and the callback `try`/`except` boundary.
 
 ## Transport: template cover, not MQTT
 
@@ -32,43 +42,114 @@ All decision-making stays in `logic.py`; the template and helpers contain no log
 `set_cover_position` value, the open/close mapping, latching, and recovery are all decided by the
 Python app.
 
-## State Machine
+## Belief
 
-The blind is either under whole-height control (`NORMAL`) or latched for slat control (`TILT`).
-Latching requires a full down-then-up motion across the lower edge, so every command is compiled to
-an ordered list of waypoints — a **movement plan** — that the adapter drives one at a time.
+The app persists nothing across restarts, so everything it does follows from three tracked facts:
+
+- `last_position` — the blind's real travel position (0-100) from controller feedback, or `None`
+  once the cover becomes unavailable. An unknown position makes every guard conservative
+  automatically.
+- `latch` — `LATCHED` / `UNLATCHED` / `UNKNOWN`. This is **event-sourced, not derived from the
+  position**: a position inside the band is neither necessary nor sufficient for being latched, so a
+  positional test cannot tell "known released" from "no idea", and that distinction is what decides
+  whether a descent needs a release first.
+- `is_moving` — whether the blind is travelling, from controller feedback.
+
+The latch transitions, in full:
+
+- → `LATCHED`: a completed enter sequence, and nothing else.
+- → `UNLATCHED`: a completed plan that ends released, or feedback placing the blind clearly outside
+  the `[lower - epsilon, upper + epsilon]` band, where a latched mechanism cannot rest.
+- → `UNKNOWN`: startup with the position unknown or inside the band; a plan interrupted (stopped,
+  replaced or stalled) part-way; externally-caused motion ending inside the band; the cover becoming
+  unavailable.
+
+One refinement keeps that last rule from being needlessly destructive: a plan whose every target
+lies inside `[lower, upper]` is pure slat rotation. It starts inside the zone — that is what being
+latched means — and moves monotonically to another in-zone target, so it can neither engage the
+latch (which needs a rise across the lower edge from below) nor release it (a rise above the upper
+edge). Interrupting one therefore leaves a confident `LATCHED` belief intact. Without that, stopping
+a slat move would drop the blind out of tilt mode and make the next close drive it fully open.
+
+`in_tilt` (slat control applies) is `latch == LATCHED`; `may_be_latched` (a descent needs a release
+first) is `latch != UNLATCHED`. Those two derived forms are the only ones the guards use.
+
+## Movement Plans
+
+Every intent compiles to an ordered list of **steps**, each with an explicit satisfaction predicate
+stated in the integer domain the actuator actually speaks — commands are rounded to whole percent
+and a KNX actuator reports the setpoint value it reached, so exact integer comparison is the honest
+test:
+
+- `MoveTo(target)` — satisfied when `round(position) == round(target)`. The `open_full` and
+  `close_full` variants send `cover.open_cover` / `cover.close_cover` rather than a position, so the
+  actuator drives against its own limit switch.
+- `RiseToAtLeast(target)` — satisfied when `round(position) >= round(target)`. Used only for the
+  tilt exit, where anything above the release target is equally good.
+
+The step lifecycle is where the timing correctness lives:
+
+1. **Activation.** If the predicate already holds and the blind is settled, the step is *skipped* —
+   no command is sent and the next step activates immediately. A plan can therefore never begin with
+   a command the actuator will never acknowledge, and so can never wait on feedback that will never
+   arrive. A step is *not* skipped while the blind is still travelling: passing through a position
+   is not resting on it, which matters when a command replaces a plan mid-move.
+2. Otherwise the command goes out and the settle timer is armed.
+3. **Arrival.** The step completes only on settled feedback satisfying the predicate. Because
+   activation guaranteed the predicate did *not* hold when the command went out, a duplicate or
+   delayed report carrying the pre-command position can never satisfy it — however small the step
+   was. (A 20% slat step in a 6% zone is only 1.2 real percent, so this matters.)
+4. **The settle timer fires.** Still moving → re-arm, because this is an inactivity timeout and not
+   a travel-time cap. Settled and satisfied → complete, which covers an actuator that reported only
+   its final state or none at all. Settled within `DEVIATION_TOLERANCE_PCT` of a `MoveTo` target →
+   accept with a logged warning, because real actuators occasionally stop a percent off. Otherwise,
+   or when the position has become unreadable → stop the blind, drop the plan and notify.
+5. **Completion.** The plan's terminal latch belief is committed, the settle timer is cancelled, and
+   the virtual position is published to `sensor.gradhermetic_<virtual_id>_position` — derived from
+   the position the blind actually reports rather than from the setpoint, so the published value and
+   the app's own belief can never disagree.
+
+A command arriving while a plan is in flight **replaces** it. The replacement is planned from the
+belief as it will be *after* the interruption, so it re-derives every safety guard; an intent that
+plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
+
+## Canonical Sequences
+
+- **Enter tilt** — `open_full`, then `MoveTo(lower - epsilon)`, then `MoveTo(upper)`; landing at the
+  open edge instead appends `MoveTo(lower)`. One sequence, correct from any start. The leading full
+  open re-references the actuator at its limit switch (see the README on why the percentages are
+  only reliable from there) and makes the dip a pure descent, which cannot latch.
+- **Leave tilt** — `RiseToAtLeast(upper + epsilon)`, available only from a confident `LATCHED`
+  belief.
+- **Guarded descent** (close, long-down, a descending `set_position`) — when `may_be_latched`,
+  prefix `open_full`: an uncertain latch belief also means an uncertain calibration, so a short rise
+  to a merely *reported* `upper + epsilon` cannot be trusted. When the latch is known released,
+  descend directly.
+- **Normal-mode `set_position`** — snap the target clear of the band, then one `MoveTo`, guarded
+  when it descends or the position is unknown.
+- **In-tilt moves** — a single `MoveTo` inside `[lower, upper]`.
+- **Recovery** — a single `open_full`.
 
 ```text
-                 enter: down to (lower - epsilon), then up to upper
-   NORMAL  ───────────────────────────────────────────────────────►  TILT
- (height control)                                              (slat control, latched)
-      ▲                    leave: up to (upper + epsilon)                │
-      └────────────────────────────────────────────────────────────────┘
-                       (disengage is always upward)
+                enter: open fully, down to (lower - epsilon), up to upper
+   NORMAL  ───────────────────────────────────────────────────────────►  TILT
+ (height control)                                                  (slat control, latched)
+      ▲                     leave: up to (upper + epsilon)                   │
+      └───────────────────────────────────────────────────────────────────────┘
+                          (disengage is always upward)
 ```
 
-The logic tracks:
+## Invariants
 
-- `last_position` — the blind's real travel position (0-100), from controller feedback.
-- `in_tilt` — whether the mechanism is believed latched.
-- `is_moving` — whether the blind is currently travelling, from controller feedback.
-- the pending movement plan, if any.
+`planner.check_plan` runs on every plan before it executes. A violation disables the blind and
+notifies; it should be unreachable, and the tests exist to prove it:
 
-The enter sequence assumes it starts above the lower edge, but the caller may start anywhere. If the
-start position lies inside the ambiguity band (`[lower - epsilon, upper + epsilon]`) the latch might
-already be engaged — an entry interrupted mid-rise physically latches the moment the rise crosses the
-lower edge — so `_enter_tilt` first rises above the zone to release the latch before dipping, since
-the latch only releases upward. From clearly below the band it hops just above the lower edge; from an
-unknown position it recovers fully open. Only then does it dip below the lower edge and rise to latch.
-
-A plan advances only when `on_real_position` reports the current waypoint reached (within
-`POSITION_TOLERANCE_PCT`) **and** the blind has settled (state no longer `opening`/`closing`). When
-the last waypoint completes, the terminal `in_tilt` is committed and the virtual position is
-published to `sensor.gradhermetic_<virtual_id>_position`. The adapter arms a
-`SETTLE_TIMEOUT_SECONDS` fallback timer per move in case a final position update is never observed.
-The timer is an **inactivity** timeout, not a hard travel-time cap: if it fires while the blind is
-still reporting motion the move is simply long, so it re-arms and keeps waiting rather than declaring
-a stall.
+- **N1** — in normal mode no target lies strictly inside `(lower - epsilon, upper + epsilon)`.
+- **T1** — slat targets lie within `[lower, upper]` and are only planned from a `LATCHED` belief.
+- **L1** — a descent below `lower` is preceded by a full open unless the latch is known released.
+- **E1** — the latch belief is only established by the canonical enter sequence.
+- **X1/R1** — leaving tilt and recovering are upward-only, and every release from an uncertain
+  belief is a full open rather than a rise to an unreferenced percentage.
 
 ## Tilt-Zone Math
 
@@ -92,7 +173,16 @@ Because the zone is narrow (6% here) and KNX actuators report integer positions,
 about `span + 1` distinct slat positions (~7 for a 6% zone). A slat step must therefore map to at
 least one whole reported percent of real travel, otherwise the rounded position command repeats the
 current position and the blind never moves. Config validation enforces
-`tilt_step_pct >= 100 / (upper - lower)` (≈16.7 here) so every step advances the actuator.
+`tilt_step_pct >= 100 / (upper - lower)` (≈16.7 here) so every step advances the actuator, and
+`tilt_zone_epsilon_pct >= 1` so the dip and release targets round to integers distinct from the
+edges they must clear. All of it lives in `geometry.Zone`, which validates on construction —
+`config.py` only checks that each number is present, numeric and in range.
+
+Outside tilt, a `set_cover_position` target landing strictly inside the band `(36, 46)` here is
+snapped to the nearer band edge, ties rising. Rising into the band from below silently engages the
+latch, so a whole-blind move that aimed there would leave belief and reality diverging; snapping
+costs a couple of percent of travel and makes "normal mode never targets the band interior" an
+invariant (N1) instead of a hazard.
 
 ## KNX Wall-Button Handling
 
@@ -100,15 +190,17 @@ Two dedicated group addresses drive the app as `knx_event`s (telegram value `0 =
 `1 = down / less light`, matching the repo convention):
 
 - **Move address** — long presses. Long up drives fully open (leaving tilt naturally); long down
-  drives fully closed (rising out of the zone first if latched, since the latch releases only
-  upward).
+  drives fully closed (driving fully open first unless the latch is known released, since the latch
+  releases only upward).
 - **Step address** — short presses, evaluated in priority order:
   1. If the blind is moving, stop it.
   2. Otherwise, if latched, step the slats by `tilt_step_pct` (up toward open, down toward closed).
      An up step at the open edge leaves tilt upward and resumes whole-height control.
-  3. Otherwise (idle, outside the zone), enter tilt when the press points toward the zone: a down
-     press from above enters at the most-closed edge; an up press from below enters at the most-open
-     edge. A press pointing away does nothing (long press covers the extremes).
+  3. Otherwise (idle, not latched), enter tilt when the press points toward the zone: a down press
+     from above enters at the most-closed edge; an up press from below enters at the most-open edge.
+     A press pointing away does nothing (long press covers the extremes), and so does a press made
+     while resting *inside* the zone without a latch belief — neither direction points toward a zone
+     the blind already sits in, and there are no slats to step.
 
 ## Virtual Cover Wiring
 
@@ -141,14 +233,18 @@ Home Assistant service callable from HA scripts or the UI — use the event form
 
 ## Restart Behavior
 
-State is **not** persisted across restarts. `RECOVERY_DELAY_SECONDS` after startup the app reads the
-real cover's position and establishes a safe state:
+State is **not** persisted across restarts. `RECOVERY_DELAY_SECONDS` after startup the adapter reads
+the real cover's position and hands it to `logic.on_startup`, which seeds the belief and decides:
 
-- position clearly **outside** the tilt zone (beyond `lower - epsilon` … `upper + epsilon`): the
-  blind cannot be latched, so whole-height control resumes from that position.
-- position **inside or near** the zone, or unknown: the latch state is ambiguous, so the app drives a
-  single `cover.open_cover` and resets to fully open / normal — an **upward-only** recovery that
+- position clearly **outside** the band (beyond `lower - epsilon` … `upper + epsilon`): the blind
+  cannot be latched, so the belief starts `UNLATCHED` and whole-height control resumes from that
+  position.
+- position **inside** the band, or unknown: the latch state is ambiguous, so the belief starts
+  `UNKNOWN` and the app drives a single `cover.open_cover` — an **upward-only** recovery that
   protects the mechanism from accidental downward movement near the tilt zone.
+
+Commands are ignored until that has run: a command arriving in the recovery window would act on an
+unseeded belief and could clobber the recovery plan.
 
 ## Safety Behavior
 
@@ -161,11 +257,20 @@ The `SETTLE_TIMEOUT_SECONDS` fallback timer only declares a stall — stopping t
 obstruction notification — when the blind has **settled** short of its target. A move still reporting
 motion when the timer fires is treated as merely long: the timer re-arms and waits, so a slow travel
 never triggers a false stall. A pending plan whose position has become unreadable (the cover went
-unavailable) is treated as a genuine stall rather than being left to hang silently.
+unavailable) is treated as a genuine stall rather than being left to hang silently. Healthy moves
+never rely on the timer at all — the model tests assert every nominal flow completes without it
+firing.
+
+A plan that fails `check_plan` disables the blind and notifies. That is defence in depth against a
+planner bug: the invariants are meant to be unreachable, so reaching one means the safe response is
+to stop deciding anything for that blind until a human looks at it.
 
 Unhandled callback exceptions likewise disable the blind until restart and create a persistent
 notification. Wrapping callbacks in `try/except` is the one sanctioned exception to the project's
-"let errors propagate" rule — it applies only at the AppDaemon callback boundary.
+"let errors propagate" rule — it applies only at the AppDaemon callback boundary. Malformed external
+input is not an app bug and does not go through it: a bad `set_position` value, a `set_tilt_mode`
+without `enabled`, an unknown command, an unparseable KNX telegram, or a non-numeric reported
+position are all logged and ignored.
 
 ## Home Assistant Wiring
 
@@ -269,7 +374,33 @@ From the `apps/public_apps` directory:
 python3 -m unittest discover -s gradhermetic_cover_control/tests -t . -v
 ```
 
-Tests cover the tilt-zone mapping, the enter/leave latch sequences, whole-height and slat commands,
-the short-press priority order and boundary crossings, long-press extremes, restart-recovery
-decisions, config validation, and the runtime command rate limit. No AppDaemon installation is
-required to run them.
+No AppDaemon installation is required, and the whole suite runs in well under a second.
+
+| File | What it covers |
+|---|---|
+| `test_geometry.py` | Mapping round-trips, band and zone predicates at the exact edges, band snapping, every validation rule |
+| `test_planner.py` | Golden sequences for every intent from representative starts; a sweep asserting every plan the planner can emit over the whole state space satisfies `check_plan`; hand-built plans proving each invariant rejects what it forbids |
+| `test_executor.py` | Skip-if-satisfied, duplicate-feedback immunity, every settle-timer path (re-arm, accept, deviation, stall, unreadable), cancel-on-completion |
+| `test_logic.py` | The event surface end to end, belief transitions, plan replacement, and named regressions for the four bugs the redesign removed |
+| `test_config.py`, `test_runtime.py` | `apps.yaml` parsing and the command rate limiter |
+| `test_adapter.py` | The AppDaemon layer against a fake `hass.Hass`: wiring, event filtering, the startup gate, malformed payloads, button edge detection, every `Action`'s translation, the rate limit and the error boundary |
+| `simulator.py`, `test_model.py` | See below |
+
+`simulator.py` is an independent ground-truth model of the mechanism, under the most pessimistic
+latch semantics consistent with the hardware: any upward crossing of the lower edge from below
+engages the latch, only a rise clear of the upper edge releases it, and downward travel never
+changes it. Plans correct under this model are correct under milder ones, since none of them relies
+on a crossing *not* latching. It records a **violation** whenever it is commanded to travel below
+the lower edge while latched, and it can be configured with the feedback quirks real controllers
+exhibit — duplicate settled reports, no motion state, a final report only, a settled-looking echo of
+the position a move started from, and calibration drift.
+
+`test_model.py` drives the whole app against it and asserts, on every run: zero violations; a belief
+never more confident than the truth; a position belief equal to what the actuator reports; a
+published position equal to the spec mapping of it; completion **without the settle timer firing**;
+and a bounded command count. It sweeps every intent from every whole position 0-100, from every
+latched slat position, from every interrupted latch sequence and from the resting state after
+leaving tilt; interrupts every multi-step sequence at every feedback point with every other intent,
+a stop, and a restart with and without the cover going unavailable first; and repeats the intent
+sweep under each feedback quirk. The drift tests demonstrate why every latch sequence starts from
+the top limit, and pin the bound the cheap tilt exit depends on.

@@ -24,7 +24,7 @@ The standard cover services target the full blind travel range:
 
 - `cover.open_cover` opens the blind fully (`100%`).
 - `cover.close_cover` closes the blind fully (`0%`).
-- `cover.set_cover_position` moves to the requested absolute position.
+- `cover.set_cover_position` moves to the requested absolute position, except that a target landing *inside* the tilt zone's ambiguity band (between `tilt_zone_lower_pct - tilt_zone_epsilon_pct` and `tilt_zone_upper_pct + tilt_zone_epsilon_pct`) is snapped outward to the nearer edge of that band. Rising into the band would silently engage the latch while the application believed it was still doing height control, so whole-blind moves stay clear of it. On a real blind the adjustment is a couple of percent of travel, and the reported position is the snapped value.
 
 ### Inside tilt mode
 
@@ -38,21 +38,23 @@ Note the inversion relative to normal travel: inside the tilt zone a *higher* ab
 
 ## Entering And Leaving Tilt Mode
 
-The latch sequence assumes the blind starts **outside** the tilt zone. This is important: the mechanism only latches when the full down-then-up motion is performed across the lower edge of the zone.
+The mechanism only latches when a full down-then-up motion is performed across the lower edge of the zone. A second hardware fact shapes the sequence just as much: **the percentages are only reliable when the sequence starts from the fully open position.** The actuator's reported position cannot be trusted to match the blind's true physical position unless the move is referenced from the top limit, and the tilt zone is only a few percent wide — so a dip aimed from an unreferenced height may not clear the lower edge at all.
 
-To enter tilt mode the app performs a genuine down-then-up motion across the lower edge:
+Entering tilt mode is therefore a single sequence, run from wherever the blind happens to be:
 
-1. Ensure the blind is safely above the lower edge so the dip crosses it downward. If the start position lies inside the ambiguity band (`[lower - epsilon, upper + epsilon]`) the latch might already be engaged — for example an earlier entry that was interrupted mid-rise physically latches the moment the rise crosses the lower edge — so the sequence first rises above the zone (`tilt_zone_upper_pct + tilt_zone_epsilon_pct`) to release the latch before dipping, since the latch only releases upward. If the blind instead starts clearly below the band it first hops up to `tilt_zone_lower_pct + tilt_zone_epsilon_pct`; if its position is unknown it recovers fully open first.
-2. Move down to `tilt_zone_lower_pct - tilt_zone_epsilon_pct` (dip below the lower edge).
+1. Drive fully open with `cover.open_cover`. Sending the command rather than a target position makes the actuator run against its own limit switch, which re-references it. This step is skipped only when the blind already reports being fully open.
+2. Move down to `tilt_zone_lower_pct - tilt_zone_epsilon_pct` (dip below the lower edge). Starting from fully open this is a pure descent, so it cannot engage the latch on the way down.
 3. Move up to `tilt_zone_upper_pct`. The upward crossing of the lower edge latches the mechanism in tilt mode, with the slats parallel (closed).
 
 To leave tilt mode:
 
-- Move up to above `tilt_zone_upper_pct` (specifically `tilt_zone_upper_pct + tilt_zone_epsilon_pct`). Leaving is always an upward move; the application never drives downward to disengage.
+- Move up to above `tilt_zone_upper_pct` (specifically `tilt_zone_upper_pct + tilt_zone_epsilon_pct`). Leaving is always an upward move; the application never drives downward to disengage. This short exit is trusted because the mechanism is only ever *known* to be latched immediately after an entry sequence re-referenced the actuator, with nothing but small in-zone slat moves since.
 
-`tilt_zone_epsilon_pct` is the clearance margin used to cleanly cross the lower edge when engaging and the upper edge when disengaging.
+Whenever the latch state is instead **uncertain** — after an interrupted sequence, a restart, or a move the application did not command — a release cannot rely on a reported percentage either, so it is a full `cover.open_cover` as well (see "Position And Restart Behavior").
 
-Entering tilt mode avoids excessive downward movement. If the application is unsure where the blind is, it first recovers by moving fully open (see "Position And Restart Behavior") before running the latch sequence.
+`tilt_zone_epsilon_pct` is the clearance margin used to cleanly cross the lower edge when engaging and the upper edge when disengaging. It must be at least one whole percent, so the rounded command the actuator receives is distinct from the edge it has to clear.
+
+Entering tilt mode costs an upward trip to fully open first. That is deliberate: rising is the one direction that is always safe, and the top limit is the only position the actuator cannot be wrong about.
 
 ## Wall-Button (KNX) Control
 
@@ -66,18 +68,19 @@ In both cases the telegram's value selects the direction (up = more light, down 
 ### Long press — jump to an extreme
 
 - **Long up** drives the blind fully open (`100%`). If it is currently in tilt mode, this naturally leaves tilt mode (the exit is upward anyway).
-- **Long down** drives the blind fully closed (`0%`). If the latch might be engaged (it is in tilt mode, or its position is inside/near the tilt zone), the blind first rises out of the zone to release the latch — which only releases upward — and then descends.
+- **Long down** drives the blind fully closed (`0%`). Unless the latch is known to be released, the blind first drives fully open to release it — the latch only releases upward — and then descends.
 
 ### Short press — stop, or step in the more-light / less-light direction
 
 A short press is evaluated in this priority order:
 
 1. **If the blind is currently moving, stop it.** (This matches the native KNX "Stop/Step" behavior.)
-2. **Otherwise, if inside the tilt zone, step the slats** by `tilt_step_pct` — up steps toward open (more light), down steps toward closed (less light).
-3. **Otherwise (idle, outside the tilt zone), enter the tilt zone** when the press points *toward* it:
+2. **Otherwise, if the mechanism is latched, step the slats** by `tilt_step_pct` — up steps toward open (more light), down steps toward closed (less light).
+3. **Otherwise (idle, not latched), enter the tilt zone** when the press points *toward* it:
    - From above the zone, a **down** press enters tilt mode at the most-closed end (its near edge).
    - From below the zone, an **up** press enters tilt mode at the most-open end (its near edge).
    - A short press pointing *away* from the zone (when already past it) does nothing — long press covers the extremes.
+   - A short press while the blind is *resting inside* the zone without being believed latched also does nothing: neither direction points toward a zone it already sits in, and there are no slats to step. Use the long press or the tilt control to get out of that state.
 
 Stepping naturally crosses the zone boundaries: an up step at the open edge of the zone leaves tilt mode upward and resumes whole-blind control, and a down press from just above the zone enters it. Boundary crossings execute the full engage/disengage sequence rather than a small `tilt_step_pct` nudge.
 
@@ -90,7 +93,11 @@ The application does not persist state across restarts. After Home Assistant or 
 
 This upward-only recovery rule protects the Gradhermetic mechanism from accidental extra downward movement while the blind may already be in or near the tilt zone.
 
-The same protection applies during normal operation, not just at restart: whenever the latch might be engaged — the blind is believed in tilt mode, its reported position lies inside the `[lower - epsilon, upper + epsilon]` band, or its position is unknown — any command that would drive the blind downward first rises above the zone to release the latch, then descends. This keeps the mechanism safe even if the app's belief about the latch state was disturbed by an interrupted tilt sequence or by an external command sent directly to the underlying cover.
+The same protection applies during normal operation, not just at restart. The application tracks the latch as one of three states — **latched**, **released**, or **unknown** — and only a completed entry sequence establishes "latched". It falls back to "unknown" whenever a sequence is interrupted part-way, the underlying cover becomes unavailable, or the blind moves without being told to; and it clears to "released" whenever the blind comes to rest clearly outside the `[lower - epsilon, upper + epsilon]` band, where a latched mechanism cannot be.
+
+Any command that would drive the blind downward while the latch is not known to be released first drives fully open to release it, then descends. A blind that is *known* released descends straight away — closing right after leaving tilt mode, for instance, costs no detour.
+
+This keeps the mechanism safe even if the application's belief was disturbed by an interrupted tilt sequence or by a command sent directly to the underlying cover.
 
 ## YAML Configuration
 
@@ -109,6 +116,9 @@ gradhermetic_living_room:
   # Mechanical tilt-zone bounds and movement tuning.
   tilt_zone_upper_pct: 44.0
   tilt_zone_lower_pct: 38.0
+
+  # Clearance margin for crossing a zone edge cleanly. Must be at least 1.0, so the rounded command
+  # the actuator receives differs from the edge it has to clear.
   tilt_zone_epsilon_pct: 2.0
 
   # Slat step size (virtual %) for short presses while inside the tilt zone. Because the actuator
