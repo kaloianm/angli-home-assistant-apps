@@ -245,6 +245,7 @@ class Executor:
             Action(ACTION_NOTIFY, notify_kind=NOTIFY_STALL, message=message),
         ], STATUS_STALLED, movement)
 
+
 def virtual_position(zone: Zone, latch: str, position: float) -> float:
     """
     Map a real position to the virtual position the user-facing cover shows.
