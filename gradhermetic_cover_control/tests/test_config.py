@@ -29,6 +29,57 @@ class TestConfigParsing(unittest.TestCase):
         self.assertEqual("1/2/3", config.knx_move_address)
         self.assertEqual("1/2/4", config.knx_step_address)
 
+    def test_the_release_and_landing_keys_are_optional(self):
+        # Absent means "keep the geometric default": the bare clearance, and the closed edge.
+        config = parse_app_config(_valid_args())
+        self.assertIsNone(config.zone.tilt_zone_release_pct)
+        self.assertIsNone(config.zone.tilt_enter_landing_pct)
+        self.assertEqual(46.0, config.zone.release_target)
+        self.assertEqual(0.0, config.zone.enter_landing)
+
+    def test_release_and_landing_are_parsed(self):
+        config = parse_app_config(
+            _valid_args(tilt_zone_release_pct=52.0, tilt_enter_landing_pct=15.0))
+        self.assertEqual(52.0, config.zone.tilt_zone_release_pct)
+        self.assertEqual(52.0, config.zone.release_target)
+        self.assertEqual(15.0, config.zone.enter_landing)
+        # The band follows the release height, so it must be visible in the summary log line.
+        self.assertIn("tilt_zone_release_pct=52.0", str(config))
+        self.assertIn("tilt_enter_landing_pct=15.0", str(config))
+
+    def test_release_and_landing_accept_strings(self):
+        config = parse_app_config(
+            _valid_args(tilt_zone_release_pct="52", tilt_enter_landing_pct="15"))
+        self.assertEqual(52.0, config.zone.release_target)
+        self.assertEqual(15.0, config.zone.enter_landing)
+
+    def test_an_explicitly_null_key_falls_back_to_the_default(self):
+        config = parse_app_config(
+            _valid_args(tilt_zone_release_pct=None, tilt_enter_landing_pct=None))
+        self.assertEqual(46.0, config.zone.release_target)
+        self.assertEqual(0.0, config.zone.enter_landing)
+
+    def test_release_below_the_bare_clearance_raises(self):
+        # Delegated to geometry: it must clear upper + epsilon, which is what a release at all means.
+        with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be >="):
+            parse_app_config(_valid_args(tilt_zone_release_pct=45.0))
+
+    def test_release_out_of_range_raises(self):
+        with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be between 0 and 100"):
+            parse_app_config(_valid_args(tilt_zone_release_pct=120.0))
+
+    def test_non_numeric_release_raises(self):
+        with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be a number"):
+            parse_app_config(_valid_args(tilt_zone_release_pct="high"))
+
+    def test_landing_out_of_range_raises(self):
+        with self.assertRaisesRegex(ValueError, "tilt_enter_landing_pct must be between 0 and 100"):
+            parse_app_config(_valid_args(tilt_enter_landing_pct=101.0))
+
+    def test_non_numeric_landing_raises(self):
+        with self.assertRaisesRegex(ValueError, "tilt_enter_landing_pct must be a number"):
+            parse_app_config(_valid_args(tilt_enter_landing_pct="ajar"))
+
     def test_knx_addresses_are_optional(self):
         config = parse_app_config(_valid_args())
         self.assertIsNone(config.knx_move_address)

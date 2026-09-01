@@ -9,9 +9,10 @@ user must declare -- the app publishes it directly via ``set_state`` onto
 ``sensor.gradhermetic_<id>_position``, which the template cover reads.
 
 Slat stepping and tilt engagement are exposed as dumb ``input_button`` helpers the app listens on:
-``..._step_up`` / ``..._step_down`` adjust slats only (step within the tilt zone, clamped at both
-edges; a no-op when not latched), and ``..._tilt`` toggles tilt mode. Unlike a KNX wall-button short
-press, the step helpers never enter or leave the zone -- that is the tilt helper's job.
+``..._step_up`` / ``..._step_down`` step the slats within the tilt zone while latched (clamped at
+both edges) and otherwise enter the zone when the press points toward it, and ``..._tilt`` toggles
+tilt mode. Unlike a KNX wall-button short press, the step helpers never *leave* the zone and never
+stop a move in flight -- that is the tilt helper's and the cover's job.
 
 Every decision -- which sequence to run, when a waypoint is reached, when the settle timer is armed
 or cancelled, when a stall is declared -- is made in the pure core. What is left here is transport:
@@ -250,9 +251,10 @@ class GradhermeticCoverControl(hass.Hass):
         """
         Route an ``input_button`` step press to the slat-step logic.
 
-        The direction follows which helper fired. Unlike a KNX wall-button short press, these
-        helpers only adjust slats within the tilt zone (clamping at both edges) and do nothing when
-        the blind is not latched -- entering and leaving tilt is the dedicated tilt helper's job.
+        The direction follows which helper fired. While latched these helpers adjust slats within
+        the tilt zone, clamping at both edges; while not latched they enter the zone when the press
+        points toward it, exactly as a KNX wall-button short press would. What they never do is
+        leave tilt or stop a move in flight -- leaving is the dedicated tilt helper's job.
         """
         try:
             if not self._is_button_press(old, new):

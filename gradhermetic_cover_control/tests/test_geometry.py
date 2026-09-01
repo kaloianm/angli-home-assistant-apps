@@ -1,6 +1,12 @@
 import unittest
 
-from gradhermetic_cover_control.geometry import MIN_EPSILON_PCT, Zone, clamp_pct, to_command
+from gradhermetic_cover_control.geometry import (
+    DEFAULT_ENTER_LANDING_PCT,
+    MIN_EPSILON_PCT,
+    Zone,
+    clamp_pct,
+    to_command,
+)
 
 # Geometry used throughout the suite: zone [38, 44], epsilon 2, step 20. Span = 6, so the minimum
 # step that moves the integer-reporting actuator is 100/6 ~= 16.7; 20 clears it. The ambiguity band
@@ -33,6 +39,44 @@ class TestLandmarks(unittest.TestCase):
         self.assertAlmostEqual(UPPER + EPSILON, self.zone.release_target)
         self.assertAlmostEqual(self.zone.dip_target, self.zone.band_low)
         self.assertAlmostEqual(self.zone.release_target, self.zone.band_high)
+
+    def test_release_defaults_to_the_bare_clearance(self):
+        self.assertIsNone(self.zone.tilt_zone_release_pct)
+        self.assertAlmostEqual(UPPER + EPSILON, self.zone.release_target)
+
+    def test_landing_defaults_to_the_closed_edge(self):
+        self.assertIsNone(self.zone.tilt_enter_landing_pct)
+        self.assertAlmostEqual(DEFAULT_ENTER_LANDING_PCT, self.zone.enter_landing)
+        self.assertAlmostEqual(UPPER, self.zone.virtual_to_real(self.zone.enter_landing))
+
+
+class TestConfiguredReleaseHeight(unittest.TestCase):
+    """A measured release height replaces the bare clearance and drags the band up with it."""
+
+    def setUp(self):
+        self.zone = _zone(tilt_zone_release_pct=55.0)
+
+    def test_release_target_is_the_configured_height(self):
+        self.assertAlmostEqual(55.0, self.zone.release_target)
+
+    def test_band_high_still_coincides_with_the_release_target(self):
+        # A latched-but-not-yet-released mechanism can rest anywhere up to the true release height,
+        # so the ambiguity band has to reach exactly that far.
+        self.assertAlmostEqual(self.zone.release_target, self.zone.band_high)
+        self.assertAlmostEqual(self.zone.dip_target, self.zone.band_low)
+
+    def test_the_band_widens_with_it(self):
+        self.assertTrue(self.zone.in_band(50.0))
+        self.assertTrue(self.zone.in_band(55.0))
+        self.assertFalse(self.zone.in_band(55.1))
+        # The zone itself is untouched: those heights are ambiguous, not slat-controllable.
+        self.assertFalse(self.zone.in_zone(50.0))
+
+    def test_snapping_follows_the_widened_band(self):
+        self.assertAlmostEqual(55.0, self.zone.snap_normal_target(50.0))
+        self.assertAlmostEqual(36.0, self.zone.snap_normal_target(37.0))
+        self.assertAlmostEqual(55.0, self.zone.snap_normal_target(55.0))
+        self.assertAlmostEqual(56.0, self.zone.snap_normal_target(56.0))
 
 
 class TestPredicates(unittest.TestCase):
@@ -169,6 +213,36 @@ class TestValidation(unittest.TestCase):
     def test_release_target_above_hundred_raises(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_upper_pct \\+ tilt_zone_epsilon_pct"):
             _zone(tilt_zone_upper_pct=99.0)
+
+    def test_release_below_the_bare_clearance_raises(self):
+        # Anything below upper + epsilon does not even carry the reported position clear of the
+        # upper edge, so it cannot be the height the mechanism releases at.
+        for release in (UPPER + EPSILON - 0.1, UPPER, 0.0):
+            with self.subTest(release=release):
+                with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be >="):
+                    _zone(tilt_zone_release_pct=release)
+
+    def test_release_exactly_at_the_bare_clearance_is_accepted(self):
+        zone = _zone(tilt_zone_release_pct=UPPER + EPSILON)
+        self.assertAlmostEqual(UPPER + EPSILON, zone.release_target)
+
+    def test_release_above_a_hundred_raises(self):
+        with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be <= 100"):
+            _zone(tilt_zone_release_pct=101.0)
+
+    def test_release_at_a_hundred_is_accepted(self):
+        self.assertAlmostEqual(100.0, _zone(tilt_zone_release_pct=100.0).release_target)
+
+    def test_landing_out_of_range_raises(self):
+        for landing in (-0.1, 100.1):
+            with self.subTest(landing=landing):
+                with self.assertRaisesRegex(ValueError,
+                                            "tilt_enter_landing_pct must be between 0 and 100"):
+                    _zone(tilt_enter_landing_pct=landing)
+
+    def test_landing_at_either_extreme_is_accepted(self):
+        self.assertAlmostEqual(UPPER, _zone(tilt_enter_landing_pct=0.0).virtual_to_real(0.0))
+        self.assertAlmostEqual(100.0, _zone(tilt_enter_landing_pct=100.0).enter_landing)
 
     def test_percentages_must_be_in_range(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_upper_pct must be between 0 and 100"):

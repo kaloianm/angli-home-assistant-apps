@@ -59,13 +59,13 @@ The latch transitions, in full:
 
 - → `LATCHED`: a completed enter sequence, and nothing else.
 - → `UNLATCHED`: a completed plan that ends released, or feedback placing the blind clearly outside
-  the `[lower - epsilon, upper + epsilon]` band, where a latched mechanism cannot rest.
+  the `[lower - epsilon, release_target]` band, where a latched mechanism cannot rest.
 - → `UNKNOWN`: startup with the position unknown or inside the band; a plan interrupted (stopped,
   replaced or stalled) part-way; externally-caused motion ending inside the band; the cover becoming
   unavailable.
 
-One refinement keeps that last rule from being needlessly destructive: a plan whose every target
-lies inside `[lower, upper]` is pure slat rotation. It starts inside the zone — that is what being
+One refinement keeps that last rule from being needlessly destructive: a plan that never leaves
+`[lower, upper]` — neither in what it targets nor in what it commands — is pure slat rotation. It starts inside the zone — that is what being
 latched means — and moves monotonically to another in-zone target, so it can neither engage the
 latch (which needs a rise across the lower edge from below) nor release it (a rise above the upper
 edge). Interrupting one therefore leaves a confident `LATCHED` belief intact. Without that, stopping
@@ -86,6 +86,13 @@ test:
   actuator drives against its own limit switch.
 - `RiseToAtLeast(target)` — satisfied when `round(position) >= round(target)`. Used only for the
   tilt exit, where anything above the release target is equally good.
+
+A step's `target` is its *satisfaction* threshold. An optional `command_pct` names a different
+position to actually send, defaulting to the target; only the tilt exit uses it (see "Canonical
+Sequences"). Everything about arrival — skip-if-satisfied, `on_feedback`, the settle timer's
+deviation acceptance — keeps measuring the target, and only the outgoing command follows
+`command_pct`. A stall message names the target too, since that is the number the resting position
+should be compared against.
 
 The step lifecycle is where the timing correctness lives:
 
@@ -115,15 +122,33 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
 
 ## Canonical Sequences
 
-- **Enter tilt** — `open_full`, then `MoveTo(lower - epsilon)`, then `MoveTo(upper)`; landing at the
-  open edge instead appends `MoveTo(lower)`. One sequence, correct from any start. The leading full
-  open re-references the actuator at its limit switch (see the README on why the percentages are
-  only reliable from there) and makes the dip a pure descent, which cannot latch.
-- **Leave tilt** — `RiseToAtLeast(upper + epsilon)`, available only from a confident `LATCHED`
-  belief.
+- **Enter tilt** — `open_full`, then `MoveTo(lower - epsilon)`, then `MoveTo(upper)`, then
+  optionally `MoveTo(virtual_to_real(landing))`. One sequence, correct from any start. The leading
+  full open re-references the actuator at its limit switch (see the README on why the percentages
+  are only reliable from there) and makes the dip a pure descent, which cannot latch.
+
+  The latching rise can only end at the upper edge, so any other landing is one more in-zone slat
+  move. Who chooses it depends on the caller: a deliberate `set_tilt_mode` enter passes the
+  configured `tilt_enter_landing_pct`, while a wall-button or step-button entry passes the
+  directional near-edge rule instead (from above → closed edge / virtual 0, from below → open edge /
+  virtual 100) — the press already says which end the user was reaching for. The fourth step is
+  dropped when its landing rounds to the same integer command as the upper edge, because a command
+  that repeats the current setpoint moves nothing.
+- **Leave tilt** — `RiseToAtLeast(release_target)` commanded at `min(100, release_target + 2)`,
+  available only from a confident `LATCHED` belief. `release_target` is `tilt_zone_release_pct`, or
+  `upper + epsilon` when that is not configured.
+
+  The overshoot is the whole point of the step carrying a command distinct from its target. `epsilon`
+  is sized to carry the *reported* position clear of the upper edge, which says nothing about how far
+  the mechanism has to travel to disengage; and commanding exactly the acceptance threshold means an
+  actuator settling a percent low satisfies `>=` on a rise that physically fell short, leaving the
+  app confidently — and wrongly — believing it is released. `planner.EXIT_OVERSHOOT_PCT` is
+  deliberately equal to `executor.DEVIATION_TOLERANCE_PCT`, so any settling the executor would
+  forgive a `MoveTo` for still satisfies this step on its own; the constant is duplicated rather
+  than imported because the planner must not depend on the executor.
 - **Guarded descent** (close, long-down, a descending `set_position`) — when `may_be_latched`,
   prefix `open_full`: an uncertain latch belief also means an uncertain calibration, so a short rise
-  to a merely *reported* `upper + epsilon` cannot be trusted. When the latch is known released,
+  to a merely *reported* release height cannot be trusted. When the latch is known released,
   descend directly.
 - **Normal-mode `set_position`** — snap the target clear of the band, then one `MoveTo`, guarded
   when it descends or the position is unknown.
@@ -131,10 +156,10 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
 - **Recovery** — a single `open_full`.
 
 ```text
-                enter: open fully, down to (lower - epsilon), up to upper
+        enter: open fully, down to (lower - epsilon), up to upper, then to the landing
    NORMAL  ───────────────────────────────────────────────────────────►  TILT
  (height control)                                                  (slat control, latched)
-      ▲                     leave: up to (upper + epsilon)                   │
+      ▲                  leave: up to release_target (commanded +2)          │
       └───────────────────────────────────────────────────────────────────────┘
                           (disengage is always upward)
 ```
@@ -144,12 +169,20 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
 `planner.check_plan` runs on every plan before it executes. A violation disables the blind and
 notifies; it should be unreachable, and the tests exist to prove it:
 
-- **N1** — in normal mode no target lies strictly inside `(lower - epsilon, upper + epsilon)`.
+- **N1** — in normal mode nothing lands strictly inside the band `(lower - epsilon, release_target)`.
 - **T1** — slat targets lie within `[lower, upper]` and are only planned from a `LATCHED` belief.
 - **L1** — a descent below `lower` is preceded by a full open unless the latch is known released.
-- **E1** — the latch belief is only established by the canonical enter sequence.
+- **E1** — the latch belief is only established by the canonical enter sequence: full open, a dip
+  clear of the lower edge, the latching rise to the upper edge, and an optional fourth step to any
+  target *inside the zone* (the landing). It starts from the upper edge, so it can only descend to
+  another slat angle — never across an edge.
 - **X1/R1** — leaving tilt and recovering are upward-only, and every release from an uncertain
-  belief is a full open rather than a rise to an unreferenced percentage.
+  belief is a full open rather than a rise to an unreferenced percentage. The tilt exit must also
+  reach at least `release_target` and command at least as high as it accepts.
+
+N1, T1 and L1 — and `can_change_latch` with them — check both the satisfaction target and the
+commanded position of every step, since the hazard is where the blind physically travels and the two
+are allowed to differ. Today only the tilt exit makes them differ, and it does so upward.
 
 ## Tilt-Zone Math
 
@@ -166,8 +199,10 @@ With `upper = 44`, `lower = 38`, `epsilon = 2`:
 - virtual `100` → real `38` (slats open / perpendicular / most light).
 - virtual `0` → real `44` (slats closed / parallel / least light).
 - virtual `50` → real `41`.
-- entering dips to `lower - epsilon = 36`, then rises to `44` to latch.
-- leaving rises to `upper + epsilon = 46`.
+- entering dips to `lower - epsilon = 36`, then rises to `44` to latch, then moves to
+  `virtual_to_real(tilt_enter_landing_pct)` if that is not `44` as well.
+- leaving rises to `release_target` — `upper + epsilon = 46` unless `tilt_zone_release_pct` says
+  otherwise — commanded two percent higher than that.
 
 Because the zone is narrow (6% here) and KNX actuators report integer positions, the zone holds only
 about `span + 1` distinct slat positions (~7 for a 6% zone). A slat step must therefore map to at
@@ -175,14 +210,27 @@ least one whole reported percent of real travel, otherwise the rounded position 
 current position and the blind never moves. Config validation enforces
 `tilt_step_pct >= 100 / (upper - lower)` (≈16.7 here) so every step advances the actuator, and
 `tilt_zone_epsilon_pct >= 1` so the dip and release targets round to integers distinct from the
-edges they must clear. All of it lives in `geometry.Zone`, which validates on construction —
-`config.py` only checks that each number is present, numeric and in range.
+edges they must clear. The two optional settings are validated here too:
+`tilt_zone_release_pct` must be between `upper + epsilon` and `100` (below the clearance it would
+not even carry the reported position out of the zone), and `tilt_enter_landing_pct` must be a
+virtual percentage in `[0, 100]`. All of it lives in `geometry.Zone`, which validates on
+construction — `config.py` only checks that each number is present (or, for these two, absent),
+numeric and in range.
+
+The ambiguity band runs `[lower - epsilon, release_target]`, and `band_high` is *defined* as
+`release_target` rather than merely coinciding with it: a mechanism that is latched but has not yet
+been released can physically be resting anywhere up to the height at which it lets go, so that is
+exactly how far "latched cannot be ruled out" reaches. Everything derived from the band inherits a
+configured release height automatically — `in_band`, `snap_normal_target`, startup recovery, and the
+feedback rule that clears a latch belief.
 
 Outside tilt, a `set_cover_position` target landing strictly inside the band `(36, 46)` here is
 snapped to the nearer band edge, ties rising. Rising into the band from below silently engages the
 latch, so a whole-blind move that aimed there would leave belief and reality diverging; snapping
 costs a couple of percent of travel and makes "normal mode never targets the band interior" an
-invariant (N1) instead of a hazard.
+invariant (N1) instead of a hazard. Raising `tilt_zone_release_pct` raises `band_high` with it, so
+the snap grows to cover every height at which the blind might still be latched — that widening is
+the deliberate price of an exit that actually releases.
 
 ## KNX Wall-Button Handling
 
@@ -212,11 +260,17 @@ app filters by `virtual_id` and routes each to the logic engine. Position is ref
 Step and tilt reach the app as `input_button` presses. The app watches
 `input_button.gradhermetic_<virtual_id>_step_up` / `_step_down` and routes each to `on_slat_step`
 (up/down), and `..._tilt`, which toggles tilt mode (`on_set_tilt_mode` with the negation of the
-current `in_tilt`). `on_slat_step` is slat-only: it steps the angle by `tilt_step_pct` and clamps at
-both zone edges when latched, and is a no-op when not latched or while a plan is in flight. It
-deliberately differs from a KNX wall-button short press (`on_knx_short`), which additionally crosses
-the zone boundaries (entering from outside, leaving upward at the open edge) because a two-button
-wall switch has no separate tilt control. The UI does — `..._tilt` — so its step helpers stay pure.
+current `in_tilt`). `on_slat_step` ignores a press outright while a plan is in flight or the blind
+is travelling, and otherwise splits on the latch belief: latched, it steps the angle by
+`tilt_step_pct` and clamps at both zone edges; not latched, it plans
+`INTENT_ENTER_TOWARD_ZONE` — the wall button's rule 3, near-edge semantics and all.
+
+That second half was added because a blind with no KNX wall switch had no directional way into tilt
+from the dashboard at all, and the buttons simply did nothing. `on_slat_step` still differs from
+`on_knx_short` in the other two rules: it never stops a move in flight, and it never *leaves* tilt
+by stepping up at the open edge. The UI has `..._tilt` for that, and the configured
+`tilt_enter_landing_pct` applies only to that deliberate entry — a directional press lands on the
+edge the press pointed at.
 
 Tilt mode is also toggled from Home Assistant with a `gradhermetic_command` event carrying
 `command: set_tilt_mode` and `enabled: true|false` — this is the HA-facing entry point. A call whose
@@ -236,7 +290,7 @@ Home Assistant service callable from HA scripts or the UI — use the event form
 State is **not** persisted across restarts. `RECOVERY_DELAY_SECONDS` after startup the adapter reads
 the real cover's position and hands it to `logic.on_startup`, which seeds the belief and decides:
 
-- position clearly **outside** the band (beyond `lower - epsilon` … `upper + epsilon`): the blind
+- position clearly **outside** the band (beyond `lower - epsilon` … `release_target`): the blind
   cannot be latched, so the belief starts `UNLATCHED` and whole-height control resumes from that
   position.
 - position **inside** the band, or unknown: the latch state is ambiguous, so the belief starts
@@ -362,6 +416,10 @@ GradhermeticLivingRoom:
   tilt_zone_epsilon_pct: 2.0
   tilt_step_pct: 20.0
 
+  # Optional; see the README for how to measure the release height and pick a landing angle.
+  tilt_zone_release_pct: 50.0
+  tilt_enter_landing_pct: 20.0
+
   knx_move_address: "2/6/0"
   knx_step_address: "2/6/1"
 ```
@@ -388,12 +446,15 @@ No AppDaemon installation is required, and the whole suite runs in well under a 
 
 `simulator.py` is an independent ground-truth model of the mechanism, under the most pessimistic
 latch semantics consistent with the hardware: any upward crossing of the lower edge from below
-engages the latch, only a rise clear of the upper edge releases it, and downward travel never
-changes it. Plans correct under this model are correct under milder ones, since none of them relies
-on a crossing *not* latching. It records a **violation** whenever it is commanded to travel below
-the lower edge while latched, and it can be configured with the feedback quirks real controllers
-exhibit — duplicate settled reports, no motion state, a final report only, a settled-looking echo of
-the position a move started from, and calibration drift.
+engages the latch, only a rise that actually reaches `release_target` releases it, and downward
+travel never changes it. Releasing is modelled as strictly harder than latching — clearing the
+reported upper edge is explicitly *not* enough — which is what makes the exit overshoot and
+`tilt_zone_release_pct` load-bearing rather than decorative. Plans correct under this model are
+correct under milder ones, since none of them relies on a crossing *not* latching. It records a
+**violation** whenever it is commanded to travel below the lower edge while latched, and it can be
+configured with the feedback quirks real controllers exhibit — duplicate settled reports, no motion
+state, a final report only, a settled-looking echo of the position a move started from, and
+calibration drift.
 
 `test_model.py` drives the whole app against it and asserts, on every run: zero violations; a belief
 never more confident than the truth; a position belief equal to what the actuator reports; a
@@ -402,5 +463,10 @@ and a bounded command count. It sweeps every intent from every whole position 0-
 latched slat position, from every interrupted latch sequence and from the resting state after
 leaving tilt; interrupts every multi-step sequence at every feedback point with every other intent,
 a stop, and a restart with and without the cover going unavailable first; and repeats the intent
-sweep under each feedback quirk. The drift tests demonstrate why every latch sequence starts from
-the top limit, and pin the bound the cheap tilt exit depends on.
+sweep under each feedback quirk. It then repeats the position, slat-position, quirk and
+interrupted-entry sweeps on the geometries the two optional settings produce — a release height far
+above the zone (so the ambiguity band is much wider than the zone) and an entry landing that is
+neither zone edge — and asserts that each entry lands on the configured slat angle and each exit
+physically clears the release height. The drift tests demonstrate why every latch sequence starts
+from the top limit, pin the bound the cheap tilt exit depends on, and show the exit failing to
+release when it is commanded at exactly its acceptance threshold.

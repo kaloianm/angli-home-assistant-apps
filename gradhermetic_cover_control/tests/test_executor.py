@@ -23,6 +23,7 @@ from gradhermetic_cover_control.geometry import Zone
 from gradhermetic_cover_control.planner import (
     COMMAND_CLOSE,
     COMMAND_OPEN,
+    COMMAND_POSITION,
     LATCH_LATCHED,
     LATCH_UNLATCHED,
     PLAN_ENTER,
@@ -160,6 +161,63 @@ class TestRiseToAtLeast(unittest.TestCase):
     def test_already_above_is_skipped(self):
         outcome = self.executor.start(self.plan, 50.0, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
+
+
+class TestCommandDistinctFromTarget(unittest.TestCase):
+    """A step may aim past what satisfies it; the command follows the aim, arrival the target."""
+
+    def setUp(self):
+        self.executor = Executor(ZONE)
+        # The shape the tilt exit uses: satisfied at 46, commanded to 48.
+        self.plan = Plan("leave", (Step(STEP_RISE_TO_AT_LEAST, 46.0, COMMAND_POSITION,
+                                        command_pct=48.0),), LATCH_UNLATCHED)
+
+    def test_the_command_carries_the_command_position(self):
+        outcome = self.executor.start(self.plan, UPPER, False)
+        self.assertEqual([ACTION_MOVE_TO, ACTION_ARM_SETTLE_TIMER], _kinds(outcome))
+        self.assertAlmostEqual(48.0, _of(outcome, ACTION_MOVE_TO)[0].position)
+
+    def test_arrival_is_judged_by_the_target_not_the_command(self):
+        # Settling two percent short of the commanded 48 still clears the 46 the step needs.
+        self.executor.start(self.plan, UPPER, False)
+        outcome = self.executor.on_feedback(46.0, False)
+        self.assertEqual(STATUS_COMPLETED, outcome.status)
+        self.assertAlmostEqual(46.0, _of(outcome, ACTION_PUBLISH_POSITION)[0].position)
+
+    def test_short_of_the_target_still_does_not_arrive(self):
+        self.executor.start(self.plan, UPPER, False)
+        self.assertEqual(STATUS_IDLE, self.executor.on_feedback(45.0, False).status)
+        self.assertTrue(self.executor.has_plan)
+
+    def test_activation_skips_on_the_target_not_the_command(self):
+        # Already resting at 46: the step is satisfied, so no command goes out at all.
+        outcome = self.executor.start(self.plan, 46.0, False)
+        self.assertEqual(STATUS_COMPLETED, outcome.status)
+        self.assertEqual([], _of(outcome, ACTION_MOVE_TO))
+
+    def test_the_settle_timer_accepts_on_the_target(self):
+        self.executor.start(self.plan, UPPER, False)
+        self.assertEqual(STATUS_COMPLETED, self.executor.on_timer(47.0, False).status)
+
+    def test_a_stall_names_the_target_the_step_needed(self):
+        self.executor.start(self.plan, UPPER, False)
+        outcome = self.executor.on_timer(45.0, False)
+        self.assertEqual(STATUS_STALLED, outcome.status)
+        message = _of(outcome, ACTION_NOTIFY)[0].message
+        self.assertIn("did not reach 46%", message)
+        self.assertIn("45", message)
+
+    def test_a_move_step_can_carry_a_command_position_too(self):
+        executor = Executor(ZONE)
+        movement = _move_plan(30.0)
+        movement = Plan(movement.kind,
+                        (Step(STEP_MOVE_TO, 30.0, COMMAND_POSITION, command_pct=28.0),),
+                        LATCH_UNLATCHED)
+        outcome = executor.start(movement, 80.0, False)
+        self.assertAlmostEqual(28.0, _of(outcome, ACTION_MOVE_TO)[0].position)
+        # Exact-equality arrival still measures the target, so 28 does not complete it.
+        self.assertEqual(STATUS_IDLE, executor.on_feedback(28.0, False).status)
+        self.assertEqual(STATUS_COMPLETED, executor.on_feedback(30.0, False).status)
 
 
 class TestPublishedPosition(unittest.TestCase):

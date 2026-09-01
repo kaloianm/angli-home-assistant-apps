@@ -33,6 +33,7 @@ from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 from gradhermetic_cover_control.planner import (
     DIRECTION_DOWN,
     DIRECTION_UP,
+    EXIT_OVERSHOOT_PCT,
     LATCH_UNLATCHED,
 )
 from gradhermetic_cover_control.tests.simulator import BlindSimulator, Quirks
@@ -47,6 +48,14 @@ RELEASE = UPPER + EPSILON
 ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
             tilt_step_pct=STEP)
 
+# The same mechanism on a blind whose latch only genuinely lets go well above the bare clearance,
+# and whose slats are not visible until a little way open. Band = [36, 55].
+CUSTOM_RELEASE = 55.0
+CUSTOM_LANDING = 40.0
+CUSTOM_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
+                   tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
+                   tilt_zone_release_pct=CUSTOM_RELEASE, tilt_enter_landing_pct=CUSTOM_LANDING)
+
 # Enough ticks for the longest sequence (a full open plus a dip plus a rise) with room to spare.
 MAX_TICKS = 1000
 # An intent may not command the real cover more than this. The enter sequence is the longest at
@@ -59,14 +68,14 @@ class Harness:
     One app instance wired to one simulated blind, plus the side effects the adapter would perform.
     """
 
-    def __init__(self, position=100.0, latched=False, quirks=None, stride=1.0):
+    def __init__(self, position=100.0, latched=False, quirks=None, stride=1.0, zone=ZONE):
         """
         Create an app and a blind resting at ``position``.
         """
-        self.zone = ZONE
-        self.sim = BlindSimulator(ZONE, position=position, latched=latched, quirks=quirks,
+        self.zone = zone
+        self.sim = BlindSimulator(zone, position=position, latched=latched, quirks=quirks,
                                   stride=stride)
-        self.logic = GradhermeticCoverLogic(ZONE)
+        self.logic = GradhermeticCoverLogic(zone)
         self.published = []
         self.notifications = []
         self.timer_armed = False
@@ -177,8 +186,9 @@ def latched_at(position, **kwargs):
     harness = Harness(position=100.0, **kwargs)
     harness.logic.seed_state(100.0)
     harness.run(harness.logic.on_set_tilt_mode(True))
-    if to_command(position) != to_command(UPPER):
-        harness.run(harness.logic.on_set_position(ZONE.real_to_virtual(float(position))))
+    # Entry finishes at the configured landing, which is not necessarily the closed edge.
+    if to_command(position) != harness.sim.reported:
+        harness.run(harness.logic.on_set_position(harness.zone.real_to_virtual(float(position))))
     return harness
 
 
@@ -190,7 +200,7 @@ def interrupted_enter(stop_at, **kwargs):
     harness.logic.seed_state(100.0)
     # Already fully open, so the first command is the dip.
     harness.apply(harness.logic.on_set_tilt_mode(True))
-    _drive_until(harness, lambda: harness.sim.physical <= DIP + 1e-9)
+    _drive_until(harness, lambda: harness.sim.physical <= harness.zone.dip_target + 1e-9)
     _drive_until(harness, lambda: harness.sim.physical >= float(stop_at) - 1e-9)
     harness.run(harness.logic.on_stop())
     return harness
@@ -198,7 +208,7 @@ def interrupted_enter(stop_at, **kwargs):
 
 def after_leaving_tilt(**kwargs):
     """
-    Resting at the release target, known released -- the state the old code stalled 45 seconds in.
+    Resting just above the release target, known released -- the state the old code stalled in.
     """
     harness = latched_at(UPPER, **kwargs)
     harness.run(harness.logic.on_set_tilt_mode(False))
@@ -266,7 +276,8 @@ class ModelTestCase(unittest.TestCase):
         self.assertFalse(harness.timer_armed, "the settle timer was left armed")
         self.assertEqual(harness.sim.reported, to_command(harness.logic.last_position))
         if harness.published:
-            expected = virtual_position(ZONE, harness.logic.latch, harness.logic.last_position)
+            expected = virtual_position(harness.zone, harness.logic.latch,
+                                        harness.logic.last_position)
             self.assertAlmostEqual(expected, harness.published[-1])
 
     def assert_nominal(self, harness):
@@ -335,6 +346,12 @@ class TestInterruptions(ModelTestCase):
         ("leave_tilt", lambda: latched_at(LOWER, stride=2.0), lambda l: l.on_set_tilt_mode(False)),
         ("slat_step", lambda: latched_at(UPPER, stride=0.25),
          lambda l: l.on_slat_step(DIRECTION_UP)),
+        # The same two sequences on the geometry the optional settings produce: a four-step entry
+        # that finishes mid-zone, and a much longer exit through a much wider ambiguity band.
+        ("enter_custom_zone", lambda: fresh(10.0, stride=8.0, zone=CUSTOM_ZONE),
+         lambda l: l.on_set_tilt_mode(True)),
+        ("leave_custom_zone", lambda: latched_at(LOWER, stride=2.0, zone=CUSTOM_ZONE),
+         lambda l: l.on_set_tilt_mode(False)),
     ]
 
     INTERRUPTIONS = [
@@ -427,6 +444,100 @@ class TestFeedbackQuirks(ModelTestCase):
                 self.assertEqual(to_command(LOWER), harness.sim.reported)
 
 
+class TestAlternateGeometries(ModelTestCase):
+    """
+    The same proofs on the geometries the two optional settings produce.
+
+    A configured ``tilt_zone_release_pct`` widens the ambiguity band far past the zone (so band
+    snapping, startup recovery and latch-belief clearing all reach further), and a configured
+    ``tilt_enter_landing_pct`` gives the enter sequence a fourth step that is neither zone edge.
+    Both change what the planner emits, so both have to survive the same sweep.
+    """
+
+    ZONES = [
+        # Releases high up, entry lands slightly open. Band [36, 55].
+        ("custom_release_and_landing", CUSTOM_ZONE),
+        # Releases at the bare clearance, but the slats have to end wide open.
+        ("landing_only",
+         Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
+              tilt_step_pct=STEP, tilt_enter_landing_pct=100.0)),
+        # A low zone that needs almost the whole remaining travel to release. Band [18, 95].
+        ("release_far_above_the_zone",
+         Zone(tilt_zone_upper_pct=30.0, tilt_zone_lower_pct=20.0, tilt_zone_epsilon_pct=2.0,
+              tilt_step_pct=25.0, tilt_zone_release_pct=95.0, tilt_enter_landing_pct=25.0)),
+    ]
+
+    POSITIONS = (0, 10, 19, 20, 25, 30, 36, 38, 41, 44, 46, 50, 55, 56, 80, 95, 96, 100)
+
+    def test_every_intent_from_every_position(self):
+        for label, zone in self.ZONES:
+            for position in self.POSITIONS:
+                for name, intent in INTENTS:
+                    with self.subTest(zone=label, start=position, intent=name):
+                        harness = fresh(position, zone=zone)
+                        harness.run(intent(harness.logic))
+                        self.assert_nominal(harness)
+
+    def test_entry_lands_on_the_configured_slat_angle(self):
+        for label, zone in self.ZONES:
+            with self.subTest(zone=label):
+                harness = fresh(80.0, zone=zone)
+                harness.run(harness.logic.on_set_tilt_mode(True))
+                self.assertTrue(harness.sim.latched)
+                self.assertTrue(zone.in_zone(harness.sim.physical))
+                self.assertAlmostEqual(to_command(zone.virtual_to_real(zone.enter_landing)),
+                                       harness.sim.reported)
+                self.assert_nominal(harness)
+
+    def test_leaving_tilt_physically_clears_the_release_height(self):
+        for label, zone in self.ZONES:
+            with self.subTest(zone=label):
+                harness = fresh(80.0, zone=zone)
+                harness.run(harness.logic.on_set_tilt_mode(True))
+                harness.published = []
+                harness.commands = 0
+                harness.run(harness.logic.on_set_tilt_mode(False))
+                self.assertFalse(harness.sim.latched)
+                self.assertGreaterEqual(harness.sim.physical, zone.release_target)
+                self.assertEqual(LATCH_UNLATCHED, harness.logic.latch)
+                self.assert_nominal(harness)
+
+    def test_every_intent_from_every_latched_slat_position(self):
+        for label, zone in self.ZONES:
+            for position in range(int(zone.lower), int(zone.upper) + 1):
+                for name, intent in INTENTS:
+                    with self.subTest(zone=label, latched_at=position, intent=name):
+                        harness = latched_at(position, zone=zone)
+                        harness.published = []
+                        harness.commands = 0
+                        harness.run(intent(harness.logic))
+                        self.assert_nominal(harness)
+
+    def test_every_intent_under_every_quirk(self):
+        for label, zone in self.ZONES:
+            for quirk_label, quirks in TestFeedbackQuirks.QUIRK_SETS:
+                for position in (0, 36, 41, 46, 50, 100):
+                    for name, intent in INTENTS:
+                        with self.subTest(zone=label, quirks=quirk_label, position=position,
+                                          intent=name):
+                            harness = fresh(position, quirks=quirks, zone=zone)
+                            harness.run(intent(harness.logic))
+                            self.assert_nominal(harness)
+
+    def test_an_interrupted_entry_recovers_to_a_known_state(self):
+        for label, zone in self.ZONES:
+            harness = fresh(10.0, stride=8.0, zone=zone)
+            reports = harness.run_partial(harness.logic.on_set_tilt_mode(True), MAX_TICKS)
+            for index in range(reports):
+                with self.subTest(zone=label, after_reports=index):
+                    harness = fresh(10.0, stride=8.0, zone=zone)
+                    harness.run_partial(harness.logic.on_set_tilt_mode(True), index)
+                    harness.restart()
+                    self.assert_no_violation(harness)
+                    self.assert_belief_is_sound(harness)
+                    self.assert_at_rest(harness)
+
+
 class TestSettleTimerAgainstTheModel(ModelTestCase):
     """The fallback timer must be inert on healthy runs and honest on jammed ones."""
 
@@ -507,6 +618,39 @@ class TestCalibrationDrift(ModelTestCase):
         harness.run(harness.logic.on_knx_long(DIRECTION_DOWN))
         self.assertFalse(harness.sim.latched)
         self.assertEqual(0, harness.sim.reported)
+        self.assert_nominal(harness)
+
+    def test_commanding_exactly_the_release_target_can_stop_short_of_releasing(self):
+        # The field failure the exit overshoot exists for: the actuator reports the setpoint it was
+        # given, so a percent of error leaves the blind physically below the release height while
+        # the feedback says it arrived. Commanding higher turns that shortfall into slack.
+        sim = BlindSimulator(ZONE, position=UPPER, latched=True)
+        sim.drift = 1.0
+        sim.set_position(to_command(RELEASE))
+        _run_out(sim)
+        self.assertTrue(sim.latched, "the bare release command released a blind it should not have")
+        self.assertEqual(to_command(RELEASE), sim.reported)
+
+        sim.set_position(to_command(RELEASE + EXIT_OVERSHOOT_PCT))
+        _run_out(sim)
+        self.assertFalse(sim.latched)
+        self.assertEqual([], sim.violations)
+
+    def test_the_exit_releases_despite_an_actuator_that_settles_low(self):
+        # The same error, end to end. The blind enters cleanly and only the exit move settles low,
+        # by the ~1.5% the real controller's position feedback is good to: the app's exit still
+        # physically clears the release height, and the belief it commits is the truth.
+        harness = fresh(20.0)
+        harness.run(harness.logic.on_set_tilt_mode(True))
+        self.assertTrue(harness.sim.latched)
+
+        harness.sim.quirks.drift_per_move = 1.5
+        harness.published = []
+        harness.commands = 0
+        harness.run(harness.logic.on_set_tilt_mode(False))
+        self.assertFalse(harness.sim.latched)
+        self.assertGreaterEqual(harness.sim.physical, RELEASE)
+        self.assertEqual(LATCH_UNLATCHED, harness.logic.latch)
         self.assert_nominal(harness)
 
     def test_a_short_rise_from_an_uncalibrated_state_would_not_release(self):

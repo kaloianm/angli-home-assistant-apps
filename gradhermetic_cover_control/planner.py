@@ -17,7 +17,7 @@ Two facts about the mechanism drive the whole design:
 
 The one exception is the tilt exit from a confidently ``LATCHED`` belief: that belief can only have
 been established by an enter sequence that just re-referenced the actuator, with nothing but small
-in-zone slat moves since, so the cheap rise to ``upper + epsilon`` is trustworthy there.
+in-zone slat moves since, so the cheap rise to the zone's release target is trustworthy there.
 
 :func:`check_plan` restates the safety argument as executable invariants and runs on every plan
 before it is executed. It should be unreachable; the exhaustive tests exist to prove it is.
@@ -60,6 +60,21 @@ STEP_RISE_TO_AT_LEAST = "rise_to_at_least"
 COMMAND_POSITION = "position"
 COMMAND_OPEN = "open"
 COMMAND_CLOSE = "close"
+
+# How far above its acceptance threshold the tilt exit is commanded, in real travel percent.
+#
+# A position command is only satisfied to within the actuator's own settling accuracy, so commanding
+# exactly the release target lets a blind that stops a percent low report success while the
+# mechanism is still physically latched. Commanding higher than the threshold makes the shortfall
+# the actuator is allowed the app's margin rather than its risk.
+#
+# This is deliberately equal to ``executor.DEVIATION_TOLERANCE_PCT`` -- the amount the executor is
+# willing to forgive a ``MoveTo`` for -- so an actuator that settles anywhere within tolerance of
+# the commanded position still satisfies the ``>=`` predicate on its own, without the settle timer
+# having to forgive anything (it does not forgive rise steps at all). The constant lives here rather
+# than being imported, because the planner must not depend on the executor; if the executor's
+# tolerance is ever widened, widen this with it.
+EXIT_OVERSHOOT_PCT = 2.0
 
 # -- Plans -----------------------------------------------------------------------------------------
 
@@ -114,11 +129,26 @@ class Belief:
 class Step:
     """
     One waypoint of a movement plan, with the predicate that decides when it is done.
+
+    ``target`` is the *satisfaction* threshold; ``command_pct`` optionally names a different
+    position to actually command. They differ only where commanding exactly the threshold would let
+    the actuator's settling accuracy leave the physical move short of what the mechanism needs --
+    the tilt exit. When it is ``None`` the target is commanded, which is the ordinary case.
     """
 
     kind: str
     target: float
     command: str = COMMAND_POSITION
+    command_pct: Optional[float] = None
+
+    @property
+    def command_position(self) -> float:
+        """
+        The real position to command for this step, which defaults to its satisfaction target.
+        """
+        if self.command_pct is None:
+            return self.target
+        return self.command_pct
 
     def satisfied_by(self, position: float) -> bool:
         """
@@ -151,6 +181,12 @@ class Plan:
 class Intent:
     """
     What the user (or the app itself, when recovering) asked for.
+
+    An enter intent says where in the zone the sequence should finish, in one of two ways.
+    ``near_edge`` is the wall-button rule: entry lands on whichever end of the zone the press came
+    toward, which is a property of the press and not of the installation. ``landing_virtual`` is an
+    explicit virtual slat position and, when given, wins -- that is how the deliberate "enter tilt"
+    control applies the configured ``tilt_enter_landing_pct``.
     """
 
     kind: str
@@ -158,6 +194,7 @@ class Intent:
     direction: Optional[str] = None
     near_edge: str = NEAR_EDGE_CLOSED
     cross_open_edge: bool = False
+    landing_virtual: Optional[float] = None
 
 
 def plan(zone: Zone, belief: Belief, intent: Intent) -> Optional[Plan]:
@@ -171,7 +208,7 @@ def plan(zone: Zone, belief: Belief, intent: Intent) -> Optional[Plan]:
     if intent.kind == INTENT_SET_POSITION:
         return _plan_set_position(zone, belief, intent.virtual_pct)
     if intent.kind == INTENT_ENTER_TILT:
-        return _plan_enter_tilt(zone, intent.near_edge)
+        return _plan_enter_tilt(zone, intent.near_edge, intent.landing_virtual)
     if intent.kind == INTENT_LEAVE_TILT:
         return _plan_leave_tilt(zone, belief)
     if intent.kind == INTENT_SLAT_STEP:
@@ -189,12 +226,14 @@ def can_change_latch(zone: Zone, movement: Plan) -> bool:
     """
     Whether executing -- or interrupting -- this plan could engage or release the latch.
 
-    A plan whose every target lies inside the zone is pure slat rotation: it starts inside the zone
-    (that is what being latched means), moves monotonically to another in-zone target, and so never
-    crosses either edge. Neither running it nor abandoning it half-way can change the latch, which
-    is why an interrupted slat move does not cost the app its confident latch belief.
+    A plan that never leaves the zone is pure slat rotation: it starts inside the zone (that is what
+    being latched means), moves monotonically to another in-zone position, and so never crosses
+    either edge. Neither running it nor abandoning it half-way can change the latch, which is why an
+    interrupted slat move does not cost the app its confident latch belief. Both the satisfaction
+    target and the commanded position have to stay inside, since the blind travels to the latter.
     """
-    return any(not zone.in_zone(step.target) for step in movement.steps)
+    return any(not zone.in_zone(step.target) or not zone.in_zone(step.command_position)
+               for step in movement.steps)
 
 
 # -- Sequences -------------------------------------------------------------------------------------
@@ -236,22 +275,32 @@ def _plan_set_position(zone: Zone, belief: Belief, virtual_pct: Optional[float])
     return Plan(PLAN_NORMAL, steps, LATCH_UNLATCHED)
 
 
-def _plan_enter_tilt(zone: Zone, near_edge: str) -> Plan:
+def _plan_enter_tilt(zone: Zone, near_edge: str, landing_virtual: Optional[float] = None) -> Plan:
     """
     The canonical latch sequence, correct from any starting position.
 
     Drive fully open with the open command first: the latch percentages are only reliable when the
     sequence is referenced from the top limit, and it also guarantees the dip is a pure descent from
     above, which cannot latch. Then dip below the lower edge and rise back across it, which latches
-    with the slats parallel. Landing at the open edge is one more in-zone slat move.
+    with the slats parallel.
+
+    The latching rise necessarily ends at the closed edge, so landing anywhere else costs one more
+    in-zone slat move. ``landing_virtual`` names that landing explicitly (the configured
+    ``tilt_enter_landing_pct``); without it the wall-button ``near_edge`` rule decides. The extra
+    step is omitted when it would command the position the rise already reached -- compared in the
+    integer domain the actuator speaks, since a command that rounds to the current setpoint moves
+    nothing and would only be skipped again by the executor.
     """
+    if landing_virtual is None:
+        landing_virtual = 100.0 if near_edge == NEAR_EDGE_OPEN else 0.0
     steps = [
         Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),
         Step(STEP_MOVE_TO, zone.dip_target),
         Step(STEP_MOVE_TO, zone.upper),
     ]
-    if near_edge == NEAR_EDGE_OPEN:
-        steps.append(Step(STEP_MOVE_TO, zone.lower))
+    landing = zone.virtual_to_real(clamp_pct(landing_virtual))
+    if to_command(landing) != to_command(zone.upper):
+        steps.append(Step(STEP_MOVE_TO, landing))
     return Plan(PLAN_ENTER, tuple(steps), LATCH_LATCHED)
 
 
@@ -262,10 +311,17 @@ def _plan_leave_tilt(zone: Zone, belief: Belief) -> Optional[Plan]:
     Only available from a confident LATCHED belief, which implies the actuator was re-referenced by
     the entry sequence and has only made small in-zone moves since. From an uncertain belief the
     release is a full open instead (see :func:`_guard_descent`).
+
+    The rise is *commanded* past the height it has to reach (see :data:`EXIT_OVERSHOOT_PCT`), so an
+    actuator that settles a little low still ends up at or above the release target rather than
+    reporting a rise that never physically disengaged the mechanism.
     """
     if not belief.in_tilt:
         return None
-    return Plan(PLAN_LEAVE, (Step(STEP_RISE_TO_AT_LEAST, zone.release_target),), LATCH_UNLATCHED)
+    release = zone.release_target
+    step = Step(STEP_RISE_TO_AT_LEAST, release, COMMAND_POSITION,
+                command_pct=min(100.0, release + EXIT_OVERSHOOT_PCT))
+    return Plan(PLAN_LEAVE, (step,), LATCH_UNLATCHED)
 
 
 def _plan_slat_step(zone: Zone, belief: Belief, direction: Optional[str],
@@ -337,7 +393,7 @@ def _guard_descent(belief: Belief, steps: Tuple[Step, ...]) -> Tuple[Step, ...]:
     """
     Prefix a descent with a full-open latch release whenever the latch might be engaged.
 
-    The release is a full open rather than a short rise to a reported ``upper + epsilon`` because an
+    The release is a full open rather than a short rise to a merely reported release height because an
     uncertain belief also means an uncertain calibration: only the top limit is a position the
     actuator cannot be wrong about. Rising from above the zone cannot re-latch, so the descent that
     follows is safe. A known-released mechanism descends directly, which is the common case (closing
@@ -367,12 +423,18 @@ def check_plan(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]:
 def _check_normal_targets(zone: Zone, movement: Plan) -> Optional[str]:
     """
     N1: in normal mode no target lies strictly inside the ambiguity band.
+
+    Both the satisfaction target and the position actually commanded are checked: the hazard is
+    where the blind physically comes to rest, and those two are allowed to differ.
     """
     if movement.final_latch != LATCH_UNLATCHED:
         return None
     for step in movement.steps:
-        if step.kind == STEP_MOVE_TO and zone.band_low < step.target < zone.band_high:
-            return f"N1: normal-mode target {step.target} lies inside the ambiguity band"
+        if step.kind != STEP_MOVE_TO:
+            continue
+        for position in (step.target, step.command_position):
+            if zone.band_low < position < zone.band_high:
+                return f"N1: normal-mode target {position} lies inside the ambiguity band"
     return None
 
 
@@ -385,8 +447,10 @@ def _check_slat_targets(zone: Zone, belief: Belief, movement: Plan) -> Optional[
     if belief.latch != LATCH_LATCHED:
         return f"T1: slat move planned while the latch belief is {belief.latch}"
     for step in movement.steps:
-        if not zone.in_zone(step.target):
-            return f"T1: slat target {step.target} lies outside the tilt zone"
+        # As with N1, the commanded position counts as well as the threshold that satisfies it.
+        for position in (step.target, step.command_position):
+            if not zone.in_zone(position):
+                return f"T1: slat target {position} lies outside the tilt zone"
     return None
 
 
@@ -395,9 +459,10 @@ def _check_descents(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
     L1: a descent below the lower edge is preceded by a full open unless the latch is known clear.
 
     The hazard is *travel* below the lower edge while latched, so the check walks the plan tracking
-    where the blind will be: a step whose target already equals the current position moves nothing
-    and is no descent. Once a full open has run, the mechanism is released and re-referenced, so
-    everything after it is safe by construction.
+    where the blind will be -- the position each step *commands*, not the threshold that satisfies
+    it, because the actuator travels to the former. A step whose command already equals the current
+    position moves nothing and is no descent. Once a full open has run, the mechanism is released
+    and re-referenced, so everything after it is safe by construction.
     """
     if belief.latch == LATCH_UNLATCHED:
         return None
@@ -405,11 +470,12 @@ def _check_descents(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
     for index, step in enumerate(movement.steps):
         if any(earlier.command == COMMAND_OPEN for earlier in movement.steps[:index]):
             break
-        descends = position is None or to_command(step.target) < to_command(position)
-        if descends and step.target < zone.lower:
-            return (f"L1: descent to {step.target} below the lower edge is not preceded by a "
+        commanded = step.command_position
+        descends = position is None or to_command(commanded) < to_command(position)
+        if descends and commanded < zone.lower:
+            return (f"L1: descent to {commanded} below the lower edge is not preceded by a "
                     "full open")
-        position = step.target
+        position = commanded
     return None
 
 
@@ -432,8 +498,12 @@ def _check_latching(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
         return f"E1: the enter dip to {steps[1].target} does not clear the lower edge"
     if to_command(steps[2].target) != to_command(zone.upper):
         return f"E1: the latching rise must end at the upper edge, not {steps[2].target}"
-    if len(steps) == 4 and to_command(steps[3].target) != to_command(zone.lower):
-        return f"E1: the enter sequence may only continue to the lower edge, not {steps[3].target}"
+    # The optional fourth step is the configured landing: any slat angle inside the zone. It starts
+    # from the upper edge, so it can only ever descend to another in-zone position -- never across
+    # the lower edge, and never back out of the zone.
+    if len(steps) == 4 and not zone.in_zone(steps[3].target):
+        return (f"E1: the enter sequence may only continue to a target inside the tilt zone, not "
+                f"{steps[3].target}")
     return None
 
 
@@ -447,8 +517,14 @@ def _check_releases(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
             return f"X1: the short tilt exit requires a LATCHED belief, not {belief.latch}"
         if len(movement.steps) != 1 or movement.steps[0].kind != STEP_RISE_TO_AT_LEAST:
             return "X1: leaving tilt must be a single upward step"
-        if movement.steps[0].target < zone.release_target:
-            return f"X1: the tilt exit to {movement.steps[0].target} does not clear the upper edge"
+        step = movement.steps[0]
+        if step.target < zone.release_target:
+            return f"X1: the tilt exit to {step.target} does not reach the release height"
+        # Commanding exactly the acceptance threshold would let an actuator that settles low report
+        # a release the mechanism never performed, so the command must aim at least that high.
+        if step.command_position < step.target:
+            return (f"X1: the tilt exit commands {step.command_position}, below its own acceptance "
+                    f"target {step.target}")
     if movement.kind == PLAN_RECOVER:
         if len(movement.steps) != 1 or movement.steps[0].command != COMMAND_OPEN:
             return "R1: recovery must be a single full open"

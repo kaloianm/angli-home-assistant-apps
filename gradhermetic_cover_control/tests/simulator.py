@@ -9,7 +9,10 @@ proof.
 The latch model is deliberately the most pessimistic one consistent with the hardware:
 
 - *any* upward crossing of the lower edge that starts below it engages the latch;
-- only an upward crossing clear of the upper edge releases it;
+- only a rise reaching the zone's **release target** releases it -- not merely clearing the upper
+  edge. On the real mechanism the bare clearance margin is enough to carry the *reported* position
+  out of the zone but not always enough to disengage the latch, which is what
+  ``tilt_zone_release_pct`` exists to measure;
 - downward travel never changes it.
 
 Plans that are correct under this model are also correct under milder, reversal-only models, because
@@ -207,12 +210,16 @@ class BlindSimulator:
     def _apply_latch(self, start: float, end: float) -> None:
         """
         Update the latch for one step of travel, under the conservative crossing model.
+
+        Engaging is easy and releasing is hard: any rise across the lower edge latches, while
+        nothing short of reaching the release target lets go. Written so a release target at the top
+        limit still releases when the blind gets there.
         """
         if end <= start:
             return
         if start < self._zone.lower <= end:
             self.latched = True
-        if start <= self._zone.upper < end:
+        if start < self._zone.release_target <= end:
             self.latched = False
 
     def _settle(self) -> None:

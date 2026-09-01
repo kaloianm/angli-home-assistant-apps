@@ -38,6 +38,8 @@ class GradhermeticConfig:
                 f"tilt_zone_upper_pct={self.zone.tilt_zone_upper_pct}, "
                 f"tilt_zone_lower_pct={self.zone.tilt_zone_lower_pct}, "
                 f"tilt_zone_epsilon_pct={self.zone.tilt_zone_epsilon_pct}, "
+                f"tilt_zone_release_pct={self.zone.release_target}, "
+                f"tilt_enter_landing_pct={self.zone.enter_landing}, "
                 f"tilt_step_pct={self.zone.tilt_step_pct}, "
                 f"knx_move_address={self.knx_move_address}, "
                 f"knx_step_address={self.knx_step_address}"
@@ -59,6 +61,9 @@ def parse_app_config(args: Dict[str, Any]) -> GradhermeticConfig:
         tilt_zone_lower_pct=_parse_percentage(args, "tilt_zone_lower_pct"),
         tilt_zone_epsilon_pct=_parse_positive_float(args, "tilt_zone_epsilon_pct"),
         tilt_step_pct=_parse_positive_float(args, "tilt_step_pct"),
+        # Both optional: absent means "keep the geometric default", which Zone supplies.
+        tilt_zone_release_pct=_optional_percentage(args, "tilt_zone_release_pct"),
+        tilt_enter_landing_pct=_optional_percentage(args, "tilt_enter_landing_pct"),
     )
 
     return GradhermeticConfig(
@@ -99,6 +104,18 @@ def _parse_percentage(source: Dict[str, Any], key: str) -> float:
     if value < 0.0 or value > 100.0:
         raise ValueError(f"{key} must be between 0 and 100")
     return value
+
+
+def _optional_percentage(source: Dict[str, Any], key: str) -> Optional[float]:
+    """
+    Read an optional float field, enforcing 0 <= value <= 100 when it is present.
+
+    Absent (or explicitly null) means the caller keeps its own default; anything relating the value
+    to the rest of the geometry is Zone's business.
+    """
+    if source.get(key) is None:
+        return None
+    return _parse_percentage(source, key)
 
 
 def _parse_positive_float(source: Dict[str, Any], key: str) -> float:

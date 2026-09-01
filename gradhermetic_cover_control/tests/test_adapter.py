@@ -349,9 +349,18 @@ class TestButtonPresses(unittest.TestCase):
         self.app.press(self.tilt, old=stamp, new=stamp)
         self.assertEqual([], self.app.service_calls)
 
-    def test_step_presses_do_nothing_outside_tilt(self):
+    def test_a_step_press_pointing_away_from_the_zone_does_nothing(self):
+        # Resting at 80, above the zone: up is away from it, and the long-press equivalent (the
+        # cover's own open) covers the extremes.
         self.app.press(self.step_up)
         self.assertEqual([], self.app.service_calls)
+
+    def test_a_step_press_toward_the_zone_enters_tilt(self):
+        # A dashboard-only blind has no wall switch, so the step helpers are the only directional
+        # way into tilt; entry always begins by re-referencing at the top limit.
+        step_down = f"input_button.gradhermetic_{VIRTUAL_ID}_step_down"
+        self.app.press(step_down)
+        self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/open_cover"))
 
 
 class TestServiceTargeting(unittest.TestCase):

@@ -167,6 +167,8 @@ class Executor:
             # The actuator reported no intermediate states, only its final one -- or none at all.
             self._index += 1
             return self._advance(position, is_moving)
+        # Judged against the satisfaction target, which is the threshold the step actually needs;
+        # a step that aims past it (the tilt exit) is a rise step and is never forgiven here.
         if step.kind == STEP_MOVE_TO and abs(position - step.target) <= DEVIATION_TOLERANCE_PCT:
             self._log(f"WARNING: accepting {position} for target {step.target}: settled within "
                       f"{DEVIATION_TOLERANCE_PCT}% of the setpoint")
@@ -210,7 +212,8 @@ class Executor:
                 self._log(f"skipping {step.kind} {step.target}: already at {position}")
                 self._index += 1
                 continue
-            self._log(f"commanding {step.kind} {step.target} from {position}")
+            self._log(f"commanding {step.kind} {step.command_position} (satisfied at "
+                      f"{step.target}) from {position}")
             return Outcome([_command(step), _arm()], STATUS_RUNNING, self._plan)
         return self._complete(position)
 
@@ -231,6 +234,10 @@ class Executor:
     def _stall(self, reason: str) -> Outcome:
         """
         Abandon a plan the blind is not going to finish, and say so.
+
+        The message names the *satisfaction* target rather than the position commanded: a step that
+        deliberately aims past what it needs (the tilt exit) has not failed until the blind is short
+        of the threshold, so that is the number a reader should compare the resting position with.
         """
         movement = self._plan
         target = to_command(self._step().target)
@@ -262,12 +269,16 @@ def virtual_position(zone: Zone, latch: str, position: float) -> float:
 def _command(step: Step) -> Action:
     """
     Translate a step into the real-cover command that starts it.
+
+    A step may aim higher than the position that satisfies it (:attr:`Step.command_position`); what
+    goes to the actuator is where it should travel, while every arrival test above stays on the
+    satisfaction target.
     """
     if step.command == COMMAND_OPEN:
         return Action(ACTION_OPEN_FULL)
     if step.command == COMMAND_CLOSE:
         return Action(ACTION_CLOSE_FULL)
-    return Action(ACTION_MOVE_TO, position=step.target)
+    return Action(ACTION_MOVE_TO, position=step.command_position)
 
 
 def _arm() -> Action:

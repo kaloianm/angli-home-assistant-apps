@@ -224,15 +224,24 @@ class GradhermeticCoverLogic:
         """
         Handle the custom ``set_tilt_mode`` service.
 
-        Entering latches the mechanism (landing slats closed); leaving disengages it upward. Both
-        are no-ops when the blind is already in the requested mode.
+        Entering latches the mechanism and finishes at the configured ``tilt_enter_landing_pct``
+        slat angle; leaving disengages it upward. Both are no-ops when the blind is already in the
+        requested mode.
+
+        The landing exists because the latching rise necessarily ends at the closed edge, where some
+        blinds show no visible slat opening at all -- a deliberate "enter tilt" is worth nothing if
+        it lands somewhere the user cannot see it worked. A wall button keeps its own near-edge rule
+        instead (see :meth:`on_knx_short`), since there the direction of the press says where to
+        land.
         """
         if self._disabled:
             return []
         if enabled:
             if self.in_tilt:
                 return []
-            return self._run(Intent(INTENT_ENTER_TILT, near_edge=NEAR_EDGE_CLOSED))
+            return self._run(
+                Intent(INTENT_ENTER_TILT, near_edge=NEAR_EDGE_CLOSED,
+                       landing_virtual=self._zone.enter_landing))
         return self._run(Intent(INTENT_LEAVE_TILT))
 
     # -- KNX wall-button events --------------------------------------------------------------------
@@ -272,19 +281,28 @@ class GradhermeticCoverLogic:
         Handle a press of a dedicated slat-step helper (the ``..._step_up`` / ``..._step_down``
         input_buttons).
 
-        Unlike a KNX wall-button short press (:meth:`on_knx_short`), this only ever adjusts slats:
-        it never enters or leaves tilt, and never stops an in-flight move. Entering and leaving tilt
-        is the job of the tilt helper (:meth:`on_set_tilt_mode`). Outside tilt, or while a move is
-        in progress, the press is ignored; inside tilt it steps one ``tilt_step_pct`` and clamps at
-        both zone edges.
+        Two cases, decided by the latch belief:
+
+        - **Latched** -- step the slats by one ``tilt_step_pct``, clamping at both zone edges. This
+          never leaves tilt, not even at the open edge where a wall button would
+          (:meth:`on_knx_short`): the dashboard has a dedicated tilt control for that.
+        - **Not latched** -- adopt the wall button's rule 3 and enter the tilt zone when the press
+          points toward it (from above, a down press lands at the closed edge; from below, an up
+          press lands at the open edge). Without this a dashboard-only blind -- one with no KNX wall
+          switch -- would have no directional way into tilt at all, and the buttons would look
+          broken. A press pointing away from the zone, or made while resting inside the band with no
+          latch belief, still does nothing.
+
+        A press is ignored outright while a plan is in flight or the blind is travelling, so it can
+        never abort an enter/leave/step sequence.
         """
         if self._disabled:
             return []
-        # Ignoring presses mid-plan avoids aborting an enter/leave/step sequence, and ignoring them
-        # outside tilt keeps the whole blind from moving.
         if self.has_pending_plan or self._is_moving:
             return []
-        return self._run(Intent(INTENT_SLAT_STEP, direction=direction))
+        if self.in_tilt:
+            return self._run(Intent(INTENT_SLAT_STEP, direction=direction))
+        return self._run(Intent(INTENT_ENTER_TOWARD_ZONE, direction=direction))
 
     # -- Restart recovery --------------------------------------------------------------------------
 
