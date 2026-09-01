@@ -9,6 +9,7 @@ from extractor_fan_control.logic import (
     ACTION_STOP_KEEPALIVE,
     ACTION_SET_TIMER,
     ACTION_CANCEL_TIMER,
+    ACTION_SET_OFF_DEADLINE,
     TIMER_ACTIVATION,
     TIMER_DEADLINE,
     ExtractorFanPairLogic,
@@ -23,6 +24,10 @@ def _kinds(actions):
 
 def _timer_actions(actions, kind):
     return [a for a in actions if a.kind == kind]
+
+
+def _off_deadlines(actions):
+    return [a.at for a in actions if a.kind == ACTION_SET_OFF_DEADLINE]
 
 
 class TestExtractorFanPairLogic(unittest.TestCase):
@@ -260,6 +265,88 @@ class TestExtractorFanPairLogic(unittest.TestCase):
 
         actions_at_occ_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=390))
         self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_occ_end))
+
+    def test_no_off_deadline_while_light_driven_occupancy_is_active(self):
+        # While the light is on and activated the off time is genuinely unknown, and the value
+        # never left its initial "no deadline" state, so nothing is published at all.
+        actions_on = self.logic.on_light_on(self.t0)
+        actions_activation = self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
+        self.assertEqual(PairState.RUNNING_LIGHT, self.logic.state)
+        self.assertEqual([], _off_deadlines(actions_on + actions_activation))
+
+        # A short visit ends demand immediately, so it must not publish a spurious clear either.
+        actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=40))
+        self.assertEqual([], _off_deadlines(actions_off))
+
+    def test_long_visit_publishes_post_run_deadline_and_clears_at_expiry(self):
+        self.logic.on_light_on(self.t0)
+        self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
+
+        # Light on for 2 minutes -> post-run of 2 minutes -> fan off at t0+240.
+        actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=120))
+        self.assertEqual([self.t0 + timedelta(seconds=240)], _off_deadlines(actions_off))
+
+        actions_before = self.logic.on_time_tick(self.t0 + timedelta(seconds=239))
+        self.assertEqual([], _off_deadlines(actions_before))
+
+        actions_at_deadline = self.logic.on_time_tick(self.t0 + timedelta(seconds=240))
+        self.assertEqual([None], _off_deadlines(actions_at_deadline))
+
+    def test_published_deadline_respects_post_run_cap(self):
+        self.logic.on_light_on(self.t0)
+        self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
+
+        # 30 minutes of light would imply a 30-minute post-run; the cap makes it 10 minutes.
+        actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=1800))
+        self.assertEqual([self.t0 + timedelta(seconds=2400)], _off_deadlines(actions_off))
+
+    def test_scheduled_run_publishes_and_clears_its_deadline(self):
+        actions_start = self.logic.on_schedule_started(self.t0, duration_seconds=900)
+        self.assertEqual([self.t0 + timedelta(seconds=900)], _off_deadlines(actions_start))
+
+        actions_before = self.logic.on_time_tick(self.t0 + timedelta(seconds=899))
+        self.assertEqual([], _off_deadlines(actions_before))
+
+        actions_at_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=900))
+        self.assertEqual([None], _off_deadlines(actions_at_end))
+
+    def test_overlapping_demand_publishes_latest_end_once_light_is_off(self):
+        actions_start = self.logic.on_schedule_started(self.t0, duration_seconds=300)
+        self.assertEqual([self.t0 + timedelta(seconds=300)], _off_deadlines(actions_start))
+
+        # Light-driven occupancy makes the off time unknown again while the light is on.
+        self.logic.on_light_on(self.t0 + timedelta(seconds=10))
+        actions_activation = self.logic.on_time_tick(self.t0 + timedelta(seconds=25))
+        self.assertEqual(PairState.COMBINED_RUN, self.logic.state)
+        self.assertEqual([None], _off_deadlines(actions_activation))
+
+        # Light off at t0+200 after 190s -> occupancy end t0+390, later than schedule end t0+300.
+        actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=200))
+        self.assertEqual([self.t0 + timedelta(seconds=390)], _off_deadlines(actions_off))
+
+    def test_light_back_on_during_post_run_keeps_deadline_until_activation(self):
+        self.logic.on_light_on(self.t0)
+        self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
+        actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=120))
+        self.assertEqual([self.t0 + timedelta(seconds=240)], _off_deadlines(actions_off))
+
+        # Back in the room: until the light-on counts as occupancy the post-run deadline still
+        # holds, so nothing is republished.
+        actions_on_again = self.logic.on_light_on(self.t0 + timedelta(seconds=150))
+        self.assertEqual(PairState.WAITING_FOR_ACTIVATION, self.logic.state)
+        self.assertEqual([], _off_deadlines(actions_on_again))
+
+        actions_activation = self.logic.on_time_tick(self.t0 + timedelta(seconds=160))
+        self.assertEqual(PairState.RUNNING_LIGHT, self.logic.state)
+        self.assertEqual([None], _off_deadlines(actions_activation))
+
+    def test_disable_clears_a_published_deadline(self):
+        self.logic.on_schedule_started(self.t0, duration_seconds=900)
+        self.assertEqual([None], _off_deadlines(self.logic.disable()))
+        self.assertEqual(PairState.DISABLED, self.logic.state)
+
+    def test_disable_without_a_deadline_publishes_nothing(self):
+        self.assertEqual([], _off_deadlines(self.logic.disable()))
 
     def test_logic_logs_state_transitions_and_actions(self):
         messages = []

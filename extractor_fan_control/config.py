@@ -18,6 +18,7 @@ class PairConfig:
     name: str
     light_entity: str
     fan_switch_entity: str
+    off_at_sensor_entity: str
     min_light_on_for_fan_seconds: int
     short_visit_threshold_seconds: int
     daily_run_time: Optional[str]
@@ -31,6 +32,7 @@ class PairConfig:
                 f"name={self.name}, "
                 f"light_entity={self.light_entity}, "
                 f"fan_switch_entity={self.fan_switch_entity}, "
+                f"off_at_sensor_entity={self.off_at_sensor_entity}, "
                 "min_light_on_for_fan_seconds="
                 f"{self.min_light_on_for_fan_seconds}, "
                 "short_visit_threshold_seconds="
@@ -104,6 +106,14 @@ def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
     else:
         name = str(raw_name).strip()
 
+    if raw_pair.get("off_at_sensor_entity") is None:
+        # Derived default keeps the sensor unique per pair without extra configuration.
+        off_at_sensor_entity = f"sensor.extractor_fan_{name}_off_at"
+    else:
+        off_at_sensor_entity = _require_non_empty_str(raw_pair, "off_at_sensor_entity", idx)
+        if not off_at_sensor_entity.startswith("sensor."):
+            raise ValueError(f"pairs[{idx}].off_at_sensor_entity must start with 'sensor.'")
+
     min_light_on_for_fan_seconds = _parse_non_negative_int(
         raw_pair,
         "min_light_on_for_fan_seconds",
@@ -142,6 +152,7 @@ def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
         name=name,
         light_entity=light_entity,
         fan_switch_entity=fan_switch_entity,
+        off_at_sensor_entity=off_at_sensor_entity,
         min_light_on_for_fan_seconds=min_light_on_for_fan_seconds,
         short_visit_threshold_seconds=short_visit_threshold_seconds,
         daily_run_time=daily_run_time,

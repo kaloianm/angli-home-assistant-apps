@@ -43,6 +43,33 @@ Internal states:
 - `COMBINED_RUN`: schedule and occupancy/post-run demand overlap.
 - `DISABLED`: the pair has been disabled until restart after an error or safety limit.
 
+## Fan-Off Deadline Sensor
+
+Alongside the fan and keepalive outputs, the logic tracks one more idempotent output: the moment the
+fan is going to turn off. It is emitted as a single action kind, `set_off_deadline`, carrying the
+deadline in `Action.at`, where `at=None` means "no known off time, clear the sensor". Like every
+other output it is emitted only when the value changes, so keepalive ticks and duplicate events do
+not republish it.
+
+The deadline is the *latest* end among the active demand windows, because the fan stops when the
+last demand expires. This is deliberately the opposite of `_compute_next_deadline`, which returns
+the *earliest* end so the adapter can schedule one wake-up and re-evaluate there.
+
+While light-driven occupancy is active the deadline is `None`: the post-run window is only computed
+at light-off, so until then there is genuinely no off time to publish — not even in `COMBINED_RUN`,
+where the schedule end is not the moment the fan stops. A light turning back on during a post-run
+leaves the deadline untouched until the activation threshold promotes it to occupancy demand.
+
+The adapter maps the action onto `set_state` for the pair's `off_at_sensor_entity`. This is a state
+write rather than a fan switch command, so it does not go through the fan command rate limiter. The
+logic layer runs on naive local datetimes; `device_class: timestamp` only renders a timezone-aware
+ISO 8601 string, so the naive deadline is made aware at that publish boundary and nowhere else.
+
+`initialize()` publishes `unknown` for every pair, which both creates the entity and clears a
+countdown left in Home Assistant from before an AppDaemon restart. `_disable_pair` and
+`_report_error` publish `unknown` explicitly, because they discard the actions from
+`logic.disable()` and `_apply_actions` early-returns once the pair is marked disabled.
+
 ## KNX Keepalive
 
 The fan switch is expected to be backed by a KNX staircase function. While automation requires the

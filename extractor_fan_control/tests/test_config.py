@@ -26,6 +26,8 @@ class TestConfigParsing(unittest.TestCase):
         self.assertEqual(15, cfg.pairs[0].min_light_on_for_fan_seconds)
         self.assertEqual(60, cfg.pairs[0].short_visit_threshold_seconds)
         self.assertTrue(cfg.pairs[0].name.startswith("pair_0_light.bathroom_"))
+        self.assertEqual(f"sensor.extractor_fan_{cfg.pairs[0].name}_off_at",
+                         cfg.pairs[0].off_at_sensor_entity)
         self.assertEqual("07:30", cfg.pairs[0].daily_run_time)
         self.assertEqual(600, cfg.pairs[0].daily_run_duration_seconds)
 
@@ -193,11 +195,57 @@ class TestConfigParsing(unittest.TestCase):
                 }]
             })
 
+    def test_off_at_sensor_entity_can_be_overridden(self):
+        cfg = parse_app_config({
+            "staircase_interval_seconds": 30,
+            "pulse_guard_seconds": 5,
+            "pairs": [{
+                "name": "courtesy_bathroom",
+                "light_entity": "light.courtesy_bathroom_light",
+                "fan_switch_entity": "switch.courtesy_bathroom_air_extractor",
+                "off_at_sensor_entity": "sensor.courtesy_bathroom_air_extractor_off_at",
+                "min_light_on_for_fan_seconds": 6,
+                "short_visit_threshold_seconds": 60,
+            }]
+        })
+        self.assertEqual("sensor.courtesy_bathroom_air_extractor_off_at",
+                         cfg.pairs[0].off_at_sensor_entity)
+
+    def test_off_at_sensor_entity_must_be_a_sensor(self):
+        with self.assertRaisesRegex(
+                ValueError, "pairs\\[0\\]\\.off_at_sensor_entity must start with 'sensor.'"):
+            parse_app_config({
+                "staircase_interval_seconds": 30,
+                "pulse_guard_seconds": 5,
+                "pairs": [{
+                    "light_entity": "light.bathroom",
+                    "fan_switch_entity": "switch.bathroom_fan",
+                    "off_at_sensor_entity": "input_datetime.bathroom_fan_off_at",
+                    "min_light_on_for_fan_seconds": 15,
+                    "short_visit_threshold_seconds": 60,
+                }]
+            })
+
+    def test_empty_off_at_sensor_entity_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "pairs\\[0\\]\\.off_at_sensor_entity is required"):
+            parse_app_config({
+                "staircase_interval_seconds": 30,
+                "pulse_guard_seconds": 5,
+                "pairs": [{
+                    "light_entity": "light.bathroom",
+                    "fan_switch_entity": "switch.bathroom_fan",
+                    "off_at_sensor_entity": "  ",
+                    "min_light_on_for_fan_seconds": 15,
+                    "short_visit_threshold_seconds": 60,
+                }]
+            })
+
     def test_pair_config_string_representation_is_readable(self):
         pair = PairConfig(
             name="guestroom_bathroom",
             light_entity="light.guestroom_bathroom_ceiling_light",
             fan_switch_entity="switch.guestroom_bathroom_air_extractor",
+            off_at_sensor_entity="sensor.guestroom_bathroom_air_extractor_off_at",
             min_light_on_for_fan_seconds=15,
             short_visit_threshold_seconds=60,
             daily_run_time=None,
@@ -206,6 +254,8 @@ class TestConfigParsing(unittest.TestCase):
         rendered = str(pair)
         self.assertIn("PairConfig(", rendered)
         self.assertIn("name=guestroom_bathroom", rendered)
+        self.assertIn("off_at_sensor_entity=sensor.guestroom_bathroom_air_extractor_off_at",
+                      rendered)
         self.assertIn("daily_run_time=None", rendered)
 
 

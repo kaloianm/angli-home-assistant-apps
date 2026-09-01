@@ -19,6 +19,7 @@ class TestPairRuntimeRateLimiting(unittest.TestCase):
                 name="service_closet",
                 light_entity="light.service_closet_light",
                 fan_switch_entity="switch.service_closet_air_extractor",
+                off_at_sensor_entity="sensor.service_closet_air_extractor_off_at",
                 min_light_on_for_fan_seconds=5,
                 short_visit_threshold_seconds=60,
                 daily_run_time="16:00",

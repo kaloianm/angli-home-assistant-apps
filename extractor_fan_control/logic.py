@@ -19,6 +19,7 @@ ACTION_START_KEEPALIVE = "start_keepalive"
 ACTION_STOP_KEEPALIVE = "stop_keepalive"
 ACTION_SET_TIMER = "set_timer"
 ACTION_CANCEL_TIMER = "cancel_timer"
+ACTION_SET_OFF_DEADLINE = "set_off_deadline"
 
 TIMER_ACTIVATION = "activation"
 TIMER_DEADLINE = "deadline"
@@ -127,6 +128,7 @@ class ExtractorFanPairLogic:
             TIMER_ACTIVATION: None,
             TIMER_DEADLINE: None,
         }
+        self._off_deadline_output: Optional[datetime] = None
 
     @property
     def state(self) -> PairState:
@@ -158,6 +160,7 @@ class ExtractorFanPairLogic:
             "keepalive_on": False,
             TIMER_ACTIVATION: None,
             TIMER_DEADLINE: None,
+            "off_deadline": None,
         })
 
     def on_light_on(self, now: datetime) -> List[Action]:
@@ -279,6 +282,9 @@ class ExtractorFanPairLogic:
                           f"{action.at.isoformat() if action.at else None}")
             elif action.kind == ACTION_CANCEL_TIMER:
                 self._log(f"action {action.kind} {action.timer_name}")
+            elif action.kind == ACTION_SET_OFF_DEADLINE:
+                self._log(f"action {action.kind} at "
+                          f"{action.at.isoformat() if action.at else None}")
             else:
                 self._log(f"action {action.kind}")
         return actions
@@ -336,6 +342,7 @@ class ExtractorFanPairLogic:
             "keepalive_on": target_keepalive_on,
             TIMER_ACTIVATION: activation_timer,
             TIMER_DEADLINE: deadline_timer,
+            "off_deadline": self._compute_off_deadline(now),
         }
 
     def _compute_next_deadline(self, now: datetime) -> Optional[datetime]:
@@ -353,6 +360,26 @@ class ExtractorFanPairLogic:
         if not candidates:
             return None
         return min(candidates)
+
+    def _compute_off_deadline(self, now: datetime) -> Optional[datetime]:
+        """
+        Return the moment the fan will turn off, or ``None`` if that is not yet knowable.
+
+        While the light is on and counted as occupancy the fan has no end time: the post-run window
+        is only computed once the light turns off. Otherwise every active demand window has a known
+        end, and the fan stops when the *last* of them expires -- so this is the latest deadline,
+        unlike ``_compute_next_deadline`` which returns the earliest one to schedule a wake-up.
+        """
+        if self._occupancy_active_while_light_on:
+            return None
+        candidates: List[datetime] = []
+        if self._occupancy_run_until is not None and now < self._occupancy_run_until:
+            candidates.append(self._occupancy_run_until)
+        if self._schedule_run_until is not None and now < self._schedule_run_until:
+            candidates.append(self._schedule_run_until)
+        if not candidates:
+            return None
+        return max(candidates)
 
     def _emit_transitions(self, target_outputs: Dict[str,
                                                      Optional[datetime] | bool]) -> List[Action]:
@@ -387,5 +414,11 @@ class ExtractorFanPairLogic:
                 else:
                     actions.append(Action(ACTION_SET_TIMER, timer_name=timer_name, at=target_at))
                 self._timer_outputs[timer_name] = target_at
+
+        target_off_deadline = target_outputs["off_deadline"]
+        if target_off_deadline != self._off_deadline_output:
+            # One action kind with an optional timestamp: ``at=None`` means "no known off time".
+            actions.append(Action(ACTION_SET_OFF_DEADLINE, at=target_off_deadline))
+            self._off_deadline_output = target_off_deadline
 
         return actions

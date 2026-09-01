@@ -5,7 +5,7 @@ AppDaemon entry point for ExtractorFanControl.
 from __future__ import annotations
 
 import traceback
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from extractor_fan_control.config import PairConfig, parse_app_config
@@ -13,6 +13,7 @@ from extractor_fan_control.logic import (
     ACTION_CANCEL_TIMER,
     ACTION_FAN_OFF,
     ACTION_FAN_ON,
+    ACTION_SET_OFF_DEADLINE,
     ACTION_SET_TIMER,
     ACTION_START_KEEPALIVE,
     ACTION_STOP_KEEPALIVE,
@@ -68,6 +69,10 @@ class ExtractorFanControl(hass.Hass):
                 ),
             )
             self._runtime_by_name[pair_config.name] = runtime
+
+            # Creates the entity on startup and clears any countdown left over from before the
+            # restart: runtime state is not persisted, so a pre-restart deadline is already dead.
+            self._publish_off_deadline(runtime, None)
 
             runtime.light_listener_handle = self.listen_state(self._on_light_state,
                                                               pair_config.light_entity,
@@ -194,6 +199,8 @@ class ExtractorFanControl(hass.Hass):
                 self._set_timer(runtime, action)
             elif action.kind == ACTION_CANCEL_TIMER:
                 self._cancel_timer(runtime, action.timer_name)
+            elif action.kind == ACTION_SET_OFF_DEADLINE:
+                self._publish_off_deadline(runtime, action.at)
 
     def _turn_fan(self, runtime: PairRuntime, *, on: bool) -> None:
         """
@@ -209,6 +216,36 @@ class ExtractorFanControl(hass.Hass):
         self.log(f"[{runtime.config.name}] Fan {service}")
         self.call_service(service, entity_id=runtime.config.fan_switch_entity)
 
+    def _publish_off_deadline(self, runtime: PairRuntime, at: Optional[datetime]) -> None:
+        """
+        Publish when the fan is going to turn off, or ``unknown`` when that is not knowable.
+
+        This is a state write, not a fan switch command, so it deliberately bypasses
+        ``record_fan_command`` and the rate limiter.
+        """
+        entity_id = runtime.config.off_at_sensor_entity
+        state = "unknown" if at is None else self._to_local_aware(at).isoformat()
+        self.set_state(
+            entity_id,
+            state=state,
+            attributes={
+                "device_class": "timestamp",
+                "friendly_name": _friendly_name_from_entity_id(entity_id),
+                "icon": "mdi:fan-clock",
+            },
+        )
+
+    def _to_local_aware(self, naive_local: datetime) -> datetime:
+        """
+        Attach the AppDaemon timezone to a naive local datetime from the logic layer.
+
+        The logic layer works entirely in naive local time (``self.datetime()``), but
+        ``device_class: timestamp`` only renders a timezone-aware ISO 8601 string, so the
+        conversion happens here at the publish boundary. The offset is taken from the current
+        moment; deadlines are minutes away, so a DST change in between is not a concern.
+        """
+        return naive_local.replace(tzinfo=self.datetime(aware=True).tzinfo)
+
     def _disable_pair(self, runtime: PairRuntime) -> None:
         """
         Permanently disable a pair due to rate limiting and notify.
@@ -218,6 +255,7 @@ class ExtractorFanControl(hass.Hass):
         self._cancel_timer(runtime, TIMER_ACTIVATION)
         self._cancel_timer(runtime, TIMER_DEADLINE)
         self._stop_keepalive(runtime)
+        self._publish_off_deadline(runtime, None)
         self.log(
             f"[{runtime.config.name}] DISABLED: fan switch command rate "
             f"limit exceeded ({FAN_CMD_RATE_LIMIT} commands in "
@@ -253,6 +291,7 @@ class ExtractorFanControl(hass.Hass):
             self._cancel_timer(runtime, TIMER_ACTIVATION)
             self._cancel_timer(runtime, TIMER_DEADLINE)
             self._stop_keepalive(runtime)
+            self._publish_off_deadline(runtime, None)
 
         self.call_service(
             "persistent_notification/create",
@@ -316,3 +355,11 @@ class ExtractorFanControl(hass.Hass):
 
         if handle is not None:
             self.cancel_timer(handle)
+
+
+def _friendly_name_from_entity_id(entity_id: str) -> str:
+    """
+    Turn ``sensor.courtesy_bathroom_air_extractor_off_at`` into a readable name.
+    """
+    object_id = entity_id.split(".", 1)[-1]
+    return object_id.replace("_", " ").title()
