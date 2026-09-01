@@ -348,17 +348,40 @@ class TestExtractorFanPairLogic(unittest.TestCase):
     def test_disable_without_a_deadline_publishes_nothing(self):
         self.assertEqual([], _off_deadlines(self.logic.disable()))
 
-    def test_logic_logs_state_transitions_and_actions(self):
-        messages = []
-        logic = ExtractorFanPairLogic(LogicConfig(), log=messages.append)
+    def test_logic_logs_state_transitions_at_info_and_the_trace_at_debug(self):
+        entries = []
+
+        def log(message, level="INFO"):
+            entries.append((level, message))
+
+        logic = ExtractorFanPairLogic(LogicConfig(), log=log)
 
         logic.on_light_on(self.t0)
         logic.on_time_tick(self.t0 + timedelta(seconds=10))
 
-        self.assertTrue(any("state idle -> waiting_for_activation" in msg for msg in messages))
-        self.assertTrue(
-            any("state waiting_for_activation -> running_light" in msg for msg in messages))
-        self.assertTrue(any("action fan_on" in msg for msg in messages))
+        info = [message for level, message in entries if level == "INFO"]
+        debug = [message for level, message in entries if level == "DEBUG"]
+
+        self.assertEqual([
+            "state idle -> waiting_for_activation",
+            "state waiting_for_activation -> running_light",
+        ], info)
+        self.assertTrue(any("event light_on" in msg for msg in debug))
+        self.assertTrue(any("event time_tick" in msg for msg in debug))
+        self.assertTrue(any("activation threshold reached" in msg for msg in debug))
+        self.assertTrue(any("action fan_on" in msg for msg in debug))
+
+    def test_state_transition_log_carries_the_off_deadline(self):
+        entries = []
+
+        def log(message, level="INFO"):
+            entries.append((level, message))
+
+        logic = ExtractorFanPairLogic(LogicConfig(), log=log)
+        logic.on_schedule_started(self.t0, duration_seconds=900)
+
+        deadline = (self.t0 + timedelta(seconds=900)).isoformat()
+        self.assertIn(("INFO", f"state idle -> scheduled_run until {deadline}"), entries)
 
 
 if __name__ == "__main__":

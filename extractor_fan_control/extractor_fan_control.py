@@ -55,7 +55,7 @@ class ExtractorFanControl(hass.Hass):
         self._runtime_by_name: Dict[str, PairRuntime] = {}
 
         for pair_config in self._config.pairs:
-            self.log(f"Processing pair: {pair_config}")
+            self.log(f"Processing pair: {pair_config}", level="DEBUG")
             self._validate_pair_entities(pair_config)
             runtime = PairRuntime(
                 config=pair_config,
@@ -64,8 +64,8 @@ class ExtractorFanControl(hass.Hass):
                         min_light_on_for_fan_seconds=pair_config.min_light_on_for_fan_seconds,
                         short_visit_threshold_seconds=pair_config.short_visit_threshold_seconds,
                     ),
-                    log=lambda message, pair_name=pair_config.name: self.log(
-                        f"[{pair_name}] {message}"),
+                    log=lambda message, level="INFO", pair_name=pair_config.name: self.log(
+                        f"[{pair_name}] {message}", level=level),
                 ),
             )
             self._runtime_by_name[pair_config.name] = runtime
@@ -176,7 +176,7 @@ class ExtractorFanControl(hass.Hass):
             # run_every callbacks can still arrive right after cancellation; ignore those.
             if runtime.keepalive_timer_handle is None or runtime.disabled:
                 return
-            self._turn_fan(runtime, on=True)
+            self._turn_fan(runtime, on=True, keepalive=True)
         except Exception as exc:
             self._report_error("_on_keepalive_tick", exc, pair_name)
 
@@ -202,9 +202,12 @@ class ExtractorFanControl(hass.Hass):
             elif action.kind == ACTION_SET_OFF_DEADLINE:
                 self._publish_off_deadline(runtime, action.at)
 
-    def _turn_fan(self, runtime: PairRuntime, *, on: bool) -> None:
+    def _turn_fan(self, runtime: PairRuntime, *, on: bool, keepalive: bool = False) -> None:
         """
         Issue fan switch command and mark expected resulting state.
+
+        ``keepalive`` marks the periodic KNX staircase retrigger pulse, which repeats every few
+        tens of seconds for as long as the fan runs and therefore only logs at ``DEBUG``.
         """
         if runtime.disabled:
             return
@@ -213,7 +216,8 @@ class ExtractorFanControl(hass.Hass):
             self._disable_pair(runtime)
             return
         service = "switch/turn_on" if on else "switch/turn_off"
-        self.log(f"[{runtime.config.name}] Fan {service}")
+        self.log(f"[{runtime.config.name}] Fan {service}"
+                 f"{' (keepalive)' if keepalive else ''}", level="DEBUG" if keepalive else "INFO")
         self.call_service(service, entity_id=runtime.config.fan_switch_entity)
 
     def _publish_off_deadline(self, runtime: PairRuntime, at: Optional[datetime]) -> None:

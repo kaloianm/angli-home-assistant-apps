@@ -99,7 +99,7 @@ class ExtractorFanPairLogic:
     def __init__(
         self,
         config: LogicConfig,
-        log: Callable[[str], None] = lambda _: None,
+        log: Callable[..., None] = lambda *_args, **_kwargs: None,
     ) -> None:
         """
         Create logic state for one light/fan pair.
@@ -107,6 +107,10 @@ class ExtractorFanPairLogic:
         ``config`` contains timing thresholds for activation and short-visit detection. The object
         then keeps all runtime state internally and emits declarative actions from public event
         methods.
+
+        ``log`` is called as ``log(message, level=...)``. Only decisions worth seeing in the normal
+        log are logged at ``INFO``; the per-event/per-action trace explaining how a decision was
+        reached goes to ``DEBUG``.
         """
         config.validate()
         self._config = config
@@ -170,9 +174,9 @@ class ExtractorFanPairLogic:
         ``now`` is the event timestamp used for all duration math. This starts the activation timer.
         """
         actions: List[Action] = []
-        self._log(f"event light_on at {now.isoformat()}")
+        self._log(f"event light_on at {now.isoformat()}", level="DEBUG")
         if self._light_is_on:
-            self._log("ignored duplicate light_on")
+            self._log("ignored duplicate light_on", level="DEBUG")
             return actions
 
         previous_state = self.state
@@ -194,9 +198,9 @@ class ExtractorFanPairLogic:
             by ``max_post_run_seconds``
         """
         actions: List[Action] = []
-        self._log(f"event light_off at {now.isoformat()}")
+        self._log(f"event light_off at {now.isoformat()}", level="DEBUG")
         if not self._light_is_on:
-            self._log("ignored duplicate light_off")
+            self._log("ignored duplicate light_off", level="DEBUG")
             return actions
 
         previous_state = self.state
@@ -209,15 +213,17 @@ class ExtractorFanPairLogic:
             duration = now - light_on_since
             if duration < timedelta(seconds=self._config.short_visit_threshold_seconds):
                 self._occupancy_run_until = now
-                self._log(f"short visit duration={duration}; ending occupancy demand")
+                self._log(f"short visit duration={duration}; ending occupancy demand",
+                          level="DEBUG")
             else:
                 capped_post_run = min(
                     duration,
                     timedelta(seconds=self._config.max_post_run_seconds),
                 )
                 self._occupancy_run_until = now + capped_post_run
-                self._log(f"long visit duration={duration}; post_run_until="
-                          f"{self._occupancy_run_until.isoformat()}")
+                self._log(
+                    f"long visit duration={duration}; post_run_until="
+                    f"{self._occupancy_run_until.isoformat()}", level="DEBUG")
 
         self._occupancy_active_while_light_on = False
         return self._reconcile(now, previous_state)
@@ -239,7 +245,7 @@ class ExtractorFanPairLogic:
             self._schedule_run_until = candidate_deadline
             self._log(f"schedule run until {self._schedule_run_until.isoformat()}")
         else:
-            self._log("ignored schedule run that would not extend deadline")
+            self._log("ignored schedule run that would not extend deadline", level="DEBUG")
 
         return self._reconcile(now, previous_state)
 
@@ -250,7 +256,7 @@ class ExtractorFanPairLogic:
         ``now`` is used to expire activation/deadline windows and emit any resulting actions (for
         example fan stop when demand reaches its end).
         """
-        self._log(f"event time_tick at {now.isoformat()}")
+        self._log(f"event time_tick at {now.isoformat()}", level="DEBUG")
         return self._reconcile(now)
 
     def _reconcile(
@@ -265,7 +271,7 @@ class ExtractorFanPairLogic:
         actions, keeping behavior deterministic.
         """
         if self._disabled:
-            self._log("ignored event while disabled")
+            self._log("ignored event while disabled", level="DEBUG")
             return []
 
         if previous_state is None:
@@ -275,18 +281,22 @@ class ExtractorFanPairLogic:
         actions = self._emit_transitions(target_outputs)
         current_state = self.state
         if current_state != previous_state:
-            self._log(f"state {previous_state.value} -> {current_state.value}")
+            off_deadline = self._compute_off_deadline(now)
+            until = f" until {off_deadline.isoformat()}" if off_deadline is not None else ""
+            self._log(f"state {previous_state.value} -> {current_state.value}{until}")
         for action in actions:
             if action.kind == ACTION_SET_TIMER:
-                self._log(f"action {action.kind} {action.timer_name} at "
-                          f"{action.at.isoformat() if action.at else None}")
+                self._log(
+                    f"action {action.kind} {action.timer_name} at "
+                    f"{action.at.isoformat() if action.at else None}", level="DEBUG")
             elif action.kind == ACTION_CANCEL_TIMER:
-                self._log(f"action {action.kind} {action.timer_name}")
+                self._log(f"action {action.kind} {action.timer_name}", level="DEBUG")
             elif action.kind == ACTION_SET_OFF_DEADLINE:
-                self._log(f"action {action.kind} at "
-                          f"{action.at.isoformat() if action.at else None}")
+                self._log(
+                    f"action {action.kind} at "
+                    f"{action.at.isoformat() if action.at else None}", level="DEBUG")
             else:
-                self._log(f"action {action.kind}")
+                self._log(f"action {action.kind}", level="DEBUG")
         return actions
 
     def _advance_time(self, now: datetime) -> None:
@@ -303,17 +313,17 @@ class ExtractorFanPairLogic:
             # Light has been on long enough to count as real occupancy.
             self._occupancy_active_while_light_on = True
             self._activation_due_at = None
-            self._log("activation threshold reached")
+            self._log("activation threshold reached", level="DEBUG")
 
         if self._occupancy_run_until is not None and now >= self._occupancy_run_until:
             # Post-run demand window has ended.
             self._occupancy_run_until = None
-            self._log("occupancy demand expired")
+            self._log("occupancy demand expired", level="DEBUG")
 
         if self._schedule_run_until is not None and now >= self._schedule_run_until:
             # Scheduled demand window has ended.
             self._schedule_run_until = None
-            self._log("schedule demand expired")
+            self._log("schedule demand expired", level="DEBUG")
 
     def _target_outputs(self, now: datetime) -> Dict[str, Optional[datetime] | bool]:
         """
