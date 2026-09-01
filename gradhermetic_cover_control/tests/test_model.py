@@ -38,10 +38,12 @@ from gradhermetic_cover_control.planner import (
 )
 from gradhermetic_cover_control.tests.simulator import BlindSimulator, Quirks
 
+# Every configured number is real blind travel: the 1.2% step is 20 on the virtual scale of this
+# 6%-wide zone.
 UPPER = 44.0
 LOWER = 38.0
 EPSILON = 2.0
-STEP = 20.0
+STEP = 1.2
 DIP = LOWER - EPSILON
 RELEASE = UPPER + EPSILON
 
@@ -49,9 +51,10 @@ ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsi
             tilt_step_pct=STEP)
 
 # The same mechanism on a blind whose latch only genuinely lets go well above the bare clearance,
-# and whose slats are not visible until a little way open. Band = [36, 55].
+# and whose slats are not visible until a little way open (real 41.6, i.e. virtual 40). Band =
+# [36, 55].
 CUSTOM_RELEASE = 55.0
-CUSTOM_LANDING = 40.0
+CUSTOM_LANDING = 41.6
 CUSTOM_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
                    tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
                    tilt_zone_release_pct=CUSTOM_RELEASE, tilt_enter_landing_pct=CUSTOM_LANDING)
@@ -457,14 +460,15 @@ class TestAlternateGeometries(ModelTestCase):
     ZONES = [
         # Releases high up, entry lands slightly open. Band [36, 55].
         ("custom_release_and_landing", CUSTOM_ZONE),
-        # Releases at the bare clearance, but the slats have to end wide open.
+        # Releases at the bare clearance, but the slats have to end wide open (the lower edge).
         ("landing_only",
          Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_step_pct=STEP, tilt_enter_landing_pct=100.0)),
-        # A low zone that needs almost the whole remaining travel to release. Band [18, 95].
+              tilt_step_pct=STEP, tilt_enter_landing_pct=LOWER)),
+        # A low zone that needs almost the whole remaining travel to release. Band [18, 95]. The
+        # 2.5% step is a quarter of this 10%-wide zone, and the landing is its mid-point.
         ("release_far_above_the_zone",
          Zone(tilt_zone_upper_pct=30.0, tilt_zone_lower_pct=20.0, tilt_zone_epsilon_pct=2.0,
-              tilt_step_pct=25.0, tilt_zone_release_pct=95.0, tilt_enter_landing_pct=25.0)),
+              tilt_step_pct=2.5, tilt_zone_release_pct=95.0, tilt_enter_landing_pct=27.5)),
     ]
 
     POSITIONS = (0, 10, 19, 20, 25, 30, 36, 38, 41, 44, 46, 50, 55, 56, 80, 95, 96, 100)
@@ -485,8 +489,7 @@ class TestAlternateGeometries(ModelTestCase):
                 harness.run(harness.logic.on_set_tilt_mode(True))
                 self.assertTrue(harness.sim.latched)
                 self.assertTrue(zone.in_zone(harness.sim.physical))
-                self.assertAlmostEqual(to_command(zone.virtual_to_real(zone.enter_landing)),
-                                       harness.sim.reported)
+                self.assertAlmostEqual(to_command(zone.enter_landing_real), harness.sim.reported)
                 self.assert_nominal(harness)
 
     def test_leaving_tilt_physically_clears_the_release_height(self):

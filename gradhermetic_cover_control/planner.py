@@ -186,7 +186,9 @@ class Intent:
     ``near_edge`` is the wall-button rule: entry lands on whichever end of the zone the press came
     toward, which is a property of the press and not of the installation. ``landing_virtual`` is an
     explicit virtual slat position and, when given, wins -- that is how the deliberate "enter tilt"
-    control applies the configured ``tilt_enter_landing_pct``.
+    control applies the configured ``tilt_enter_landing_pct``. That setting is a real travel
+    position; ``Zone.enter_landing_virtual`` converts it to the virtual scale used here, which is
+    the only scale the planner ever speaks.
     """
 
     kind: str
@@ -286,7 +288,8 @@ def _plan_enter_tilt(zone: Zone, near_edge: str, landing_virtual: Optional[float
 
     The latching rise necessarily ends at the closed edge, so landing anywhere else costs one more
     in-zone slat move. ``landing_virtual`` names that landing explicitly (the configured
-    ``tilt_enter_landing_pct``); without it the wall-button ``near_edge`` rule decides. The extra
+    ``tilt_enter_landing_pct``, converted to the virtual scale by the zone); without it the
+    wall-button ``near_edge`` rule decides. The extra
     step is omitted when it would command the position the rise already reached -- compared in the
     integer domain the actuator speaks, since a command that rounds to the current setpoint moves
     nothing and would only be skipped again by the executor.
@@ -327,7 +330,10 @@ def _plan_leave_tilt(zone: Zone, belief: Belief) -> Optional[Plan]:
 def _plan_slat_step(zone: Zone, belief: Belief, direction: Optional[str],
                     cross_open_edge: bool) -> Optional[Plan]:
     """
-    Step the slats by one ``tilt_step_pct`` within the zone.
+    Step the slats by one step within the zone.
+
+    The step is taken on the virtual scale, as ``zone.step`` -- the configured ``tilt_step_pct``
+    real travel percent expressed as a fraction of the zone's span.
 
     ``cross_open_edge`` decides what an up step does when the slats are already fully open: a KNX
     wall button leaves tilt upward (its only way back out), while the dedicated slat-step helpers

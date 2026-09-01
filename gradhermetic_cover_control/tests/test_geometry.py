@@ -1,20 +1,21 @@
 import unittest
 
 from gradhermetic_cover_control.geometry import (
-    DEFAULT_ENTER_LANDING_PCT,
     MIN_EPSILON_PCT,
+    MIN_STEP_PCT,
     Zone,
     clamp_pct,
     to_command,
 )
 
-# Geometry used throughout the suite: zone [38, 44], epsilon 2, step 20. Span = 6, so the minimum
-# step that moves the integer-reporting actuator is 100/6 ~= 16.7; 20 clears it. The ambiguity band
-# is therefore [36, 46].
+# Geometry used throughout the suite: zone [38, 44], epsilon 2, step 1.2 real travel percent. Span
+# = 6, so one step is 20 on the virtual scale, and the ambiguity band is [36, 46]. Every configured
+# number here -- STEP included -- is real blind travel.
 UPPER = 44.0
 LOWER = 38.0
 EPSILON = 2.0
-STEP = 20.0
+STEP = 1.2
+VIRTUAL_STEP = 20.0
 
 
 def _zone(**overrides):
@@ -46,8 +47,21 @@ class TestLandmarks(unittest.TestCase):
 
     def test_landing_defaults_to_the_closed_edge(self):
         self.assertIsNone(self.zone.tilt_enter_landing_pct)
-        self.assertAlmostEqual(DEFAULT_ENTER_LANDING_PCT, self.zone.enter_landing)
-        self.assertAlmostEqual(UPPER, self.zone.virtual_to_real(self.zone.enter_landing))
+        self.assertAlmostEqual(UPPER, self.zone.enter_landing_real)
+        # Virtual 0 is the closed edge, which is where the latching rise already ends.
+        self.assertAlmostEqual(0.0, self.zone.enter_landing_virtual)
+
+    def test_the_step_converts_real_travel_to_the_virtual_scale(self):
+        # The config states real travel; the planner steps on the virtual scale, where the whole
+        # zone is 100 wide.
+        self.assertAlmostEqual(STEP, self.zone.tilt_step_pct)
+        self.assertAlmostEqual(VIRTUAL_STEP, self.zone.step)
+        self.assertAlmostEqual(STEP, self.zone.step / 100.0 * self.zone.span)
+
+    def test_a_configured_landing_is_a_real_position(self):
+        zone = _zone(tilt_enter_landing_pct=41.0)
+        self.assertAlmostEqual(41.0, zone.enter_landing_real)
+        self.assertAlmostEqual(50.0, zone.enter_landing_virtual)
 
 
 class TestConfiguredReleaseHeight(unittest.TestCase):
@@ -199,8 +213,27 @@ class TestValidation(unittest.TestCase):
             _zone(tilt_zone_lower_pct=44.0)
 
     def test_step_below_actuator_resolution_raises(self):
-        with self.assertRaisesRegex(ValueError, "tilt_step_pct must be >="):
-            _zone(tilt_step_pct=1.0)
+        # Real travel below one whole percent rounds back to the current setpoint: no movement.
+        for step in (0.5, MIN_STEP_PCT - 0.01):
+            with self.subTest(step=step):
+                with self.assertRaisesRegex(ValueError, "tilt_step_pct must be >="):
+                    _zone(tilt_step_pct=step)
+
+    def test_the_minimum_step_is_accepted(self):
+        zone = _zone(tilt_step_pct=MIN_STEP_PCT)
+        self.assertAlmostEqual(MIN_STEP_PCT, zone.tilt_step_pct)
+        # One whole percent of a 6% zone is one sixth of the virtual scale.
+        self.assertAlmostEqual(100.0 / 6.0, zone.step)
+
+    def test_step_wider_than_the_zone_raises(self):
+        for step in (6.1, 20.0, 100.0):
+            with self.subTest(step=step):
+                with self.assertRaisesRegex(ValueError, "tilt_step_pct must be <="):
+                    _zone(tilt_step_pct=step)
+
+    def test_a_step_spanning_the_whole_zone_is_accepted(self):
+        zone = _zone(tilt_step_pct=UPPER - LOWER)
+        self.assertAlmostEqual(100.0, zone.step)
 
     def test_step_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "tilt_step_pct must be > 0"):
@@ -233,16 +266,21 @@ class TestValidation(unittest.TestCase):
     def test_release_at_a_hundred_is_accepted(self):
         self.assertAlmostEqual(100.0, _zone(tilt_zone_release_pct=100.0).release_target)
 
-    def test_landing_out_of_range_raises(self):
-        for landing in (-0.1, 100.1):
+    def test_landing_outside_the_zone_raises(self):
+        # The landing is a slat position, so it has to be a real position inside the zone.
+        for landing in (LOWER - 0.1, LOWER - 10.0, UPPER + 0.1, UPPER + 10.0, 0.0, 100.0):
             with self.subTest(landing=landing):
-                with self.assertRaisesRegex(ValueError,
-                                            "tilt_enter_landing_pct must be between 0 and 100"):
+                with self.assertRaisesRegex(
+                        ValueError, "tilt_enter_landing_pct must be between tilt_zone_lower_pct"):
                     _zone(tilt_enter_landing_pct=landing)
 
-    def test_landing_at_either_extreme_is_accepted(self):
-        self.assertAlmostEqual(UPPER, _zone(tilt_enter_landing_pct=0.0).virtual_to_real(0.0))
-        self.assertAlmostEqual(100.0, _zone(tilt_enter_landing_pct=100.0).enter_landing)
+    def test_landing_at_either_zone_edge_is_accepted(self):
+        closed = _zone(tilt_enter_landing_pct=UPPER)
+        self.assertAlmostEqual(UPPER, closed.enter_landing_real)
+        self.assertAlmostEqual(0.0, closed.enter_landing_virtual)
+        opened = _zone(tilt_enter_landing_pct=LOWER)
+        self.assertAlmostEqual(LOWER, opened.enter_landing_real)
+        self.assertAlmostEqual(100.0, opened.enter_landing_virtual)
 
     def test_percentages_must_be_in_range(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_upper_pct must be between 0 and 100"):

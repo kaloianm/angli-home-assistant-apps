@@ -4,6 +4,11 @@ Pure config models and parsing for GradhermeticCoverControl.
 This module only reads and type-checks the ``apps.yaml`` args. Every rule relating the tilt-zone
 numbers to each other lives in :mod:`geometry`, which this module delegates to by constructing a
 :class:`~gradhermetic_cover_control.geometry.Zone`.
+
+Every percentage in the config is **real blind travel** -- the numbers the actuator reports and
+accepts. The inverted virtual slat scale exists only inside the app (it is what the cover entity's
+position slider shows while tilt mode is engaged), and :class:`Zone` is the only place the two
+meet.
 """
 
 from __future__ import annotations
@@ -39,7 +44,7 @@ class GradhermeticConfig:
                 f"tilt_zone_lower_pct={self.zone.tilt_zone_lower_pct}, "
                 f"tilt_zone_epsilon_pct={self.zone.tilt_zone_epsilon_pct}, "
                 f"tilt_zone_release_pct={self.zone.release_target}, "
-                f"tilt_enter_landing_pct={self.zone.enter_landing}, "
+                f"tilt_enter_landing_pct={self.zone.enter_landing_real}, "
                 f"tilt_step_pct={self.zone.tilt_step_pct}, "
                 f"knx_move_address={self.knx_move_address}, "
                 f"knx_step_address={self.knx_step_address}"

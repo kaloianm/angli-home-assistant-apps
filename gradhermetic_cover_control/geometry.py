@@ -14,6 +14,13 @@ Two coordinate systems are in play:
   (slats perpendicular / most light) and virtual 0 is the upper edge (slats parallel / least
   light).
 
+**Every configured number is real travel percent.** The virtual scale is an internal presentation
+detail -- it is what the cover entity's position slider shows while tilt mode is engaged, and what
+the planner's enter/set-position intents carry -- so this module is the only place the two scales
+meet: :attr:`Zone.enter_landing_virtual` and :attr:`Zone.step` convert the two configured slat
+numbers into the virtual terms the planner works in, and nothing outside this module maps between
+the scales.
+
 The actuator speaks whole percent: commands are rounded to integers and its feedback is the
 integer setpoint it reached. All arrival tests therefore happen in that integer domain (see
 :func:`to_command`), which is why the geometry validates that every target the planner can emit
@@ -29,9 +36,10 @@ from typing import Optional
 # actuator's reported integer position clear of a zone edge, so one whole percent suffices.
 MIN_EPSILON_PCT = 1.0
 
-# Virtual slat position the entry sequence lands on when no landing is configured: the closed edge,
-# which is where the latching rise itself ends.
-DEFAULT_ENTER_LANDING_PCT = 0.0
+# Smallest usable slat step, in real travel percent. The actuator speaks whole percent, so a step
+# that moves the blind less than one reported percent rounds back to the current setpoint and moves
+# nothing at all.
+MIN_STEP_PCT = 1.0
 
 
 def clamp_pct(value: float) -> float:
@@ -54,7 +62,12 @@ class Zone:
     Tilt-zone geometry for one blind.
 
     Field names match the ``apps.yaml`` keys so validation errors name the setting the user has to
-    fix. Construction validates, so a ``Zone`` instance is always a usable geometry.
+    fix, and every one of them is **real travel percent** -- the numbers the actuator reports and
+    accepts. Construction validates, so a ``Zone`` instance is always a usable geometry.
+
+    - ``tilt_step_pct`` -- how far one slat step moves the blind, in real travel. It has to be at
+      least one whole reported percent (or the rounded command repeats the current setpoint) and at
+      most the zone's own width (a step larger than the zone is meaningless).
 
     The two optional fields are the ones a real installation has to be calibrated for:
 
@@ -62,9 +75,11 @@ class Zone:
       The clearance margin ``tilt_zone_epsilon_pct`` is only large enough to carry the *reported*
       position clear of the upper edge; the mechanism itself may need several percent more. It
       defaults to ``upper + epsilon``, which is the behaviour that predates the setting.
-    - ``tilt_enter_landing_pct`` -- the virtual slat position the entry sequence finishes on. The
-      latching rise necessarily ends at the closed edge, where on some blinds the slats are not
-      visibly open yet, so entry can be told to continue to a slightly-open angle.
+    - ``tilt_enter_landing_pct`` -- the absolute real position the entry sequence finishes on, which
+      being a slat position must lie inside ``[lower, upper]``. The latching rise necessarily ends
+      at the upper (closed) edge, where on some blinds the slats are not visibly open yet, so entry
+      can be told to continue to a slightly-open angle. It defaults to ``upper``: the closed edge
+      the rise already reaches, i.e. no extra entry step at all.
     """
 
     tilt_zone_upper_pct: float
@@ -108,18 +123,25 @@ class Zone:
                     "tilt_zone_release_pct must be >= tilt_zone_upper_pct + tilt_zone_epsilon_pct")
             if self.tilt_zone_release_pct > 100.0:
                 raise ValueError("tilt_zone_release_pct must be <= 100")
-        if self.tilt_enter_landing_pct is not None:
-            if not 0.0 <= self.tilt_enter_landing_pct <= 100.0:
-                raise ValueError("tilt_enter_landing_pct must be between 0 and 100")
+        landing = self.tilt_enter_landing_pct
+        if landing is not None:
+            # The landing is a slat position, so it has to be one: a real travel position inside the
+            # zone. Anything outside is either not a slat angle at all, or would cross an edge.
+            if not self.tilt_zone_lower_pct <= landing <= self.tilt_zone_upper_pct:
+                raise ValueError("tilt_enter_landing_pct must be between tilt_zone_lower_pct and "
+                                 "tilt_zone_upper_pct")
         if self.tilt_step_pct <= 0.0:
             raise ValueError("tilt_step_pct must be > 0")
-        # A step must map to at least one whole reported percent of real travel, otherwise the
-        # rounded position command repeats the current position and the slats never change.
-        min_step = 100.0 / self.span
-        if self.tilt_step_pct < min_step:
+        # The step is real travel, and the actuator speaks whole percent: a step below one reported
+        # percent rounds back to the current setpoint and the slats never change.
+        if self.tilt_step_pct < MIN_STEP_PCT:
             raise ValueError(
-                f"tilt_step_pct must be >= {min_step:.2f} so one step moves the actuator at least "
-                "one reported percent within the tilt zone")
+                f"tilt_step_pct must be >= {MIN_STEP_PCT} so one step moves the actuator at least "
+                "one reported percent of real travel")
+        # A step wider than the zone itself always lands on an edge, which is not a step.
+        if self.tilt_step_pct > self.span:
+            raise ValueError("tilt_step_pct must be <= tilt_zone_upper_pct - tilt_zone_lower_pct, "
+                             "the real travel the whole tilt zone spans")
 
     # -- Named landmarks ---------------------------------------------------------------------------
 
@@ -147,9 +169,13 @@ class Zone:
     @property
     def step(self) -> float:
         """
-        Slat step size in virtual percent.
+        Slat step size on the virtual scale, converted from the configured real travel.
+
+        ``tilt_step_pct`` is real travel like every other configured percentage, but the planner
+        steps the slats on the virtual scale, where the whole zone is 100 wide. Validation caps the
+        step at the zone's span, so this never exceeds 100.
         """
-        return self.tilt_step_pct
+        return self.tilt_step_pct / self.span * 100.0
 
     @property
     def span(self) -> float:
@@ -180,13 +206,28 @@ class Zone:
         return self.upper + self.epsilon
 
     @property
-    def enter_landing(self) -> float:
+    def enter_landing_real(self) -> float:
         """
-        Virtual slat position the entry sequence finishes on (0 = closed edge, 100 = open edge).
+        Real travel position the entry sequence finishes on.
+
+        Defaults to the upper (closed) edge, which is where the latching rise itself ends -- so an
+        unconfigured blind gets no extra entry step, exactly as before the setting existed.
         """
         if self.tilt_enter_landing_pct is not None:
             return self.tilt_enter_landing_pct
-        return DEFAULT_ENTER_LANDING_PCT
+        return self.upper
+
+    @property
+    def enter_landing_virtual(self) -> float:
+        """
+        The same landing on the virtual slat scale (0 = closed edge, 100 = open edge).
+
+        The setting is configured as a real position, like everything else in ``apps.yaml``, but the
+        planner's enter intent carries a virtual slat position -- that is also what the wall
+        button's near-edge rule produces. Converting here keeps the virtual<->real mapping in this
+        module alone.
+        """
+        return self.real_to_virtual(self.enter_landing_real)
 
     @property
     def band_low(self) -> float:

@@ -11,7 +11,7 @@ it, so all of it is testable without an AppDaemon installation.
 | `executor.py` | Drives one `Plan`: step activation and arrival, settle-timer decisions, stall detection. Consumes feedback and timer events, emits `Action`s | pure |
 | `logic.py` | `GradhermeticCoverLogic`: holds the belief and routes events to intents, composing planner and executor. The adapter talks only to this | pure |
 | `gradhermetic_cover_control.py` | AppDaemon adapter: listeners, service calls, `set_state`, notifications, timers. Makes no decisions | I/O |
-| `config.py` | Parses `apps.yaml` args; the numeric rules are delegated to `geometry` | pure |
+| `config.py` | Parses `apps.yaml` args (all real travel percent); the numeric rules are delegated to `geometry` | pure |
 | `runtime.py` | The settle-timer handle and the command rate limiter | state |
 
 Each app instance manages exactly one blind.
@@ -105,7 +105,7 @@ The step lifecycle is where the timing correctness lives:
 3. **Arrival.** The step completes only on settled feedback satisfying the predicate. Because
    activation guaranteed the predicate did *not* hold when the command went out, a duplicate or
    delayed report carrying the pre-command position can never satisfy it — however small the step
-   was. (A 20% slat step in a 6% zone is only 1.2 real percent, so this matters.)
+   was. (A slat step is only a percent or so of real travel, so this matters.)
 4. **The settle timer fires.** Still moving → re-arm, because this is an inactivity timeout and not
    a travel-time cap. Settled and satisfied → complete, which covers an actuator that reported only
    its final state or none at all. Settled within `DEVIATION_TOLERANCE_PCT` of a `MoveTo` target →
@@ -129,11 +129,12 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
 
   The latching rise can only end at the upper edge, so any other landing is one more in-zone slat
   move. Who chooses it depends on the caller: a deliberate `set_tilt_mode` enter passes the
-  configured `tilt_enter_landing_pct`, while a wall-button or step-button entry passes the
-  directional near-edge rule instead (from above → closed edge / virtual 0, from below → open edge /
-  virtual 100) — the press already says which end the user was reaching for. The fourth step is
-  dropped when its landing rounds to the same integer command as the upper edge, because a command
-  that repeats the current setpoint moves nothing.
+  configured `tilt_enter_landing_pct` — a real position inside the zone, which
+  `Zone.enter_landing_virtual` converts to the virtual scale the intent carries — while a
+  wall-button or step-button entry passes the directional near-edge rule instead (from above →
+  closed edge / virtual 0, from below → open edge / virtual 100) — the press already says which end
+  the user was reaching for. The fourth step is dropped when its landing rounds to the same integer
+  command as the upper edge, because a command that repeats the current setpoint moves nothing.
 - **Leave tilt** — `RiseToAtLeast(release_target)` commanded at `min(100, release_target + 2)`,
   available only from a confident `LATCHED` belief. `release_target` is `tilt_zone_release_pct`, or
   `upper + epsilon` when that is not configured.
@@ -186,6 +187,13 @@ are allowed to differ. Today only the tilt exit makes them differ, and it does s
 
 ## Tilt-Zone Math
 
+**Every configured percentage is real blind travel** — the numbers the actuator reports and accepts.
+The virtual slat scale below is internal: it is what the cover entity's position slider shows while
+tilt mode is engaged, and the scale the planner's intents are stated in. `geometry.Zone` is the only
+place the two meet, and the two slat settings cross the boundary there —
+`Zone.enter_landing_virtual` converts the configured `tilt_enter_landing_pct`, and `Zone.step`
+converts `tilt_step_pct` (`tilt_step_pct / span * 100`).
+
 Outside the zone the virtual cover maps one-to-one to the real travel position (up = open = 100 =
 more light). Inside the zone the mapping is inverted between the edges:
 
@@ -200,22 +208,23 @@ With `upper = 44`, `lower = 38`, `epsilon = 2`:
 - virtual `0` → real `44` (slats closed / parallel / least light).
 - virtual `50` → real `41`.
 - entering dips to `lower - epsilon = 36`, then rises to `44` to latch, then moves to
-  `virtual_to_real(tilt_enter_landing_pct)` if that is not `44` as well.
+  `tilt_enter_landing_pct` if that is not `44` as well (it is already a real position, so no
+  conversion is involved in the move itself).
 - leaving rises to `release_target` — `upper + epsilon = 46` unless `tilt_zone_release_pct` says
   otherwise — commanded two percent higher than that.
 
 Because the zone is narrow (6% here) and KNX actuators report integer positions, the zone holds only
-about `span + 1` distinct slat positions (~7 for a 6% zone). A slat step must therefore map to at
-least one whole reported percent of real travel, otherwise the rounded position command repeats the
-current position and the blind never moves. Config validation enforces
-`tilt_step_pct >= 100 / (upper - lower)` (≈16.7 here) so every step advances the actuator, and
-`tilt_zone_epsilon_pct >= 1` so the dip and release targets round to integers distinct from the
-edges they must clear. The two optional settings are validated here too:
-`tilt_zone_release_pct` must be between `upper + epsilon` and `100` (below the clearance it would
-not even carry the reported position out of the zone), and `tilt_enter_landing_pct` must be a
-virtual percentage in `[0, 100]`. All of it lives in `geometry.Zone`, which validates on
-construction — `config.py` only checks that each number is present (or, for these two, absent),
-numeric and in range.
+about `span + 1` distinct slat positions (~7 for a 6% zone). A slat step must therefore be at least
+one whole reported percent of real travel, otherwise the rounded position command repeats the
+current position and the blind never moves. Config validation enforces `tilt_step_pct >= 1.0` so
+every step advances the actuator, and `tilt_step_pct <= upper - lower` because a step wider than the
+whole zone is not a step; `tilt_zone_epsilon_pct >= 1` likewise, so the dip and release targets round
+to integers distinct from the edges they must clear. The two optional settings are validated here
+too: `tilt_zone_release_pct` must be between `upper + epsilon` and `100` (below the clearance it
+would not even carry the reported position out of the zone), and `tilt_enter_landing_pct` must be a
+real position in `[lower, upper]`, since it is a slat position. All of it lives in `geometry.Zone`,
+which validates on construction — `config.py` only checks that each number is present (or, for the
+optional two, absent), numeric and in range.
 
 The ambiguity band runs `[lower - epsilon, release_target]`, and `band_high` is *defined* as
 `release_target` rather than merely coinciding with it: a mechanism that is latched but has not yet
@@ -242,7 +251,8 @@ Two dedicated group addresses drive the app as `knx_event`s (telegram value `0 =
   releases only upward).
 - **Step address** — short presses, evaluated in priority order:
   1. If the blind is moving, stop it.
-  2. Otherwise, if latched, step the slats by `tilt_step_pct` (up toward open, down toward closed).
+  2. Otherwise, if latched, step the slats by `tilt_step_pct` of real travel (up toward open, down
+     toward closed).
      An up step at the open edge leaves tilt upward and resumes whole-height control.
   3. Otherwise (idle, not latched), enter tilt when the press points toward the zone: a down press
      from above enters at the most-closed edge; an up press from below enters at the most-open edge.
@@ -262,7 +272,7 @@ Step and tilt reach the app as `input_button` presses. The app watches
 (up/down), and `..._tilt`, which toggles tilt mode (`on_set_tilt_mode` with the negation of the
 current `in_tilt`). `on_slat_step` ignores a press outright while a plan is in flight or the blind
 is travelling, and otherwise splits on the latch belief: latched, it steps the angle by
-`tilt_step_pct` and clamps at both zone edges; not latched, it plans
+`tilt_step_pct` of real travel and clamps at both zone edges; not latched, it plans
 `INTENT_ENTER_TOWARD_ZONE` — the wall button's rule 3, near-edge semantics and all.
 
 That second half was added because a blind with no KNX wall switch had no directional way into tilt
@@ -411,14 +421,17 @@ GradhermeticLivingRoom:
   virtual_id: living_room
   virtual_name: "Living Room Blind"
 
+  # Every percentage here is real blind travel, never the inverted virtual slat scale: tilt_step_pct
+  # is the real travel one slat step moves the blind (>= 1.0, <= the zone's width).
   tilt_zone_upper_pct: 44.0
   tilt_zone_lower_pct: 38.0
   tilt_zone_epsilon_pct: 2.0
-  tilt_step_pct: 20.0
+  tilt_step_pct: 1.2
 
-  # Optional; see the README for how to measure the release height and pick a landing angle.
+  # Optional; see the README for how to measure the release height and pick a landing. The landing
+  # is an absolute position inside the zone (44 = slats closed, 38 = fully open).
   tilt_zone_release_pct: 50.0
-  tilt_enter_landing_pct: 20.0
+  tilt_enter_landing_pct: 42.8
 
   knx_move_address: "2/6/0"
   knx_step_address: "2/6/1"

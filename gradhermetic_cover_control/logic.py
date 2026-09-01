@@ -225,8 +225,9 @@ class GradhermeticCoverLogic:
         Handle the custom ``set_tilt_mode`` service.
 
         Entering latches the mechanism and finishes at the configured ``tilt_enter_landing_pct``
-        slat angle; leaving disengages it upward. Both are no-ops when the blind is already in the
-        requested mode.
+        slat angle -- a real travel position inside the zone, which :class:`Zone` converts to the
+        virtual scale the enter intent speaks; leaving disengages it upward. Both are no-ops when
+        the blind is already in the requested mode.
 
         The landing exists because the latching rise necessarily ends at the closed edge, where some
         blinds show no visible slat opening at all -- a deliberate "enter tilt" is worth nothing if
@@ -241,7 +242,7 @@ class GradhermeticCoverLogic:
                 return []
             return self._run(
                 Intent(INTENT_ENTER_TILT, near_edge=NEAR_EDGE_CLOSED,
-                       landing_virtual=self._zone.enter_landing))
+                       landing_virtual=self._zone.enter_landing_virtual))
         return self._run(Intent(INTENT_LEAVE_TILT))
 
     # -- KNX wall-button events --------------------------------------------------------------------
@@ -283,8 +284,8 @@ class GradhermeticCoverLogic:
 
         Two cases, decided by the latch belief:
 
-        - **Latched** -- step the slats by one ``tilt_step_pct``, clamping at both zone edges. This
-          never leaves tilt, not even at the open edge where a wall button would
+        - **Latched** -- step the slats by one ``tilt_step_pct`` of real travel, clamping at both
+          zone edges. This never leaves tilt, not even at the open edge where a wall button would
           (:meth:`on_knx_short`): the dashboard has a dedicated tilt control for that.
         - **Not latched** -- adopt the wall button's rule 3 and enter the tilt zone when the press
           points toward it (from above, a down press lands at the closed edge; from below, an up

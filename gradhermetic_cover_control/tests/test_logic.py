@@ -23,12 +23,13 @@ from gradhermetic_cover_control.planner import (
     LATCH_UNLATCHED,
 )
 
-# Geometry used throughout: zone [38, 44], epsilon 2, step 20. Span = 6, so the minimum step that
-# moves the integer-reporting actuator is 100/6 ~= 16.7; 20 clears it. Band = [36, 46].
+# Geometry used throughout: zone [38, 44], epsilon 2, step 1.2 real travel percent. Every
+# configured number is real blind travel; span 6 makes the 1.2% step 20 on the virtual slat scale.
+# Band = [36, 46].
 UPPER = 44.0
 LOWER = 38.0
 EPSILON = 2.0
-STEP = 20.0
+STEP = 1.2
 DIP = LOWER - EPSILON
 RELEASE = UPPER + EPSILON
 # The tilt exit commands past the height it needs, so this is where the blind actually stops.
@@ -219,7 +220,12 @@ class TestEnterLeaveTilt(unittest.TestCase):
 
 
 class TestEnterLanding(unittest.TestCase):
-    """``tilt_enter_landing_pct``: where a deliberate entry finishes, since the rise ends closed."""
+    """
+    ``tilt_enter_landing_pct``: where a deliberate entry finishes, since the rise ends closed.
+
+    The setting is an absolute real position inside the zone, like every other configured
+    percentage; only the *published* position is on the inverted virtual slat scale.
+    """
 
     def test_the_default_landing_is_the_closed_edge(self):
         logic = GradhermeticCoverLogic(_config())
@@ -229,7 +235,8 @@ class TestEnterLanding(unittest.TestCase):
         self.assertAlmostEqual(0.0, logic.current_virtual_position())
 
     def test_a_configured_landing_adds_a_final_in_zone_move(self):
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=50.0))
+        # Real 41 is the middle of a [38, 44] zone, i.e. virtual 50.
+        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=41.0))
         logic.seed_state(100.0)
         actions = run_plan(logic, logic.on_set_tilt_mode(True))
         # Already fully open, so: dip, latching rise to the closed edge, then the landing.
@@ -237,30 +244,37 @@ class TestEnterLanding(unittest.TestCase):
         self.assertTrue(logic.in_tilt)
         self.assertAlmostEqual(50.0, logic.current_virtual_position())
 
-    def test_a_landing_of_a_hundred_lands_on_the_open_edge(self):
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=100.0))
+    def test_a_landing_at_the_lower_edge_lands_the_slats_wide_open(self):
+        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=LOWER))
         logic.seed_state(100.0)
         actions = run_plan(logic, logic.on_set_tilt_mode(True))
         self.assertAlmostEqual(LOWER, _moves(actions)[-1].position)
         self.assertAlmostEqual(100.0, logic.current_virtual_position())
 
     def test_a_landing_that_rounds_to_the_closed_edge_adds_no_step(self):
-        # Virtual 5 of a 6% zone is 0.3 real percent: the command would repeat the setpoint.
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=5.0))
+        # 0.3 real percent below the upper edge: the command would repeat the setpoint.
+        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=UPPER - 0.3))
         logic.seed_state(100.0)
         actions = run_plan(logic, logic.on_set_tilt_mode(True))
         self.assertEqual([DIP, UPPER], [move.position for move in _moves(actions)])
         self.assertTrue(logic.in_tilt)
 
+    def test_a_landing_outside_the_zone_is_rejected(self):
+        # It is a slat position, so it has to be one.
+        for landing in (LOWER - 0.1, UPPER + 0.1, 0.0, 100.0):
+            with self.subTest(landing=landing):
+                with self.assertRaisesRegex(ValueError, "tilt_enter_landing_pct must be between"):
+                    _config(tilt_enter_landing_pct=landing)
+
     def test_the_landing_does_not_apply_to_a_wall_button_entry(self):
         # The KNX rule is directional: a down press from above lands closed whatever the config.
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=50.0))
+        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=41.0))
         logic.seed_state(80.0)
         actions = run_plan(logic, logic.on_knx_short(DIRECTION_DOWN))
         self.assertAlmostEqual(UPPER, _moves(actions)[-1].position)
         self.assertAlmostEqual(0.0, logic.current_virtual_position())
 
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=50.0))
+        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=41.0))
         logic.seed_state(10.0)
         actions = run_plan(logic, logic.on_knx_short(DIRECTION_UP))
         self.assertAlmostEqual(LOWER, _moves(actions)[-1].position)
@@ -295,8 +309,7 @@ class TestInsideTilt(unittest.TestCase):
     def test_step_up_moves_toward_open(self):
         actions = self.logic.on_knx_short(DIRECTION_UP)
         self.assertEqual(ACTION_MOVE_TO, _moves(actions)[0].kind)
-        self.assertAlmostEqual(UPPER - (STEP / 100.0) * (UPPER - LOWER),
-                               _moves(actions)[0].position)
+        self.assertAlmostEqual(UPPER - STEP, _moves(actions)[0].position)
         run_plan(self.logic, actions)
         self.assertTrue(self.logic.in_tilt)
 
@@ -324,16 +337,14 @@ class TestSlatStepHelper(unittest.TestCase):
 
     def test_step_up_moves_toward_open(self):
         actions = self.logic.on_slat_step(DIRECTION_UP)
-        self.assertAlmostEqual(UPPER - (STEP / 100.0) * (UPPER - LOWER),
-                               _moves(actions)[0].position)
+        self.assertAlmostEqual(UPPER - STEP, _moves(actions)[0].position)
         run_plan(self.logic, actions)
         self.assertTrue(self.logic.in_tilt)
 
     def test_step_down_moves_toward_closed(self):
         run_plan(self.logic, self.logic.on_open())  # virtual 100 / real LOWER (fully open).
         actions = self.logic.on_slat_step(DIRECTION_DOWN)
-        self.assertAlmostEqual(UPPER - ((100.0 - STEP) / 100.0) * (UPPER - LOWER),
-                               _moves(actions)[0].position)
+        self.assertAlmostEqual(LOWER + STEP, _moves(actions)[0].position)
         run_plan(self.logic, actions)
         self.assertTrue(self.logic.in_tilt)
 
@@ -419,7 +430,7 @@ class TestSlatStepHelperEntersTheZone(unittest.TestCase):
 
     def test_entry_ignores_the_configured_landing(self):
         # This is the wall-button rule, so the near edge decides -- not tilt_enter_landing_pct.
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=50.0))
+        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=41.0))
         logic.seed_state(80.0)
         actions = run_plan(logic, logic.on_slat_step(DIRECTION_DOWN))
         self.assertAlmostEqual(UPPER, _moves(actions)[-1].position)
