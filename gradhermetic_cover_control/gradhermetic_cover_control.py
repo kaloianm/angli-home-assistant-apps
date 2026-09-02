@@ -90,7 +90,8 @@ class GradhermeticCoverControl(hass.Hass):
 
         logic = GradhermeticCoverLogic(
             config.zone,
-            log=lambda message: self.log(f"[{config.virtual_id}] {message}"),
+            log=lambda message, level="INFO": self.log(f"[{config.virtual_id}] {message}",
+                                                        level=level),
         )
         self._runtime = CoverRuntime(config=config, logic=logic)
 
@@ -380,7 +381,7 @@ class GradhermeticCoverControl(hass.Hass):
         if runtime.record_command(self.datetime()):
             self._disable(runtime)
             return
-        self.log(f"[{runtime.config.virtual_id}] {service} {data or ''}")
+        self.log(f"[{runtime.config.virtual_id}] Cover {_describe_command(service, data)}")
         self.call_service(service, entity_id=runtime.config.real_cover, **data)
 
     def _notify(self, runtime: CoverRuntime, kind: Optional[str], message: Optional[str]) -> None:
@@ -475,6 +476,24 @@ class GradhermeticCoverControl(hass.Hass):
             title="GradhermeticCoverControl error",
             message=f"{context}\n{type(exc).__name__}: {exc}",
         )
+
+
+def _describe_command(service: str, data: Dict[str, Any]) -> str:
+    """
+    Render a real-cover service call as the short phrase the log shows.
+
+    The raw ``service + payload`` form is noisy and unreadable in the log; each of the four services
+    the app issues gets a human-readable description instead.
+    """
+    if service == "cover/set_cover_position":
+        return f"move to {data.get('position')}%"
+    if service == "cover/open_cover":
+        return "open fully"
+    if service == "cover/close_cover":
+        return "close fully"
+    if service == "cover/stop_cover":
+        return "stop"
+    return f"{service} {data or ''}".strip()
 
 
 def _extract_position(state: Any) -> Tuple[Optional[float], bool]:

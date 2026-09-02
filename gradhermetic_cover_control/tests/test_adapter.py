@@ -416,6 +416,18 @@ class TestActionTranslation(unittest.TestCase):
             ("cover/stop_cover", {"entity_id": REAL_COVER}),
         ], self.app.service_calls)
 
+    def test_commands_log_a_short_human_readable_line(self):
+        self._apply(Action(ACTION_MOVE_TO, position=42.8), Action(ACTION_OPEN_FULL),
+                    Action(ACTION_CLOSE_FULL), Action(ACTION_STOP))
+        cover_logs = [message for level, message in self.app.logs
+                      if level == "INFO" and message.startswith(f"[{VIRTUAL_ID}] Cover ")]
+        self.assertEqual([
+            f"[{VIRTUAL_ID}] Cover move to 43%",
+            f"[{VIRTUAL_ID}] Cover open fully",
+            f"[{VIRTUAL_ID}] Cover close fully",
+            f"[{VIRTUAL_ID}] Cover stop",
+        ], cover_logs)
+
     def test_publish_writes_the_position_sensor(self):
         self._apply(Action(ACTION_PUBLISH_POSITION, position=66.6))
         published = self.app.published[POSITION_ENTITY]

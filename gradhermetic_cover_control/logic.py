@@ -74,12 +74,20 @@ class GradhermeticCoverLogic:
     # The event surface is wide by design: one method per thing that can happen to a blind.
     # pylint: disable=too-many-public-methods
 
-    def __init__(self, zone: Zone, log: Callable[[str], None] = lambda _: None) -> None:
+    def __init__(
+        self,
+        zone: Zone,
+        log: Callable[..., None] = lambda *_args, **_kwargs: None,
+    ) -> None:
         """
         Create logic state for one blind.
 
         ``zone`` holds the tilt-zone geometry. All runtime state is kept internally and every public
         event method returns declarative actions.
+
+        ``log`` is called as ``log(message, level=...)``. Only decisions worth seeing in the normal
+        log are logged at ``INFO``; the per-event/per-step trace explaining how a decision was
+        reached goes to ``DEBUG``.
         """
         self._zone = zone
         self._log = log
@@ -464,7 +472,7 @@ class GradhermeticCoverLogic:
         model tests prove it does -- so reaching here means a planner bug, and the safe response is
         to stop deciding anything for this blind until a human looks at it.
         """
-        self._log(f"ERROR: refusing a plan that violates {violation}")
+        self._log(f"refusing a plan that violates {violation}", level="ERROR")
         self._disabled = True
         self._executor.abandon()
         return [

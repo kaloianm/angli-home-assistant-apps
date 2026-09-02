@@ -101,9 +101,17 @@ class Executor:
     Drives one movement plan at a time.
     """
 
-    def __init__(self, zone: Zone, log: Callable[[str], None] = lambda _: None) -> None:
+    def __init__(
+        self,
+        zone: Zone,
+        log: Callable[..., None] = lambda *_args, **_kwargs: None,
+    ) -> None:
         """
         Create an idle executor for one blind.
+
+        ``log`` is called as ``log(message, level=...)``. Only decisions worth seeing in the normal
+        log are logged at ``INFO``; the per-step trace explaining how a plan is being driven goes to
+        ``DEBUG``.
         """
         self._zone = zone
         self._log = log
@@ -159,7 +167,7 @@ class Executor:
             return self._stall("its position is unreadable")
         if is_moving:
             # An inactivity timeout, not a travel cap: the move is simply long.
-            self._log("settle timer fired while still moving; waiting longer")
+            self._log("settle timer fired while still moving; waiting longer", level="DEBUG")
             return Outcome([_arm()], STATUS_RUNNING, self._plan)
 
         step = self._step()
@@ -170,8 +178,8 @@ class Executor:
         # Judged against the satisfaction target, which is the threshold the step actually needs;
         # a step that aims past it (the tilt exit) is a rise step and is never forgiven here.
         if step.kind == STEP_MOVE_TO and abs(position - step.target) <= DEVIATION_TOLERANCE_PCT:
-            self._log(f"WARNING: accepting {position} for target {step.target}: settled within "
-                      f"{DEVIATION_TOLERANCE_PCT}% of the setpoint")
+            self._log(f"accepting {position} for target {step.target}: settled within "
+                      f"{DEVIATION_TOLERANCE_PCT}% of the setpoint", level="WARNING")
             self._index += 1
             return self._advance(position, is_moving)
         return self._stall(f"it settled at {position}%")
@@ -183,7 +191,7 @@ class Executor:
         movement = self._plan
         if movement is None:
             return Outcome()
-        self._log("plan abandoned")
+        self._log("plan abandoned", level="DEBUG")
         self._clear()
         return Outcome([Action(ACTION_CANCEL_SETTLE_TIMER)], STATUS_ABANDONED, movement)
 
@@ -209,11 +217,12 @@ class Executor:
         while self._index < len(self._plan.steps):
             step = self._step()
             if not is_moving and position is not None and step.satisfied_by(position):
-                self._log(f"skipping {step.kind} {step.target}: already at {position}")
+                self._log(f"skipping {step.kind} {step.target}: already at {position}",
+                          level="DEBUG")
                 self._index += 1
                 continue
             self._log(f"commanding {step.kind} {step.command_position} (satisfied at "
-                      f"{step.target}) from {position}")
+                      f"{step.target}) from {position}", level="DEBUG")
             return Outcome([_command(step), _arm()], STATUS_RUNNING, self._plan)
         return self._complete(position)
 
@@ -245,7 +254,7 @@ class Executor:
         message = (f"did not reach {target}% within {SETTLE_TIMEOUT_SECONDS} seconds ({reason}) "
                    "and was stopped. Check the blind for a mechanical obstruction or a "
                    "misconfigured tilt zone.")
-        self._log(f"ERROR: plan stalled short of {target}%: {reason}")
+        self._log(f"plan stalled short of {target}%: {reason}", level="ERROR")
         return Outcome([
             Action(ACTION_STOP),
             Action(ACTION_CANCEL_SETTLE_TIMER),

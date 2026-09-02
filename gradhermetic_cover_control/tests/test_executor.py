@@ -267,11 +267,16 @@ class TestSettleTimer(unittest.TestCase):
 
     def test_settled_within_the_deviation_tolerance_is_accepted(self):
         logged = []
-        executor = Executor(ZONE, log=logged.append)
+
+        def log(message, level="INFO"):
+            logged.append((level, message))
+
+        executor = Executor(ZONE, log=log)
         executor.start(_move_plan(50.0), 80.0, False)
         outcome = executor.on_timer(50.0 + DEVIATION_TOLERANCE_PCT, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
-        self.assertTrue(any("WARNING" in message for message in logged))
+        self.assertIn(("WARNING", "accepting 52.0 for target 50.0: settled within 2.0% of the "
+                                  "setpoint"), logged)
 
     def test_settled_short_stalls(self):
         outcome = self.executor.on_timer(50.0, False)

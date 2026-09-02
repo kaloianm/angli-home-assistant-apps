@@ -801,5 +801,55 @@ class TestConfirmedBugRegressions(unittest.TestCase):
         self.assertEqual(1, _kinds(actions).count(ACTION_CANCEL_SETTLE_TIMER))
 
 
+class TestLogging(unittest.TestCase):
+
+    def test_step_trace_is_debug_and_plan_completion_is_info(self):
+        entries = []
+
+        def log(message, level="INFO"):
+            entries.append((level, message))
+
+        logic = GradhermeticCoverLogic(_config(), log=log)
+        logic.seed_state(80.0)
+        run_plan(logic, logic.on_set_position(30.0))
+
+        info = [message for level, message in entries if level == "INFO"]
+        debug = [message for level, message in entries if level == "DEBUG"]
+
+        self.assertIn("plan complete: latch=unlatched position=30.0", info)
+        self.assertTrue(any("commanding move_to 30.0 (satisfied at 30.0) from 80.0" in message
+                            for message in debug))
+        self.assertFalse(any("plan complete" in message for message in debug))
+
+    def test_interrupting_a_plan_logs_the_latch_transition_at_info(self):
+        entries = []
+
+        def log(message, level="INFO"):
+            entries.append((level, message))
+
+        logic = GradhermeticCoverLogic(_config(), log=log)
+        logic.seed_state(100.0)
+        run_plan(logic, logic.on_set_tilt_mode(True))  # latched, resting at the upper edge.
+        logic.on_set_tilt_mode(False)  # leave-tilt plan in flight.
+        logic.on_stop()
+
+        info = [message for level, message in entries if level == "INFO"]
+        self.assertTrue(any("latch belief latched -> unknown: leave plan interrupted" in message
+                            for message in info))
+
+    def test_a_violating_plan_is_logged_at_error(self):
+        entries = []
+
+        def log(message, level="INFO"):
+            entries.append((level, message))
+
+        logic = GradhermeticCoverLogic(_config(), log=log)
+        logic.seed_state(80.0)
+        with mock.patch("gradhermetic_cover_control.planner.check_plan", return_value="L1: boom"):
+            logic.on_close()
+
+        self.assertIn(("ERROR", "refusing a plan that violates L1: boom"), entries)
+
+
 if __name__ == "__main__":
     unittest.main()
