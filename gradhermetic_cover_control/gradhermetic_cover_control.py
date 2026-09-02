@@ -88,17 +88,13 @@ class GradhermeticCoverControl(hass.Hass):
         # in-flight recovery plan.
         self._ready = False
 
-        logic = GradhermeticCoverLogic(
-            config.zone,
-            log=lambda message, level="INFO": self.log(f"[{config.virtual_id}] {message}",
-                                                        level=level),
-        )
+        logic = GradhermeticCoverLogic(config.zone, log=self.log)
         self._runtime = CoverRuntime(config=config, logic=logic)
 
         if self.get_state(config.real_cover, default=None) is None:
             self.log(
-                f"[{config.virtual_id}] Configured real_cover '{config.real_cover}' does not "
-                "exist in Home Assistant.", level="ERROR")
+                f"Configured real_cover '{config.real_cover}' does not exist in Home "
+                "Assistant.", level="ERROR")
 
         self.listen_state(self._on_real_state, config.real_cover, attribute="all")
         self.listen_event(self._on_command, COMMAND_EVENT)
@@ -145,8 +141,7 @@ class GradhermeticCoverControl(hass.Hass):
             if str(data.get("virtual_id")) != self._config.virtual_id:
                 return
             if not self._ready:
-                self.log(f"[{self._config.virtual_id}] Ignoring command during startup recovery: "
-                         f"{data!r}")
+                self.log(f"Ignoring command during startup recovery: {data!r}")
                 return
             self._apply_actions(self._dispatch_command(data))
         except Exception as exc:
@@ -171,19 +166,16 @@ class GradhermeticCoverControl(hass.Hass):
             try:
                 position = float(raw_position)
             except (TypeError, ValueError):
-                self.log(
-                    f"[{runtime.config.virtual_id}] Ignoring set_position with invalid position "
-                    f"{raw_position!r}", level="WARNING")
+                self.log(f"Ignoring set_position with invalid position {raw_position!r}",
+                         level="WARNING")
                 return []
             return runtime.logic.on_set_position(position)
         if command == "set_tilt_mode":
             if data.get("enabled") is None:
-                self.log(f"[{runtime.config.virtual_id}] Ignoring set_tilt_mode without 'enabled'",
-                         level="WARNING")
+                self.log("Ignoring set_tilt_mode without 'enabled'", level="WARNING")
                 return []
             return runtime.logic.on_set_tilt_mode(_as_bool(data["enabled"]))
-        self.log(f"[{runtime.config.virtual_id}] Ignoring unknown command {command!r}",
-                 level="WARNING")
+        self.log(f"Ignoring unknown command {command!r}", level="WARNING")
         return []
 
     # -- Real cover feedback -----------------------------------------------------------------------
@@ -232,7 +224,7 @@ class GradhermeticCoverControl(hass.Hass):
             if destination not in (config.knx_move_address, config.knx_step_address):
                 return
             if not self._ready:
-                self.log(f"[{config.virtual_id}] Ignoring KNX press during startup recovery")
+                self.log("Ignoring KNX press during startup recovery")
                 return
             direction = _knx_direction(data)
             if direction is None:
@@ -261,7 +253,7 @@ class GradhermeticCoverControl(hass.Hass):
             if not self._is_button_press(old, new):
                 return
             if not self._ready:
-                self.log(f"[{self._config.virtual_id}] Ignoring step press during startup recovery")
+                self.log("Ignoring step press during startup recovery")
                 return
             direction = DIRECTION_UP if entity == self._step_up_button else DIRECTION_DOWN
             self._apply_actions(self._runtime.logic.on_slat_step(direction))
@@ -277,7 +269,7 @@ class GradhermeticCoverControl(hass.Hass):
             if not self._is_button_press(old, new):
                 return
             if not self._ready:
-                self.log(f"[{self._config.virtual_id}] Ignoring tilt press during startup recovery")
+                self.log("Ignoring tilt press during startup recovery")
                 return
             logic = self._runtime.logic
             self._apply_actions(logic.on_set_tilt_mode(not logic.in_tilt))
@@ -311,12 +303,10 @@ class GradhermeticCoverControl(hass.Hass):
             if not self._service_targets_me(data):
                 return
             if not self._ready:
-                self.log(f"[{self._config.virtual_id}] Ignoring set_tilt_mode during startup "
-                         "recovery")
+                self.log("Ignoring set_tilt_mode during startup recovery")
                 return
             if data.get("enabled") is None:
-                self.log(f"[{self._config.virtual_id}] Ignoring set_tilt_mode without 'enabled'",
-                         level="WARNING")
+                self.log("Ignoring set_tilt_mode without 'enabled'", level="WARNING")
                 return
             self._apply_actions(self._runtime.logic.on_set_tilt_mode(_as_bool(data["enabled"])))
         except Exception as exc:
@@ -381,7 +371,7 @@ class GradhermeticCoverControl(hass.Hass):
         if runtime.record_command(self.datetime()):
             self._disable(runtime)
             return
-        self.log(f"[{runtime.config.virtual_id}] Cover {_describe_command(service, data)}")
+        self.log(f"Cover {_describe_command(service, data)}")
         self.call_service(service, entity_id=runtime.config.real_cover, **data)
 
     def _notify(self, runtime: CoverRuntime, kind: Optional[str], message: Optional[str]) -> None:
@@ -390,7 +380,7 @@ class GradhermeticCoverControl(hass.Hass):
         """
         title = ("GradhermeticCoverControl stalled"
                  if kind == NOTIFY_STALL else "GradhermeticCoverControl error")
-        self.log(f"[{runtime.config.virtual_id}] {kind}: {message}", level="ERROR")
+        self.log(f"{kind}: {message}", level="ERROR")
         self.call_service(
             "persistent_notification/create",
             title=title,
@@ -448,9 +438,9 @@ class GradhermeticCoverControl(hass.Hass):
         runtime.logic.disable()
         self._cancel_settle(runtime)
         self.log(
-            f"[{runtime.config.virtual_id}] DISABLED: real-cover command rate limit exceeded "
-            f"({COMMAND_RATE_LIMIT} commands in {COMMAND_RATE_WINDOW_SECONDS}s). Restart "
-            "AppDaemon to re-enable.", level="ERROR")
+            f"DISABLED: real-cover command rate limit exceeded ({COMMAND_RATE_LIMIT} "
+            f"commands in {COMMAND_RATE_WINDOW_SECONDS}s). Restart AppDaemon to re-enable.",
+            level="ERROR")
         self.call_service(
             "persistent_notification/create",
             title="GradhermeticCoverControl disabled",

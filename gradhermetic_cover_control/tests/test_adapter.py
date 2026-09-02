@@ -420,12 +420,12 @@ class TestActionTranslation(unittest.TestCase):
         self._apply(Action(ACTION_MOVE_TO, position=42.8), Action(ACTION_OPEN_FULL),
                     Action(ACTION_CLOSE_FULL), Action(ACTION_STOP))
         cover_logs = [message for level, message in self.app.logs
-                      if level == "INFO" and message.startswith(f"[{VIRTUAL_ID}] Cover ")]
+                      if level == "INFO" and message.startswith("Cover ")]
         self.assertEqual([
-            f"[{VIRTUAL_ID}] Cover move to 43%",
-            f"[{VIRTUAL_ID}] Cover open fully",
-            f"[{VIRTUAL_ID}] Cover close fully",
-            f"[{VIRTUAL_ID}] Cover stop",
+            "Cover move to 43%",
+            "Cover open fully",
+            "Cover close fully",
+            "Cover stop",
         ], cover_logs)
 
     def test_publish_writes_the_position_sensor(self):

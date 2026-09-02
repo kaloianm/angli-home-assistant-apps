@@ -174,10 +174,13 @@ class GradhermeticCoverLogic:
             return []
         self.seed_state(position, is_moving)
         if self._latch == LATCH_UNKNOWN:
-            self._log(f"startup position {position} is unknown or near the tilt zone; recovering "
-                      "fully open")
+            if position is None:
+                self._log("startup position unreadable; recovering fully open")
+            else:
+                self._log(f"startup position {position}% is inside the tilt band; recovering "
+                          "fully open")
             return self.on_recover()
-        self._log(f"startup position {position} is outside the tilt zone; resuming whole-height "
+        self._log(f"startup position {position}% is outside the tilt band; resuming whole-height "
                   "control")
         return self._publish_current()
 
