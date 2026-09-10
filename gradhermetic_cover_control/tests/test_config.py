@@ -80,6 +80,11 @@ class TestConfigParsing(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be between 0 and 100"):
             parse_app_config(_valid_args(tilt_zone_release_pct=120.0))
 
+    def test_release_at_a_hundred_raises(self):
+        # Delegated to geometry: the band may not reach the top limit.
+        with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be < 100"):
+            parse_app_config(_valid_args(tilt_zone_release_pct=100.0))
+
     def test_non_numeric_release_raises(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be a number"):
             parse_app_config(_valid_args(tilt_zone_release_pct="high"))

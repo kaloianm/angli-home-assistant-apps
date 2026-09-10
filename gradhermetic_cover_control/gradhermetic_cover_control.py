@@ -16,9 +16,9 @@ stop a move in flight -- that is the tilt helper's and the cover's job.
 
 Every decision -- which sequence to run, when a waypoint is reached, when the settle timer is armed
 or cancelled, when a stall is declared -- is made in the pure core. What is left here is transport:
-listening and filtering, gating commands until startup recovery has run, decoding KNX telegrams and
-button presses, the command rate limit, the callback error boundary, and a one-to-one translation of
-:class:`Action` values into service calls.
+listening and filtering, gating commands until the startup state is seeded, decoding KNX telegrams
+and button presses, the command rate limit, the callback error boundary, and a one-to-one
+translation of :class:`Action` values into service calls.
 """
 
 from __future__ import annotations
@@ -62,8 +62,9 @@ except ImportError:  # pragma: no cover - used only outside AppDaemon runtime.
 # Home Assistant event fired by the template cover to carry user commands to this app.
 COMMAND_EVENT = "gradhermetic_command"
 
-# Seconds to wait after startup before running position recovery, letting entity state settle.
-RECOVERY_DELAY_SECONDS = 3
+# Seconds to wait after startup before reading the real cover's position, letting entity state
+# settle.
+STARTUP_DELAY_SECONDS = 3
 
 
 class GradhermeticCoverControl(hass.Hass):
@@ -83,9 +84,9 @@ class GradhermeticCoverControl(hass.Hass):
         self._step_up_button = f"input_button.gradhermetic_{config.virtual_id}_step_up"
         self._step_down_button = f"input_button.gradhermetic_{config.virtual_id}_step_down"
         self._tilt_button = f"input_button.gradhermetic_{config.virtual_id}_tilt"
-        # Commands are ignored until startup recovery has established a known-safe state; a command
-        # arriving in the recovery window would run against unseeded state and could clobber the
-        # in-flight recovery plan.
+        # Commands are ignored until the first position reading has seeded the belief; a command
+        # arriving before that would run against unseeded state, and the guards that keep the
+        # mechanism safe are all derived from the belief.
         self._ready = False
 
         logic = GradhermeticCoverLogic(config.zone, log=self.log)
@@ -110,26 +111,27 @@ class GradhermeticCoverControl(hass.Hass):
 
         self.register_service("gradhermetic_cover_control/set_tilt_mode", self._on_set_tilt_mode)
 
-        self.run_in(self._run_recovery, RECOVERY_DELAY_SECONDS)
+        self.run_in(self._seed_startup_state, STARTUP_DELAY_SECONDS)
 
         self.log(f"GradhermeticCoverControl initialized for '{config.virtual_id}' "
                  f"wrapping {config.real_cover}.")
 
-    # -- Recovery ----------------------------------------------------------------------------------
+    # -- Startup -----------------------------------------------------------------------------------
 
-    def _run_recovery(self, kwargs: Dict[str, Any]) -> None:
+    def _seed_startup_state(self, kwargs: Dict[str, Any]) -> None:
         """
-        Establish a known-safe state at startup.
+        Seed the logic's belief from the real cover's first position reading.
 
-        State is not persisted across restarts, so the logic decides from the first position reading
-        whether whole-height control can resume or the blind has to be recovered upward.
+        State is not persisted across restarts, so the belief follows from that reading alone. No
+        movement is commanded here: an ambiguous position simply leaves the latch belief unknown,
+        and the first action that needs a trusted position re-references the actuator itself.
         """
         try:
             position, is_moving = self._read_real_position()
             self._apply_actions(self._runtime.logic.on_startup(position, is_moving))
             self._ready = True  # pylint: disable=attribute-defined-outside-init
         except Exception as exc:
-            self._report_error("_run_recovery", exc)
+            self._report_error("_seed_startup_state", exc)
 
     # -- Command events ----------------------------------------------------------------------------
 
@@ -141,7 +143,7 @@ class GradhermeticCoverControl(hass.Hass):
             if str(data.get("virtual_id")) != self._config.virtual_id:
                 return
             if not self._ready:
-                self.log(f"Ignoring command during startup recovery: {data!r}")
+                self.log(f"Ignoring command before startup state is seeded: {data!r}")
                 return
             self._apply_actions(self._dispatch_command(data))
         except Exception as exc:
@@ -224,7 +226,7 @@ class GradhermeticCoverControl(hass.Hass):
             if destination not in (config.knx_move_address, config.knx_step_address):
                 return
             if not self._ready:
-                self.log("Ignoring KNX press during startup recovery")
+                self.log("Ignoring KNX press before startup state is seeded")
                 return
             direction = _knx_direction(data)
             if direction is None:
@@ -253,7 +255,7 @@ class GradhermeticCoverControl(hass.Hass):
             if not self._is_button_press(old, new):
                 return
             if not self._ready:
-                self.log("Ignoring step press during startup recovery")
+                self.log("Ignoring step press before startup state is seeded")
                 return
             direction = DIRECTION_UP if entity == self._step_up_button else DIRECTION_DOWN
             self._apply_actions(self._runtime.logic.on_slat_step(direction))
@@ -269,7 +271,7 @@ class GradhermeticCoverControl(hass.Hass):
             if not self._is_button_press(old, new):
                 return
             if not self._ready:
-                self.log("Ignoring tilt press during startup recovery")
+                self.log("Ignoring tilt press before startup state is seeded")
                 return
             logic = self._runtime.logic
             self._apply_actions(logic.on_set_tilt_mode(not logic.in_tilt))
@@ -303,7 +305,7 @@ class GradhermeticCoverControl(hass.Hass):
             if not self._service_targets_me(data):
                 return
             if not self._ready:
-                self.log("Ignoring set_tilt_mode during startup recovery")
+                self.log("Ignoring set_tilt_mode before startup state is seeded")
                 return
             if data.get("enabled") is None:
                 self.log("Ignoring set_tilt_mode without 'enabled'", level="WARNING")

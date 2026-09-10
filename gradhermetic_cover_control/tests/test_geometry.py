@@ -239,13 +239,25 @@ class TestValidation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "tilt_step_pct must be > 0"):
             _zone(tilt_step_pct=0.0)
 
-    def test_dip_target_below_zero_raises(self):
-        with self.assertRaisesRegex(ValueError, "tilt_zone_lower_pct - tilt_zone_epsilon_pct"):
-            _zone(tilt_zone_lower_pct=1.0, tilt_zone_upper_pct=10.0)
+    def test_dip_target_at_or_below_zero_raises(self):
+        # The band must stop short of the bottom limit: a blind resting fully closed is one the app
+        # has to be able to trust as unlatched, so lower - epsilon may not reach 0.
+        for lower in (EPSILON, 1.0):
+            with self.subTest(lower=lower):
+                with self.assertRaisesRegex(ValueError,
+                                            "tilt_zone_lower_pct - tilt_zone_epsilon_pct"):
+                    _zone(tilt_zone_lower_pct=lower, tilt_zone_upper_pct=10.0)
 
-    def test_release_target_above_hundred_raises(self):
-        with self.assertRaisesRegex(ValueError, "tilt_zone_upper_pct \\+ tilt_zone_epsilon_pct"):
-            _zone(tilt_zone_upper_pct=99.0)
+    def test_dip_target_just_above_zero_is_accepted(self):
+        zone = _zone(tilt_zone_lower_pct=EPSILON + 1.0, tilt_zone_upper_pct=10.0)
+        self.assertAlmostEqual(1.0, zone.dip_target)
+
+    def test_release_target_at_or_above_hundred_raises(self):
+        for upper in (100.0 - EPSILON, 99.0):
+            with self.subTest(upper=upper):
+                with self.assertRaisesRegex(ValueError,
+                                            "tilt_zone_upper_pct \\+ tilt_zone_epsilon_pct"):
+                    _zone(tilt_zone_upper_pct=upper)
 
     def test_release_below_the_bare_clearance_raises(self):
         # Anything below upper + epsilon does not even carry the reported position clear of the
@@ -259,12 +271,16 @@ class TestValidation(unittest.TestCase):
         zone = _zone(tilt_zone_release_pct=UPPER + EPSILON)
         self.assertAlmostEqual(UPPER + EPSILON, zone.release_target)
 
-    def test_release_above_a_hundred_raises(self):
-        with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be <= 100"):
-            _zone(tilt_zone_release_pct=101.0)
+    def test_release_at_or_above_a_hundred_raises(self):
+        # The band must stop short of the top limit: a blind resting fully open is one the app has
+        # to be able to trust as unlatched.
+        for release in (100.0, 101.0):
+            with self.subTest(release=release):
+                with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be < 100"):
+                    _zone(tilt_zone_release_pct=release)
 
-    def test_release_at_a_hundred_is_accepted(self):
-        self.assertAlmostEqual(100.0, _zone(tilt_zone_release_pct=100.0).release_target)
+    def test_release_just_below_a_hundred_is_accepted(self):
+        self.assertAlmostEqual(99.0, _zone(tilt_zone_release_pct=99.0).release_target)
 
     def test_landing_outside_the_zone_raises(self):
         # The landing is a slat position, so it has to be a real position inside the zone.

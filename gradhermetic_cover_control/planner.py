@@ -82,7 +82,6 @@ PLAN_NORMAL = "normal"
 PLAN_SLAT = "slat"
 PLAN_ENTER = "enter"
 PLAN_LEAVE = "leave"
-PLAN_RECOVER = "recover"
 
 # -- Intents ---------------------------------------------------------------------------------------
 
@@ -94,7 +93,6 @@ INTENT_LEAVE_TILT = "leave_tilt"
 INTENT_SLAT_STEP = "slat_step"
 INTENT_ENTER_TOWARD_ZONE = "enter_toward_zone"
 INTENT_LONG_PRESS = "long_press"
-INTENT_RECOVER = "recover"
 
 # Guard for floating-point edge comparisons on the virtual scale.
 _VIRTUAL_EPSILON = 1e-6
@@ -180,7 +178,7 @@ class Plan:
 @dataclass(frozen=True)
 class Intent:
     """
-    What the user (or the app itself, when recovering) asked for.
+    What the user asked for.
 
     An enter intent says where in the zone the sequence should finish, in one of two ways.
     ``near_edge`` is the wall-button rule: entry lands on whichever end of the zone the press came
@@ -219,8 +217,6 @@ def plan(zone: Zone, belief: Belief, intent: Intent) -> Optional[Plan]:
         return _plan_enter_toward_zone(zone, belief, intent.direction)
     if intent.kind == INTENT_LONG_PRESS:
         return _plan_long_press(belief, intent.direction)
-    if intent.kind == INTENT_RECOVER:
-        return _plan_recover()
     raise ValueError(f"unknown intent {intent.kind!r}")
 
 
@@ -381,13 +377,6 @@ def _plan_long_press(belief: Belief, direction: Optional[str]) -> Plan:
                 LATCH_UNLATCHED)
 
 
-def _plan_recover() -> Plan:
-    """
-    Startup recovery: a single upward-only full open, which re-references the actuator too.
-    """
-    return Plan(PLAN_RECOVER, (Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),), LATCH_UNLATCHED)
-
-
 def _slat_plan(real_target: float) -> Plan:
     """
     A single in-zone move that changes slat angle without changing height.
@@ -515,8 +504,8 @@ def _check_latching(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
 
 def _check_releases(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]:
     """
-    X1/R1: leaving tilt and recovering are upward-only, and every release from an uncertain belief
-    is a full open rather than a rise to an unreferenced percentage.
+    X1: leaving tilt is upward-only, and the short exit is only available from a confident LATCHED
+    belief -- from an uncertain one the release is a full open instead (see :func:`_guard_descent`).
     """
     if movement.kind == PLAN_LEAVE:
         if belief.latch != LATCH_LATCHED:
@@ -531,7 +520,4 @@ def _check_releases(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
         if step.command_position < step.target:
             return (f"X1: the tilt exit commands {step.command_position}, below its own acceptance "
                     f"target {step.target}")
-    if movement.kind == PLAN_RECOVER:
-        if len(movement.steps) != 1 or movement.steps[0].command != COMMAND_OPEN:
-            return "R1: recovery must be a single full open"
     return None

@@ -53,7 +53,6 @@ from gradhermetic_cover_control.planner import (
     INTENT_LEAVE_TILT,
     INTENT_LONG_PRESS,
     INTENT_OPEN,
-    INTENT_RECOVER,
     INTENT_SET_POSITION,
     INTENT_SLAT_STEP,
     LATCH_LATCHED,
@@ -168,20 +167,29 @@ class GradhermeticCoverLogic:
 
     def on_startup(self, position: Optional[float], is_moving: bool = False) -> List[Action]:
         """
-        Establish a known-safe state at startup, recovering upward when the latch is ambiguous.
+        Seed the belief from the first position reading. Startup never moves the blind.
+
+        An unreadable or in-band position leaves the latch belief ``UNKNOWN``, and that is where it
+        stays: re-referencing the actuator is deferred to the first action that actually needs a
+        trusted position. Every such action already opens fully on its own -- every descent is
+        guarded by one, every tilt entry begins with one, and opening is one -- so the reference is
+        bought lazily, by the move that needs it, instead of raising the blind unprompted in the
+        middle of the night after a power cut.
         """
         if self._disabled:
             return []
         self.seed_state(position, is_moving)
         if self._latch == LATCH_UNKNOWN:
             if position is None:
-                self._log("startup position unreadable; recovering fully open")
+                self._log("startup position unreadable; the actuator will be re-referenced by the "
+                          "first move that needs it")
             else:
-                self._log(f"startup position {position}% is inside the tilt band; recovering "
-                          "fully open")
-            return self.on_recover()
-        self._log(f"startup position {position}% is outside the tilt band; resuming whole-height "
-                  "control")
+                self._log(f"startup position {position}% is inside the tilt band; the latch belief "
+                          "is unknown and the actuator will be re-referenced by the first move "
+                          "that needs it")
+        else:
+            self._log(f"startup position {position}% is outside the tilt band; resuming "
+                      "whole-height control")
         return self._publish_current()
 
     def disable(self) -> List[Action]:
@@ -316,14 +324,6 @@ class GradhermeticCoverLogic:
             return self._run(Intent(INTENT_SLAT_STEP, direction=direction))
         return self._run(Intent(INTENT_ENTER_TOWARD_ZONE, direction=direction))
 
-    # -- Restart recovery --------------------------------------------------------------------------
-
-    def on_recover(self) -> List[Action]:
-        """
-        Recover from an unknown/ambiguous position by driving fully open (upward-only).
-        """
-        return self._run(Intent(INTENT_RECOVER))
-
     # -- Position feedback -------------------------------------------------------------------------
 
     def on_real_position(self, position: Optional[float], is_moving: bool) -> List[Action]:
@@ -337,6 +337,7 @@ class GradhermeticCoverLogic:
             return []
 
         was_moving = self._is_moving
+        was_unknown = self._position is None
         had_plan = self.has_pending_plan
         self._observe(position, is_moving)
 
@@ -349,6 +350,11 @@ class GradhermeticCoverLogic:
                 # We did not see how it got here, and a rise across the lower edge latches.
                 self._latch = LATCH_UNKNOWN
                 self._log("latch belief cleared: external motion ended inside the tilt band")
+            return self._publish_current()
+        # The first reading that makes the position known again -- the real cover was still starting
+        # up when we seeded, or it had gone unavailable. Nothing else publishes until a plan
+        # completes, and startup no longer runs one, so the sensor would otherwise stay stale.
+        if was_unknown and position is not None and not is_moving:
             return self._publish_current()
         return []
 

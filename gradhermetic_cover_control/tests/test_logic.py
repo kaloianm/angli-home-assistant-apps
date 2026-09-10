@@ -513,31 +513,65 @@ class TestKnxShortPress(unittest.TestCase):
         self.assertEqual([], self.logic.on_knx_short(DIRECTION_DOWN))
 
 
-class TestRecoveryAndMisc(unittest.TestCase):
+class TestStartupAndMisc(unittest.TestCase):
+    """
+    Startup only ever seeds the belief. Re-referencing the actuator is left to the first move that
+    needs a trusted position, so a power cut at night does not raise the blind by itself.
+    """
 
     def setUp(self):
         self.logic = GradhermeticCoverLogic(_config())
 
-    def test_recover_opens_fully_and_clears_tilt(self):
-        self.logic.seed_state(None)
-        actions = run_plan(self.logic, self.logic.on_recover())
-        self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
-        self.assertFalse(self.logic.in_tilt)
-        self.assertAlmostEqual(100.0, _published(actions)[-1].position)
-
-    def test_startup_inside_the_band_recovers_upward(self):
+    def test_startup_inside_the_band_seeds_an_unknown_latch_without_moving(self):
         actions = self.logic.on_startup(41.0)
+        self.assertEqual([], _moves(actions))
+        self.assertEqual(LATCH_UNKNOWN, self.logic.latch)
+        self.assertFalse(self.logic.has_pending_plan)
+        # The position itself is known, so the sensor is corrected straight away.
+        self.assertAlmostEqual(41.0, _published(actions)[-1].position)
+
+    def test_startup_with_an_unknown_position_seeds_an_unknown_latch_without_moving(self):
+        actions = self.logic.on_startup(None)
+        self.assertEqual([], actions)
+        self.assertEqual(LATCH_UNKNOWN, self.logic.latch)
+        self.assertFalse(self.logic.has_pending_plan)
+
+    def test_startup_defers_the_reference_to_the_first_descent(self):
+        # The lazy half of the deferral: the guarded descent buys the reference when it needs it.
+        self.logic.on_startup(41.0)
+        actions = run_plan(self.logic, self.logic.on_close())
+        self.assertEqual([ACTION_OPEN_FULL, ACTION_CLOSE_FULL], _kinds(_moves(actions)))
+
+    def test_startup_defers_the_reference_to_a_descending_set_position(self):
+        self.logic.on_startup(None)
+        actions = self.logic.on_set_position(10.0)
         self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
 
-    def test_startup_with_an_unknown_position_recovers_upward(self):
-        actions = self.logic.on_startup(None)
-        self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
+    def test_startup_leaves_a_later_open_a_plain_full_open(self):
+        # Opening is the reference: it needs no detour of its own.
+        self.logic.on_startup(41.0)
+        actions = run_plan(self.logic, self.logic.on_open())
+        self.assertEqual([ACTION_OPEN_FULL], _kinds(_moves(actions)))
+        self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
 
     def test_startup_outside_the_band_resumes_and_publishes(self):
         actions = self.logic.on_startup(80.0)
         self.assertEqual([], _moves(actions))
         self.assertAlmostEqual(80.0, _published(actions)[-1].position)
         self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
+
+    def test_the_first_known_reading_publishes(self):
+        # Started while the real cover was still unavailable: nothing else would correct the sensor
+        # until a plan completed, and startup no longer runs one.
+        self.logic.on_startup(None)
+        actions = self.logic.on_real_position(60.0, False)
+        self.assertEqual([ACTION_PUBLISH_POSITION], _kinds(actions))
+        self.assertAlmostEqual(60.0, actions[0].position)
+        self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
+
+    def test_a_reading_while_already_known_and_idle_publishes_nothing(self):
+        self.logic.on_startup(60.0)
+        self.assertEqual([], self.logic.on_real_position(60.0, False))
 
     def test_manual_stop_then_rest_publishes(self):
         self.logic.seed_state(60.0)

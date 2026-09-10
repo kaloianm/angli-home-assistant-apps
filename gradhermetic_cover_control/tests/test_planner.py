@@ -14,7 +14,6 @@ from gradhermetic_cover_control.planner import (
     INTENT_LEAVE_TILT,
     INTENT_LONG_PRESS,
     INTENT_OPEN,
-    INTENT_RECOVER,
     INTENT_SET_POSITION,
     INTENT_SLAT_STEP,
     LATCH_LATCHED,
@@ -25,7 +24,6 @@ from gradhermetic_cover_control.planner import (
     PLAN_ENTER,
     PLAN_LEAVE,
     PLAN_NORMAL,
-    PLAN_RECOVER,
     PLAN_SLAT,
     STEP_MOVE_TO,
     STEP_RISE_TO_AT_LEAST,
@@ -161,11 +159,13 @@ class TestLeaveTilt(unittest.TestCase):
         self.assertEqual([CUSTOM_RELEASE + EXIT_OVERSHOOT_PCT], _commanded(movement))
 
     def test_the_overshoot_cannot_exceed_full_travel(self):
+        # The highest release the geometry allows still leaves the band short of the top limit, but
+        # release + overshoot would pass it; the command is clamped to full travel.
         zone = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
                     tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
-                    tilt_zone_release_pct=100.0)
+                    tilt_zone_release_pct=99.0)
         movement = plan(zone, _belief(UPPER, LATCH_LATCHED), Intent(INTENT_LEAVE_TILT))
-        self.assertEqual([100.0], _targets(movement))
+        self.assertEqual([99.0], _targets(movement))
         self.assertEqual([100.0], _commanded(movement))
 
     def test_uncertain_belief_has_nothing_to_leave(self):
@@ -245,13 +245,6 @@ class TestWholeHeight(unittest.TestCase):
         movement = plan(ZONE, _belief(80.0, LATCH_UNLATCHED),
                         Intent(INTENT_LONG_PRESS, direction=DIRECTION_DOWN))
         self.assertEqual([0.0], _targets(movement))
-
-    def test_recover_is_a_single_full_open(self):
-        movement = plan(ZONE, _belief(None, LATCH_UNKNOWN), Intent(INTENT_RECOVER))
-        self.assertEqual(PLAN_RECOVER, movement.kind)
-        self.assertEqual([100.0], _targets(movement))
-        self.assertEqual([COMMAND_OPEN], _commands(movement))
-
 
 class TestSlatMoves(unittest.TestCase):
 
@@ -367,12 +360,13 @@ class TestInvariantsHoldForEveryPlan(unittest.TestCase):
     # Every geometry the config can express in kind: the default one, one whose release height is
     # measured well above the bare clearance (so the band is much wider than the zone), and one
     # whose entry lands mid-zone (so an enter plan has a fourth step that is neither zone edge).
+    # The release can go no higher than 99: the band has to stop short of the top limit.
     ZONES = [
         ("default", ZONE),
         ("custom_release_and_landing", CUSTOM_ZONE),
-        ("release_at_full_travel",
+        ("release_just_below_full_travel",
          Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_step_pct=STEP, tilt_zone_release_pct=100.0, tilt_enter_landing_pct=LOWER)),
+              tilt_step_pct=STEP, tilt_zone_release_pct=99.0, tilt_enter_landing_pct=LOWER)),
     ]
 
     @staticmethod
@@ -384,7 +378,6 @@ class TestInvariantsHoldForEveryPlan(unittest.TestCase):
             Intent(INTENT_ENTER_TILT, near_edge=NEAR_EDGE_OPEN),
             Intent(INTENT_ENTER_TILT, landing_virtual=zone.enter_landing_virtual),
             Intent(INTENT_LEAVE_TILT),
-            Intent(INTENT_RECOVER),
         ]
         intents += [Intent(INTENT_ENTER_TILT, landing_virtual=float(v)) for v in range(0, 101, 5)]
         intents += [Intent(INTENT_SET_POSITION, virtual_pct=float(v)) for v in range(0, 101, 5)]
@@ -548,10 +541,6 @@ class TestInvariantRejections(unittest.TestCase):
                         (Step(STEP_MOVE_TO, RELEASE, COMMAND_POSITION, command_pct=10.0),),
                         LATCH_UNLATCHED)
         self.assertIn("L1", check_plan(ZONE, _belief(41.0, LATCH_UNKNOWN), movement))
-
-    def test_r1_rejects_a_recovery_that_is_not_a_full_open(self):
-        movement = Plan(PLAN_RECOVER, (Step(STEP_MOVE_TO, 100.0),), LATCH_UNLATCHED)
-        self.assertIn("R1", check_plan(ZONE, _belief(None, LATCH_UNKNOWN), movement))
 
 
 if __name__ == "__main__":

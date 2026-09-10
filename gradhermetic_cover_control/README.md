@@ -64,7 +64,7 @@ To leave tilt mode:
 
   The rise is *commanded* two percent higher than the height it has to reach, while still being considered done as soon as the blind reports `tilt_zone_release_pct` or above. Position feedback is only good to a percent or so, so commanding exactly the release height lets a blind that stops slightly low report a successful exit it never physically performed; commanding past it makes that shortfall the application's slack instead of its risk.
 
-Whenever the latch state is instead **uncertain** — after an interrupted sequence, a restart, or a move the application did not command — a release cannot rely on a reported percentage either, so it is a full `cover.open_cover` as well (see "Position And Restart Behavior").
+Whenever the latch state is instead **uncertain** — after an interrupted sequence, a restart, or a move the application did not command — a release cannot rely on a reported percentage either, so it is a full `cover.open_cover` as well. This is also how the application re-references itself after a restart, lazily, when a move first needs it (see "Position And Restart Behavior").
 
 `tilt_zone_epsilon_pct` is the clearance margin used to cleanly cross the lower edge when engaging and the upper edge when disengaging. It must be at least one whole percent, so the rounded command the actuator receives is distinct from the edge it has to clear.
 
@@ -108,14 +108,16 @@ The dashboard step helpers share rule 3 exactly (that is how a blind without a w
 
 ## Position And Restart Behavior
 
-The application does not persist state across restarts. After Home Assistant or AppDaemon restarts, it re-establishes a known-safe state from the position reported by the underlying blind controller:
+The application does not persist state across restarts. After Home Assistant or AppDaemon restarts, it seeds its belief from the position the underlying blind controller reports — and moves nothing:
 
-- If the reported position is clearly **outside** the tilt zone, the blind cannot be latched, so the application resumes whole-blind control from that position.
-- If the reported position is **inside or near** the tilt zone, the latch state is ambiguous, so the application issues a full `cover.open_cover` (it sends the open command rather than a concrete target position) to drive fully open, then treats itself as being at `100%` with tilt mode off.
+- If the reported position is clearly **outside** the tilt zone's ambiguity band, the blind cannot be latched, so whole-height control resumes from that position.
+- If the reported position is **inside** that band, or unreadable, the latch state is ambiguous, so the latch belief starts out unknown. **The blind does not move.** The actuator is re-referenced lazily instead, by the first action that actually needs a trusted position: every descent, and every entry into tilt mode, begins with a full `cover.open_cover` — which is also the release a latch that *might* be engaged gets, since a short rise to a merely reported height cannot be trusted from an uncertain belief. `cover.open_cover` itself, and a long up press, re-reference on their own — they run the actuator against its top limit switch anyway.
 
-This upward-only recovery rule protects the Gradhermetic mechanism from accidental extra downward movement while the blind may already be in or near the tilt zone.
+Deferring the reference this way costs nothing in safety: every move that could harm the mechanism still buys it first. What it buys is that a restart — after a power cut, say — never raises the blind unprompted in the middle of the night.
 
-The same protection applies during normal operation, not just at restart. The application tracks the latch as one of three states — **latched**, **released**, or **unknown** — and only a completed entry sequence establishes "latched". It falls back to "unknown" whenever a sequence is interrupted part-way, the underlying cover becomes unavailable, or the blind moves without being told to; and it clears to "released" whenever the blind comes to rest clearly outside the `[tilt_zone_lower_pct - tilt_zone_epsilon_pct, tilt_zone_release_pct]` band, where a latched mechanism cannot be.
+One consequence is worth knowing. While the blind rests inside the band with the latch belief unknown, a wall-button short press and a dashboard step press both do nothing; that is the rule described above, not a new one — neither direction points toward a zone the blind already sits in, and there are no slats to step. Use `cover.open_cover`, `cover.close_cover`, a long press, or the tilt control to get out of that state.
+
+The latch belief works the same way during normal operation, not just at restart. The application tracks the latch as one of three states — **latched**, **released**, or **unknown** — and only a completed entry sequence establishes "latched". It falls back to "unknown" whenever a sequence is interrupted part-way, the underlying cover becomes unavailable, or the blind moves without being told to; and it clears to "released" whenever the blind comes to rest clearly outside the `[tilt_zone_lower_pct - tilt_zone_epsilon_pct, tilt_zone_release_pct]` band, where a latched mechanism cannot be.
 
 Any command that would drive the blind downward while the latch is not known to be released first drives fully open to release it, then descends. A blind that is *known* released descends straight away — closing right after leaving tilt mode, for instance, costs no detour.
 
@@ -142,13 +144,15 @@ gradhermetic_living_room:
   tilt_zone_lower_pct: 38.0
 
   # Clearance margin for crossing a zone edge cleanly. Must be at least 1.0, so the rounded command
-  # the actuator receives differs from the edge it has to clear.
+  # the actuator receives differs from the edge it has to clear. The band it defines around the zone
+  # (tilt_zone_lower_pct - tilt_zone_epsilon_pct up to tilt_zone_release_pct) must stay strictly
+  # inside 0..100: a blind resting on either end stop has to count as clearly unlatched.
   tilt_zone_epsilon_pct: 2.0
 
   # Optional. Real travel percent the blind must reach for the latch to genuinely release, measured
   # by raising the latched blind in small increments until it starts lifting as a whole instead of
   # only rotating the slats. Must be >= tilt_zone_upper_pct + tilt_zone_epsilon_pct (its default)
-  # and <= 100. It also sets the top of the ambiguity band, so set_cover_position will not stop
+  # and < 100. It also sets the top of the ambiguity band, so set_cover_position will not stop
   # anywhere between tilt_zone_lower_pct - tilt_zone_epsilon_pct and this value.
   tilt_zone_release_pct: 50.0
 

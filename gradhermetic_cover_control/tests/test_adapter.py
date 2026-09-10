@@ -24,7 +24,7 @@ from gradhermetic_cover_control.executor import (
 )
 from gradhermetic_cover_control.gradhermetic_cover_control import (
     COMMAND_EVENT,
-    RECOVERY_DELAY_SECONDS,
+    STARTUP_DELAY_SECONDS,
     GradhermeticCoverControl,
 )
 from gradhermetic_cover_control.runtime import COMMAND_RATE_LIMIT
@@ -66,7 +66,7 @@ class FakeApp(GradhermeticCoverControl):
 
     def __init__(self, args=None, state=_DEFAULT_STATE):
         """
-        Prepare an app instance; call :meth:`start` to run ``initialize`` and startup recovery.
+        Prepare an app instance; call :meth:`start` to run ``initialize`` and the startup seed.
 
         Pass ``state=None`` for a ``real_cover`` that does not exist in Home Assistant.
         """
@@ -84,12 +84,12 @@ class FakeApp(GradhermeticCoverControl):
 
     # -- Test helpers ------------------------------------------------------------------------------
 
-    def start(self, run_recovery=True):
+    def start(self, seed_startup_state=True):
         """
-        Run ``initialize`` and, unless suppressed, the delayed startup recovery.
+        Run ``initialize`` and, unless suppressed, the delayed startup state seed.
         """
         self.initialize()
-        if run_recovery:
+        if seed_startup_state:
             self.fire_timers()
         return self
 
@@ -197,7 +197,7 @@ class FakeApp(GradhermeticCoverControl):
 class TestInitialize(unittest.TestCase):
 
     def test_wires_every_listener_and_the_service(self):
-        app = FakeApp().start(run_recovery=False)
+        app = FakeApp().start(seed_startup_state=False)
         watched = [entity for entity, _ in app.state_listeners]
         self.assertIn(REAL_COVER, watched)
         self.assertIn(f"input_button.gradhermetic_{VIRTUAL_ID}_step_up", watched)
@@ -206,45 +206,50 @@ class TestInitialize(unittest.TestCase):
         self.assertEqual([COMMAND_EVENT, "knx_event"], [e for e, _ in app.event_listeners])
         self.assertEqual(["gradhermetic_cover_control/set_tilt_mode"],
                          [name for name, _ in app.registered_services])
-        self.assertEqual([RECOVERY_DELAY_SECONDS], [s for _, s in app.timers.values()])
+        self.assertEqual([STARTUP_DELAY_SECONDS], [s for _, s in app.timers.values()])
 
     def test_no_knx_listener_without_addresses(self):
         args = dict(ARGS)
         del args["knx_move_address"]
         del args["knx_step_address"]
-        app = FakeApp(args).start(run_recovery=False)
+        app = FakeApp(args).start(seed_startup_state=False)
         self.assertEqual([COMMAND_EVENT], [e for e, _ in app.event_listeners])
 
     def test_missing_real_cover_is_reported(self):
-        app = FakeApp(state=None).start(run_recovery=False)
+        app = FakeApp(state=None).start(seed_startup_state=False)
         self.assertTrue(any(level == "ERROR" and "does not exist" in message
                             for level, message in app.logs))
 
 
-class TestStartupRecovery(unittest.TestCase):
+class TestStartupSeed(unittest.TestCase):
+    """
+    Startup seeds the belief and nothing else: whatever the reported position, no blind moves.
+    """
 
     def test_outside_the_band_resumes_and_publishes(self):
         app = FakeApp(state=cover_state(80.0)).start()
         self.assertEqual([], app.calls_to("cover/open_cover"))
         self.assertEqual(80, app.published[POSITION_ENTITY]["state"])
 
-    def test_inside_the_band_recovers_upward(self):
+    def test_inside_the_band_does_not_move_the_blind(self):
         app = FakeApp(state=cover_state(41.0)).start()
-        self.assertEqual([{"entity_id": REAL_COVER}], app.calls_to("cover/open_cover"))
+        self.assertEqual([], app.service_calls)
+        self.assertTrue(app._ready)  # pylint: disable=protected-access
 
-    def test_an_unreadable_position_recovers_upward(self):
+    def test_an_unreadable_position_does_not_move_the_blind(self):
         app = FakeApp(state=cover_state(None, "unavailable")).start()
-        self.assertEqual([{"entity_id": REAL_COVER}], app.calls_to("cover/open_cover"))
+        self.assertEqual([], app.service_calls)
+        self.assertTrue(app._ready)  # pylint: disable=protected-access
 
-    def test_commands_before_recovery_are_ignored(self):
-        app = FakeApp(state=cover_state(80.0)).start(run_recovery=False)
+    def test_commands_before_the_state_is_seeded_are_ignored(self):
+        app = FakeApp(state=cover_state(80.0)).start(seed_startup_state=False)
         app.command_event(command="close")
         app.knx_event(MOVE_ADDRESS, 1)
         app.press(f"input_button.gradhermetic_{VIRTUAL_ID}_tilt")
         self.assertEqual([], app.service_calls)
 
-    def test_a_failing_recovery_disables_and_notifies(self):
-        app = FakeApp(state=cover_state(80.0)).start(run_recovery=False)
+    def test_a_failing_startup_seed_disables_and_notifies(self):
+        app = FakeApp(state=cover_state(80.0)).start(seed_startup_state=False)
         app.get_state = _raises
         app.fire_timers()
         self.assertIn("GradhermeticCoverControl error", app.notify_titles())

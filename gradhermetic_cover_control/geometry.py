@@ -111,18 +111,26 @@ class Zone:
             raise ValueError(
                 f"tilt_zone_epsilon_pct must be >= {MIN_EPSILON_PCT} so the dip and release "
                 "targets round to integers distinct from the zone edges they must clear")
-        if self.tilt_zone_lower_pct - self.tilt_zone_epsilon_pct < 0.0:
-            raise ValueError("tilt_zone_lower_pct - tilt_zone_epsilon_pct must be >= 0")
-        if self.tilt_zone_upper_pct + self.tilt_zone_epsilon_pct > 100.0:
-            raise ValueError("tilt_zone_upper_pct + tilt_zone_epsilon_pct must be <= 100")
+        # The ambiguity band must leave both travel limits outside it. A blind resting fully closed
+        # or fully open provably cannot be latched, and the app relies on that: at startup those two
+        # positions are the ones it can be surest about, and the latch belief they seed is what
+        # decides whether the next move has to re-reference the actuator first. A band reaching
+        # either limit would make the app doubt a blind that is sitting on its own end stop.
+        if self.tilt_zone_lower_pct - self.tilt_zone_epsilon_pct <= 0.0:
+            raise ValueError("tilt_zone_lower_pct - tilt_zone_epsilon_pct must be > 0 so the "
+                             "ambiguity band stops short of the fully closed position")
+        if self.tilt_zone_upper_pct + self.tilt_zone_epsilon_pct >= 100.0:
+            raise ValueError("tilt_zone_upper_pct + tilt_zone_epsilon_pct must be < 100 so the "
+                             "ambiguity band stops short of the fully open position")
         if self.tilt_zone_release_pct is not None:
             # A release below upper + epsilon would not even carry the reported position clear of
-            # the upper edge, and one above 100 is unreachable.
+            # the upper edge, and one at or above 100 would put the top limit inside the band.
             if self.tilt_zone_release_pct < self.tilt_zone_upper_pct + self.tilt_zone_epsilon_pct:
                 raise ValueError(
                     "tilt_zone_release_pct must be >= tilt_zone_upper_pct + tilt_zone_epsilon_pct")
-            if self.tilt_zone_release_pct > 100.0:
-                raise ValueError("tilt_zone_release_pct must be <= 100")
+            if self.tilt_zone_release_pct >= 100.0:
+                raise ValueError("tilt_zone_release_pct must be < 100 so the ambiguity band stops "
+                                 "short of the fully open position")
         landing = self.tilt_enter_landing_pct
         if landing is not None:
             # The landing is a slat position, so it has to be one: a real travel position inside the
@@ -245,8 +253,8 @@ class Zone:
         physically rest anywhere up to the true release height, so the band of positions from which
         "latched" cannot be ruled out reaches exactly that far. Configuring a higher
         ``tilt_zone_release_pct`` therefore widens the band with it, and everything derived from the
-        band -- :meth:`in_band`, :meth:`snap_normal_target`, startup recovery and latch-belief
-        clearing -- widens automatically.
+        band -- :meth:`in_band`, :meth:`snap_normal_target`, the startup latch belief and
+        latch-belief clearing -- widens automatically.
         """
         return self.release_target
 

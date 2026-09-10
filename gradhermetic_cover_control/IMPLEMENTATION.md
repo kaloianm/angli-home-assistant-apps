@@ -20,7 +20,7 @@ The adapter's whole vocabulary is the `Action` list the core returns: `move_to` 
 `close_full` / `stop` become real-cover service calls, `publish_position` becomes a `set_state`,
 `arm_settle_timer` / `cancel_settle_timer` become `run_in` / `cancel_timer`, and `notify` becomes a
 persistent notification. What is left in the adapter is transport only: listening and filtering,
-gating commands until startup recovery has run, decoding KNX telegrams and button presses, the
+gating commands until the startup state is seeded, decoding KNX telegrams and button presses, the
 command rate limit, and the callback `try`/`except` boundary.
 
 ## Transport: template cover, not MQTT
@@ -39,8 +39,7 @@ Step and tilt controls are exposed the same broker-free way: three name-only `in
 routes it into the logic engine (see "Virtual Cover Wiring").
 
 All decision-making stays in `logic.py`; the template and helpers contain no logic. The
-`set_cover_position` value, the open/close mapping, latching, and recovery are all decided by the
-Python app.
+`set_cover_position` value, the open/close mapping, and latching are all decided by the Python app.
 
 ## Belief
 
@@ -154,7 +153,6 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
 - **Normal-mode `set_position`** — snap the target clear of the band, then one `MoveTo`, guarded
   when it descends or the position is unknown.
 - **In-tilt moves** — a single `MoveTo` inside `[lower, upper]`.
-- **Recovery** — a single `open_full`.
 
 ```text
         enter: open fully, down to (lower - epsilon), up to upper, then to the landing
@@ -177,9 +175,10 @@ notifies; it should be unreachable, and the tests exist to prove it:
   clear of the lower edge, the latching rise to the upper edge, and an optional fourth step to any
   target *inside the zone* (the landing). It starts from the upper edge, so it can only descend to
   another slat angle — never across an edge.
-- **X1/R1** — leaving tilt and recovering are upward-only, and every release from an uncertain
-  belief is a full open rather than a rise to an unreferenced percentage. The tilt exit must also
-  reach at least `release_target` and command at least as high as it accepts.
+- **X1** — leaving tilt is upward-only and only planned from a `LATCHED` belief, so a release is
+  never a rise to an unreferenced percentage; from an uncertain belief the release is L1's full open
+  instead. The tilt exit must also reach at least `release_target` and command at least as high as
+  it accepts.
 
 N1, T1 and L1 — and `can_change_latch` with them — check both the satisfaction target and the
 commanded position of every step, since the hazard is where the blind physically travels and the two
@@ -219,10 +218,14 @@ one whole reported percent of real travel, otherwise the rounded position comman
 current position and the blind never moves. Config validation enforces `tilt_step_pct >= 1.0` so
 every step advances the actuator, and `tilt_step_pct <= upper - lower` because a step wider than the
 whole zone is not a step; `tilt_zone_epsilon_pct >= 1` likewise, so the dip and release targets round
-to integers distinct from the edges they must clear. The two optional settings are validated here
-too: `tilt_zone_release_pct` must be between `upper + epsilon` and `100` (below the clearance it
-would not even carry the reported position out of the zone), and `tilt_enter_landing_pct` must be a
-real position in `[lower, upper]`, since it is a slat position. All of it lives in `geometry.Zone`,
+to integers distinct from the edges they must clear. The band must also stop short of both travel
+limits: `lower - epsilon > 0` and `release_target < 100`. A blind resting on either end stop is one
+the app has to be able to trust as unlatched — that trust is what lets a restart at 0 or 100 resume
+whole-height control without re-referencing — so a band that reached a limit would be rejected. The
+two optional settings are validated here too: `tilt_zone_release_pct` must be at least
+`upper + epsilon` (below the clearance it would not even carry the reported position out of the zone)
+and below `100`, and `tilt_enter_landing_pct` must be a real position in `[lower, upper]`, since it
+is a slat position. All of it lives in `geometry.Zone`,
 which validates on construction — `config.py` only checks that each number is present (or, for the
 optional two, absent), numeric and in range.
 
@@ -230,8 +233,8 @@ The ambiguity band runs `[lower - epsilon, release_target]`, and `band_high` is 
 `release_target` rather than merely coinciding with it: a mechanism that is latched but has not yet
 been released can physically be resting anywhere up to the height at which it lets go, so that is
 exactly how far "latched cannot be ruled out" reaches. Everything derived from the band inherits a
-configured release height automatically — `in_band`, `snap_normal_target`, startup recovery, and the
-feedback rule that clears a latch belief.
+configured release height automatically — `in_band`, `snap_normal_target`, the latch belief seeded at
+startup, and the feedback rule that clears a latch belief.
 
 Outside tilt, a `set_cover_position` target landing strictly inside the band `(36, 46)` here is
 snapped to the nearer band edge, ties rising. Rising into the band from below silently engages the
@@ -297,18 +300,31 @@ Home Assistant service callable from HA scripts or the UI — use the event form
 
 ## Restart Behavior
 
-State is **not** persisted across restarts. `RECOVERY_DELAY_SECONDS` after startup the adapter reads
-the real cover's position and hands it to `logic.on_startup`, which seeds the belief and decides:
+State is **not** persisted across restarts. `STARTUP_DELAY_SECONDS` after startup the adapter reads
+the real cover's position and hands it to `logic.on_startup`, which seeds the belief — and emits no
+movement at all:
 
 - position clearly **outside** the band (beyond `lower - epsilon` … `release_target`): the blind
   cannot be latched, so the belief starts `UNLATCHED` and whole-height control resumes from that
   position.
 - position **inside** the band, or unknown: the latch state is ambiguous, so the belief starts
-  `UNKNOWN` and the app drives a single `cover.open_cover` — an **upward-only** recovery that
-  protects the mechanism from accidental downward movement near the tilt zone.
+  `UNKNOWN` and stays there.
 
-Commands are ignored until that has run: a command arriving in the recovery window would act on an
-unseeded belief and could clobber the recovery plan.
+An `UNKNOWN` latch belief is exactly what the planner's guards already key off, so re-referencing the
+actuator happens **lazily**, in the first plan that needs a trusted position: `_guard_descent`
+prefixes `open_full` to every descent while `may_be_latched`, and the enter sequence opens fully by
+construction (which is also what the tilt control does from an unlatched belief). `open` and a long
+up press re-reference by themselves, since they run the actuator to its limit switch. Startup
+therefore buys nothing an action would not buy for itself — and the app never raises the blind
+unprompted after a power cut.
+
+Commands are ignored until the seed has run: a command arriving before it would act on an unseeded
+belief, and every safety guard is derived from that belief.
+
+`on_real_position` publishes the virtual position on the first reading that makes an unknown position
+known again (no plan in flight, blind at rest). With no startup movement there is no plan completion
+to publish from, so a restart while Home Assistant is still booting the real cover would otherwise
+leave the position sensor stale until the next move.
 
 ## Safety Behavior
 

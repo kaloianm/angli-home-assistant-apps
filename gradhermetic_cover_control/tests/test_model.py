@@ -244,7 +244,6 @@ INTENTS = [
     ("short_down", lambda logic: logic.on_knx_short(DIRECTION_DOWN)),
     ("long_up", lambda logic: logic.on_knx_long(DIRECTION_UP)),
     ("long_down", lambda logic: logic.on_knx_long(DIRECTION_DOWN)),
-    ("recover", lambda logic: logic.on_recover()),
 ] + [(f"set_position_{value}", (lambda v: lambda logic: logic.on_set_position(float(v)))(value))
      for value in (0, 25, 37, 41, 45, 50, 75, 100)]
 
@@ -452,9 +451,9 @@ class TestAlternateGeometries(ModelTestCase):
     The same proofs on the geometries the two optional settings produce.
 
     A configured ``tilt_zone_release_pct`` widens the ambiguity band far past the zone (so band
-    snapping, startup recovery and latch-belief clearing all reach further), and a configured
-    ``tilt_enter_landing_pct`` gives the enter sequence a fourth step that is neither zone edge.
-    Both change what the planner emits, so both have to survive the same sweep.
+    snapping, the startup latch belief and latch-belief clearing all reach further), and a
+    configured ``tilt_enter_landing_pct`` gives the enter sequence a fourth step that is neither
+    zone edge. Both change what the planner emits, so both have to survive the same sweep.
     """
 
     ZONES = [
