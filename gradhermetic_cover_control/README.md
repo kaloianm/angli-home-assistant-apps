@@ -23,6 +23,13 @@ The second case exists for blinds with no wall switch: without it, the step butt
 
 The guiding principle for every control surface is **up = more light, down = less light** — applied to the whole blind's height when outside the tilt zone, and to the slat angle when inside it.
 
+The app publishes two entities of its own per blind, needing no helper declared for either:
+
+- `sensor.gradhermetic_<id>_position` — the position the virtual cover displays, which the template cover reads.
+- `binary_sensor.gradhermetic_<id>_tilt_mode` — `on` while slat control is engaged, `off` otherwise.
+
+The second exists because nothing in Home Assistant can work it out: a real position inside the tilt zone is neither necessary nor sufficient for the mechanism being latched, which is the whole reason the app event-sources a latch belief rather than deriving one from the position. Both are written together, from the same moment, so the flag always says which scale the position beside it is on — a slat angle or a height. That is what lets a dashboard show which mode a blind is in, and what a toggle control should read to label itself: `..._tilt` is a button, and a button has no state to show.
+
 ### Outside tilt mode
 
 The standard cover services target the full blind travel range:
@@ -60,9 +67,11 @@ Step 4 exists because the latching rise necessarily ends with the slats fully cl
 
 To leave tilt mode:
 
-- Move up to `tilt_zone_release_pct` — the height at which the mechanism genuinely lets go, which defaults to `tilt_zone_upper_pct + tilt_zone_epsilon_pct`. Leaving is always an upward move; the application never drives downward to disengage. This short exit is trusted because the mechanism is only ever *known* to be latched immediately after an entry sequence re-referenced the actuator, with nothing but small in-zone slat moves since.
+- Drive fully open with `cover.open_cover`. Leaving is always an upward move; the application never drives downward to disengage.
 
-  The rise is *commanded* two percent higher than the height it has to reach, while still being considered done as soon as the blind reports `tilt_zone_release_pct` or above. Position feedback is only good to a percent or so, so commanding exactly the release height lets a blind that stops slightly low report a successful exit it never physically performed; commanding past it makes that shortfall the application's slack instead of its risk.
+  Two heights are in play, and they are deliberately different. Where the blind **stops** is the top limit: leaving slat mode is a request to go back to controlling the blind as a whole, and stopping a few percent above the zone would instead park it in the ambiguity band with the slats still shut — a resting place nobody asks for. Running against the limit switch also re-references the actuator on the way, and no settling error can leave a limit switch short.
+
+  What the move has to **reach** to have done its job is still `tilt_zone_release_pct` — the height at which the mechanism genuinely lets go, defaulting to `tilt_zone_upper_pct + tilt_zone_epsilon_pct`. The exit is considered complete the moment the blind reports that height or above, because from there the latch has provably released. Accepting there rather than at `100` also means a blind that settles a percent below its own top limit still completes the exit honestly.
 
 Whenever the latch state is instead **uncertain** — after an interrupted sequence, a restart, or a move the application did not command — a release cannot rely on a reported percentage either, so it is a full `cover.open_cover` as well. This is also how the application re-references itself after a restart, lazily, when a move first needs it (see "Position And Restart Behavior").
 
@@ -72,7 +81,9 @@ Whenever the latch state is instead **uncertain** — after an interrupted seque
 
 `tilt_zone_epsilon_pct` only has to carry the *reported* position clear of the upper edge; the latch itself may need considerably more real travel before it disengages. To measure the difference: latch the blind into tilt mode, then raise it in small increments (a percent or two at a time) and watch it. While the mechanism is still latched the movement only changes the slat angle; the height at which the blind starts lifting *as a whole* is the release height. Set `tilt_zone_release_pct` to that value (rounded up).
 
-Until you have measured it, set it conservatively a few percent above the zone rather than leaving it at the default. An exit that does not physically release is the one failure the design cannot absorb: the application commits to believing the mechanism is free, so the next downward command descends straight away — on a blind that is still latched. Setting the value too *high* costs nothing but a little extra travel on the way out and a slightly wider band of heights that `cover.set_cover_position` refuses to stop at.
+Until you have measured it, set it conservatively a few percent above the zone rather than leaving it at the default. An exit that does not physically release is the one failure the design cannot absorb: the application commits to believing the mechanism is free, so the next downward command descends straight away — on a blind that is still latched. Setting the value too *high* costs nothing: the exit travels to the top limit regardless, so the only effect is a slightly wider band of heights that `cover.set_cover_position` refuses to stop at.
+
+Note that this height is no longer where leaving tilt mode *stops* — the exit runs to the top limit either way. It is what tells the application the latch has let go, and how far up the ambiguity band reaches.
 
 Entering tilt mode costs an upward trip to fully open first. That is deliberate: rising is the one direction that is always safe, and the top limit is the only position the actuator cannot be wrong about.
 
@@ -87,7 +98,7 @@ In both cases the telegram's value selects the direction (up = more light, down 
 
 ### Long press — jump to an extreme
 
-- **Long up** drives the blind fully open (`100%`). If it is currently in tilt mode, this naturally leaves tilt mode (the exit is upward anyway).
+- **Long up** drives the blind fully open (`100%`). If it is currently in tilt mode, this naturally leaves tilt mode — the exit is a full open anyway, so the two are the same move.
 - **Long down** drives the blind fully closed (`0%`). Unless the latch is known to be released, the blind first drives fully open to release it — the latch only releases upward — and then descends.
 
 ### Short press — stop, or step in the more-light / less-light direction

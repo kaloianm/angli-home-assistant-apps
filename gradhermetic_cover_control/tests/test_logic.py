@@ -8,7 +8,7 @@ from gradhermetic_cover_control.executor import (
     ACTION_MOVE_TO,
     ACTION_NOTIFY,
     ACTION_OPEN_FULL,
-    ACTION_PUBLISH_POSITION,
+    ACTION_PUBLISH_STATE,
     ACTION_STOP,
     NOTIFY_INVARIANT,
 )
@@ -17,7 +17,6 @@ from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 from gradhermetic_cover_control.planner import (
     DIRECTION_DOWN,
     DIRECTION_UP,
-    EXIT_OVERSHOOT_PCT,
     LATCH_LATCHED,
     LATCH_UNKNOWN,
     LATCH_UNLATCHED,
@@ -32,8 +31,6 @@ EPSILON = 2.0
 STEP = 1.2
 DIP = LOWER - EPSILON
 RELEASE = UPPER + EPSILON
-# The tilt exit commands past the height it needs, so this is where the blind actually stops.
-EXIT_COMMAND = RELEASE + EXIT_OVERSHOOT_PCT
 
 _MOVE_KINDS = (ACTION_MOVE_TO, ACTION_OPEN_FULL, ACTION_CLOSE_FULL)
 
@@ -66,7 +63,7 @@ def _target_of(action):
 
 
 def _published(actions):
-    return [a for a in actions if a.kind == ACTION_PUBLISH_POSITION]
+    return [a for a in actions if a.kind == ACTION_PUBLISH_STATE]
 
 
 def run_plan(logic, actions):
@@ -169,18 +166,18 @@ class TestEnterLeaveTilt(unittest.TestCase):
         run_plan(self.logic, actions)
         self.assertTrue(self.logic.in_tilt)
 
-    def test_leave_moves_above_zone(self):
+    def test_leave_drives_the_blind_fully_open(self):
         self.logic.seed_state(100.0)
         run_plan(self.logic, self.logic.on_set_tilt_mode(True))
         actions = run_plan(self.logic, self.logic.on_set_tilt_mode(False))
-        self.assertEqual(ACTION_MOVE_TO, _moves(actions)[0].kind)
-        # Commanded past the release height so a low-settling actuator still clears it.
-        self.assertAlmostEqual(EXIT_COMMAND, _moves(actions)[0].position)
+        self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
+        self.assertAlmostEqual(100.0, self.logic.last_position)
         self.assertFalse(self.logic.in_tilt)
         self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
 
     def test_leave_is_satisfied_by_the_release_height_even_if_the_blind_stops_short(self):
-        # The rise was commanded to RELEASE + 2, but reaching RELEASE is all the step needs.
+        # The blind was sent to its top limit, but clearing RELEASE is all the step needs: the
+        # mechanism has provably let go by then.
         self.logic.seed_state(100.0)
         run_plan(self.logic, self.logic.on_set_tilt_mode(True))
         actions = self.logic.on_set_tilt_mode(False)
@@ -191,27 +188,43 @@ class TestEnterLeaveTilt(unittest.TestCase):
         self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
         self.assertAlmostEqual(RELEASE, _published(actions)[-1].position)
 
-    def test_leave_accepts_an_overshoot(self):
-        self.logic.seed_state(100.0)
-        run_plan(self.logic, self.logic.on_set_tilt_mode(True))
-        actions = self.logic.on_set_tilt_mode(False)
-        self.logic.on_real_position(47.0, True)
-        actions.extend(self.logic.on_real_position(47.0, False))
-        self.assertFalse(self.logic.has_pending_plan)
-        self.assertAlmostEqual(47.0, _published(actions)[-1].position)
-
-    def test_leave_rises_to_a_configured_release_height(self):
+    def test_leave_still_accepts_a_configured_release_height(self):
         logic = GradhermeticCoverLogic(_config(tilt_zone_release_pct=55.0))
         logic.seed_state(100.0)
         run_plan(logic, logic.on_set_tilt_mode(True))
-        actions = run_plan(logic, logic.on_set_tilt_mode(False))
-        self.assertAlmostEqual(55.0 + EXIT_OVERSHOOT_PCT, _moves(actions)[0].position)
+        actions = logic.on_set_tilt_mode(False)
+        self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
+        # A blind passing the bare clearance has not yet cleared the measured release height.
+        logic.on_real_position(46.0, False)
+        self.assertTrue(logic.has_pending_plan)
+        run_plan(logic, actions)
         self.assertEqual(LATCH_UNLATCHED, logic.latch)
 
     def test_enter_is_idempotent(self):
         self.logic.seed_state(100.0)
         run_plan(self.logic, self.logic.on_set_tilt_mode(True))
         self.assertEqual([], self.logic.on_set_tilt_mode(True))
+
+    def test_the_published_state_says_which_mode_the_position_is_on(self):
+        # The flag is what a dashboard reads to show the mode, and it has to agree with the scale
+        # the position beside it was measured on.
+        self.logic.seed_state(100.0)
+        actions = run_plan(self.logic, self.logic.on_set_tilt_mode(True))
+        self.assertTrue(_published(actions)[-1].in_tilt)
+        self.assertAlmostEqual(0.0, _published(actions)[-1].position)  # virtual: slats closed
+
+        actions = run_plan(self.logic, self.logic.on_set_tilt_mode(False))
+        self.assertFalse(_published(actions)[-1].in_tilt)
+        self.assertAlmostEqual(100.0, _published(actions)[-1].position)  # real: fully open
+
+    def test_losing_the_latch_belief_publishes_the_mode_as_off(self):
+        # Slat control is offered only from a confident LATCHED belief, so an interrupted sequence
+        # that leaves the belief uncertain must not still show the blind as being in slat mode.
+        self.logic.seed_state(100.0)
+        run_plan(self.logic, self.logic.on_set_tilt_mode(True))
+        actions = self.logic.on_real_position(80.0, False)  # external motion clear of the band
+        self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
+        self.assertFalse(_published(actions)[-1].in_tilt)
 
     def test_leave_without_a_latch_belief_is_a_noop(self):
         self.logic.seed_state(41.0)
@@ -320,7 +333,8 @@ class TestInsideTilt(unittest.TestCase):
     def test_step_up_at_open_edge_leaves_tilt(self):
         run_plan(self.logic, self.logic.on_open())  # virtual 100 / real LOWER.
         actions = run_plan(self.logic, self.logic.on_knx_short(DIRECTION_UP))
-        self.assertAlmostEqual(EXIT_COMMAND, _target_of(_moves(actions)[0]))
+        self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
+        self.assertAlmostEqual(100.0, self.logic.last_position)
         self.assertFalse(self.logic.in_tilt)
 
 
@@ -565,7 +579,7 @@ class TestStartupAndMisc(unittest.TestCase):
         # until a plan completed, and startup no longer runs one.
         self.logic.on_startup(None)
         actions = self.logic.on_real_position(60.0, False)
-        self.assertEqual([ACTION_PUBLISH_POSITION], _kinds(actions))
+        self.assertEqual([ACTION_PUBLISH_STATE], _kinds(actions))
         self.assertAlmostEqual(60.0, actions[0].position)
         self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
 
@@ -577,7 +591,7 @@ class TestStartupAndMisc(unittest.TestCase):
         self.logic.seed_state(60.0)
         self.logic.on_real_position(60.0, True)  # moving (e.g. manual drive)
         actions = self.logic.on_real_position(55.0, False)  # came to rest, no plan
-        self.assertEqual([ACTION_PUBLISH_POSITION], _kinds(actions))
+        self.assertEqual([ACTION_PUBLISH_STATE], _kinds(actions))
         self.assertAlmostEqual(55.0, actions[0].position)
 
     def test_disabled_logic_ignores_events(self):
@@ -763,7 +777,7 @@ class TestSettleTimer(unittest.TestCase):
     def test_the_timer_can_complete_a_plan_the_actuator_never_reported(self):
         self.logic.on_close()
         actions = self.logic.on_settle_timer(0.0, False)
-        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_PUBLISH_POSITION], _kinds(actions))
+        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_PUBLISH_STATE], _kinds(actions))
         self.assertFalse(self.logic.has_pending_plan)
 
 
@@ -787,13 +801,14 @@ class TestConfirmedBugRegressions(unittest.TestCase):
         self.logic = GradhermeticCoverLogic(_config())
 
     def test_close_after_leaving_tilt_starts_immediately(self):
-        # B1: resting at the release target (inside the ambiguity band) but known unlatched, the
-        # descent is the very first command -- no no-op waypoint that stalls until the fallback
-        # timer, and no full-open detour either.
+        # B1: known unlatched, the descent is the very first command -- no no-op waypoint that
+        # stalls until the fallback timer, and no full-open detour either. (The exit now ends at
+        # the top limit rather than inside the band; the band-interior case the bug was found in is
+        # covered by the planner, which can be handed that belief directly.)
         self.logic.seed_state(100.0)
         run_plan(self.logic, self.logic.on_set_tilt_mode(True))
         run_plan(self.logic, self.logic.on_set_tilt_mode(False))
-        self.assertAlmostEqual(EXIT_COMMAND, self.logic.last_position)
+        self.assertAlmostEqual(100.0, self.logic.last_position)
         self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
 
         actions = self.logic.on_close()
@@ -831,7 +846,7 @@ class TestConfirmedBugRegressions(unittest.TestCase):
         self.logic.seed_state(80.0)
         actions = run_plan(self.logic, self.logic.on_close())
         self.assertEqual(ACTION_CANCEL_SETTLE_TIMER, _kinds(actions)[-2])
-        self.assertEqual(ACTION_PUBLISH_POSITION, _kinds(actions)[-1])
+        self.assertEqual(ACTION_PUBLISH_STATE, _kinds(actions)[-1])
         self.assertEqual(1, _kinds(actions).count(ACTION_CANCEL_SETTLE_TIMER))
 
 

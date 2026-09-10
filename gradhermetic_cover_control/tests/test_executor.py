@@ -7,7 +7,7 @@ from gradhermetic_cover_control.executor import (
     ACTION_MOVE_TO,
     ACTION_NOTIFY,
     ACTION_OPEN_FULL,
-    ACTION_PUBLISH_POSITION,
+    ACTION_PUBLISH_STATE,
     ACTION_STOP,
     DEVIATION_TOLERANCE_PCT,
     NOTIFY_STALL,
@@ -87,7 +87,7 @@ class TestActivation(unittest.TestCase):
     def test_a_wholly_satisfied_plan_completes_at_once(self):
         outcome = self.executor.start(_move_plan(50.0), 50.0, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
-        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_PUBLISH_POSITION], _kinds(outcome))
+        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_PUBLISH_STATE], _kinds(outcome))
         self.assertFalse(self.executor.has_plan)
 
     def test_rounding_decides_satisfaction(self):
@@ -130,7 +130,7 @@ class TestArrival(unittest.TestCase):
         self.executor.on_feedback(36.0, False)
         outcome = self.executor.on_feedback(UPPER, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
-        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_PUBLISH_POSITION], _kinds(outcome))
+        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_PUBLISH_STATE], _kinds(outcome))
         self.assertFalse(self.executor.has_plan)
 
     def test_feedback_without_a_plan_is_idle(self):
@@ -148,11 +148,11 @@ class TestRiseToAtLeast(unittest.TestCase):
         self.executor = Executor(ZONE)
         self.plan = Plan("leave", (Step(STEP_RISE_TO_AT_LEAST, 46.0),), LATCH_UNLATCHED)
 
-    def test_overshoot_satisfies_the_step(self):
+    def test_resting_past_the_target_satisfies_the_step(self):
         self.executor.start(self.plan, UPPER, False)
         outcome = self.executor.on_feedback(47.0, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
-        self.assertAlmostEqual(47.0, _of(outcome, ACTION_PUBLISH_POSITION)[0].position)
+        self.assertAlmostEqual(47.0, _of(outcome, ACTION_PUBLISH_STATE)[0].position)
 
     def test_short_of_the_target_does_not(self):
         self.executor.start(self.plan, UPPER, False)
@@ -182,7 +182,7 @@ class TestCommandDistinctFromTarget(unittest.TestCase):
         self.executor.start(self.plan, UPPER, False)
         outcome = self.executor.on_feedback(46.0, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
-        self.assertAlmostEqual(46.0, _of(outcome, ACTION_PUBLISH_POSITION)[0].position)
+        self.assertAlmostEqual(46.0, _of(outcome, ACTION_PUBLISH_STATE)[0].position)
 
     def test_short_of_the_target_still_does_not_arrive(self):
         self.executor.start(self.plan, UPPER, False)
@@ -225,13 +225,13 @@ class TestPublishedPosition(unittest.TestCase):
     def test_normal_plans_publish_the_real_position(self):
         executor = Executor(ZONE)
         outcome = executor.start(_move_plan(30.0), 30.0, False)
-        self.assertAlmostEqual(30.0, _of(outcome, ACTION_PUBLISH_POSITION)[0].position)
+        self.assertAlmostEqual(30.0, _of(outcome, ACTION_PUBLISH_STATE)[0].position)
 
     def test_slat_plans_publish_the_inverted_zone_mapping(self):
         executor = Executor(ZONE)
         movement = Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, 41.0),), LATCH_LATCHED)
         outcome = executor.start(movement, 41.0, False)
-        self.assertAlmostEqual(50.0, _of(outcome, ACTION_PUBLISH_POSITION)[0].position)
+        self.assertAlmostEqual(50.0, _of(outcome, ACTION_PUBLISH_STATE)[0].position)
 
     def test_published_value_follows_the_blind_not_the_setpoint(self):
         # A slat step commanded 42.8 -> 43; the honest virtual position is the one for 43.
@@ -240,7 +240,7 @@ class TestPublishedPosition(unittest.TestCase):
         executor.start(movement, UPPER, False)
         outcome = executor.on_feedback(43.0, False)
         self.assertAlmostEqual(ZONE.real_to_virtual(43.0),
-                               _of(outcome, ACTION_PUBLISH_POSITION)[0].position)
+                               _of(outcome, ACTION_PUBLISH_STATE)[0].position)
 
 
 class TestSettleTimer(unittest.TestCase):
@@ -263,7 +263,7 @@ class TestSettleTimer(unittest.TestCase):
         # Covers an actuator that reported no intermediate states at all.
         outcome = self.executor.on_timer(0.0, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
-        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_PUBLISH_POSITION], _kinds(outcome))
+        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_PUBLISH_STATE], _kinds(outcome))
 
     def test_settled_within_the_deviation_tolerance_is_accepted(self):
         logged = []

@@ -24,7 +24,7 @@ from gradhermetic_cover_control.executor import (
     ACTION_MOVE_TO,
     ACTION_NOTIFY,
     ACTION_OPEN_FULL,
-    ACTION_PUBLISH_POSITION,
+    ACTION_PUBLISH_STATE,
     ACTION_STOP,
     virtual_position,
 )
@@ -33,7 +33,6 @@ from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 from gradhermetic_cover_control.planner import (
     DIRECTION_DOWN,
     DIRECTION_UP,
-    EXIT_OVERSHOOT_PCT,
     LATCH_UNLATCHED,
 )
 from gradhermetic_cover_control.tests.simulator import BlindSimulator, Quirks
@@ -160,7 +159,7 @@ class Harness:
             elif action.kind == ACTION_STOP:
                 self.commands += 1
                 self.sim.stop_cover()
-            elif action.kind == ACTION_PUBLISH_POSITION:
+            elif action.kind == ACTION_PUBLISH_STATE:
                 self.published.append(action.position)
             elif action.kind == ACTION_ARM_SETTLE_TIMER:
                 self.timer_armed = True
@@ -381,9 +380,26 @@ class TestInterruptions(ModelTestCase):
                         harness.published = []
                         interrupt(harness)
                         harness.run()
+                        self._settle_out(harness)
                         self.assert_no_violation(harness)
                         self.assert_belief_is_sound(harness)
                         self.assert_at_rest(harness)
+
+    @staticmethod
+    def _settle_out(harness):
+        """
+        Give the plan the one fallback the design provides, if it is waiting on the settle timer.
+
+        A replacement plan is commanded while the blind is still travelling -- deliberately, since a
+        blind passing through a position is not resting on it -- and an actuator commanded to the
+        position it is passing through is already on its setpoint: it stops and reports nothing,
+        because nothing changed. That is precisely the "reported no intermediate states, or none at
+        all" case the settle timer exists for, so the sequence comes to rest one timer firing later
+        rather than never. It costs the fallback timeout and nothing else: no violation, no stall,
+        and the belief stays sound throughout.
+        """
+        if harness.logic.has_pending_plan:
+            harness.fire_timer()
 
     def test_an_interrupted_sequence_recovers_to_a_known_state(self):
         # After a restart the app must end up believing exactly what the blind is doing.
@@ -491,7 +507,7 @@ class TestAlternateGeometries(ModelTestCase):
                 self.assertAlmostEqual(to_command(zone.enter_landing_real), harness.sim.reported)
                 self.assert_nominal(harness)
 
-    def test_leaving_tilt_physically_clears_the_release_height(self):
+    def test_leaving_tilt_drives_fully_open_and_clears_the_release_height(self):
         for label, zone in self.ZONES:
             with self.subTest(zone=label):
                 harness = fresh(80.0, zone=zone)
@@ -501,6 +517,7 @@ class TestAlternateGeometries(ModelTestCase):
                 harness.run(harness.logic.on_set_tilt_mode(False))
                 self.assertFalse(harness.sim.latched)
                 self.assertGreaterEqual(harness.sim.physical, zone.release_target)
+                self.assertEqual(100.0, harness.sim.physical)
                 self.assertEqual(LATCH_UNLATCHED, harness.logic.latch)
                 self.assert_nominal(harness)
 
@@ -585,7 +602,7 @@ class TestCalibrationDrift(ModelTestCase):
     """Why every latch sequence starts from the top limit."""
 
     # Small enough that the error accruing over one entry plus a handful of slat steps stays well
-    # inside the epsilon margin -- the condition the cheap tilt exit assumes.
+    # inside the epsilon margin -- the condition in-zone slat positioning assumes.
     DRIFT = Quirks(drift_per_move=0.1)
 
     def test_entry_lands_correctly_however_much_error_preceded_it(self):
@@ -622,10 +639,11 @@ class TestCalibrationDrift(ModelTestCase):
         self.assertEqual(0, harness.sim.reported)
         self.assert_nominal(harness)
 
-    def test_commanding_exactly_the_release_target_can_stop_short_of_releasing(self):
-        # The field failure the exit overshoot exists for: the actuator reports the setpoint it was
-        # given, so a percent of error leaves the blind physically below the release height while
-        # the feedback says it arrived. Commanding higher turns that shortfall into slack.
+    def test_a_position_command_can_stop_short_of_releasing(self):
+        # The field failure the exit avoids by driving to the limit switch instead: the actuator
+        # reports the setpoint it was given, so a percent of error leaves the blind physically below
+        # the release height while the feedback says it arrived. No position command is immune --
+        # only one referenced against the top limit is.
         sim = BlindSimulator(ZONE, position=UPPER, latched=True)
         sim.drift = 1.0
         sim.set_position(to_command(RELEASE))
@@ -633,9 +651,10 @@ class TestCalibrationDrift(ModelTestCase):
         self.assertTrue(sim.latched, "the bare release command released a blind it should not have")
         self.assertEqual(to_command(RELEASE), sim.reported)
 
-        sim.set_position(to_command(RELEASE + EXIT_OVERSHOOT_PCT))
+        sim.open_cover()
         _run_out(sim)
         self.assertFalse(sim.latched)
+        self.assertEqual(0.0, sim.drift)
         self.assertEqual([], sim.violations)
 
     def test_the_exit_releases_despite_an_actuator_that_settles_low(self):

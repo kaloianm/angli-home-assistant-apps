@@ -32,7 +32,9 @@ small template cover (defined in the HA config) does two things and nothing else
   `gradhermetic_command` event that this app listens for.
 - Its `position_template` reads `sensor.gradhermetic_<virtual_id>_position`, which the app publishes
   itself via `set_state` when a movement plan completes. No `input_number` helper is involved — the
-  app owns the sensor.
+  app owns the sensor. Beside it the app publishes
+  `binary_sensor.gradhermetic_<virtual_id>_tilt_mode`, `on` exactly while slat control is engaged;
+  the template cover does not read it, but a dashboard does.
 
 Step and tilt controls are exposed the same broker-free way: three name-only `input_button` helpers
 (`..._step_up`, `..._step_down`, `..._tilt`) that carry no logic. The app listens for each press and
@@ -84,7 +86,8 @@ test:
   `close_full` variants send `cover.open_cover` / `cover.close_cover` rather than a position, so the
   actuator drives against its own limit switch.
 - `RiseToAtLeast(target)` — satisfied when `round(position) >= round(target)`. Used only for the
-  tilt exit, where anything above the release target is equally good.
+  tilt exit, which travels to the top limit but has done its job as soon as it is clear of the
+  release target.
 
 A step's `target` is its *satisfaction* threshold. An optional `command_pct` names a different
 position to actually send, defaulting to the target; only the tilt exit uses it (see "Canonical
@@ -134,18 +137,25 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
   closed edge / virtual 0, from below → open edge / virtual 100) — the press already says which end
   the user was reaching for. The fourth step is dropped when its landing rounds to the same integer
   command as the upper edge, because a command that repeats the current setpoint moves nothing.
-- **Leave tilt** — `RiseToAtLeast(release_target)` commanded at `min(100, release_target + 2)`,
-  available only from a confident `LATCHED` belief. `release_target` is `tilt_zone_release_pct`, or
-  `upper + epsilon` when that is not configured.
+- **Leave tilt** — `RiseToAtLeast(release_target)` carried by `open_full`, available only from a
+  confident `LATCHED` belief. `release_target` is `tilt_zone_release_pct`, or `upper + epsilon` when
+  that is not configured.
 
-  The overshoot is the whole point of the step carrying a command distinct from its target. `epsilon`
-  is sized to carry the *reported* position clear of the upper edge, which says nothing about how far
-  the mechanism has to travel to disengage; and commanding exactly the acceptance threshold means an
-  actuator settling a percent low satisfies `>=` on a rise that physically fell short, leaving the
-  app confidently — and wrongly — believing it is released. `planner.EXIT_OVERSHOOT_PCT` is
-  deliberately equal to `executor.DEVIATION_TOLERANCE_PCT`, so any settling the executor would
-  forgive a `MoveTo` for still satisfies this step on its own; the constant is duplicated rather
-  than imported because the planner must not depend on the executor.
+  This is the step that most needs its command distinct from its target, and now they are as far
+  apart as they can be: it *travels* to the top limit and is *satisfied* at the release height.
+
+  Going all the way up is both what the user means and what is safest. Leaving slat mode is a
+  request to control the blind as a whole again, and stopping a few percent above the zone parks it
+  in the ambiguity band with the slats still shut. It also removes the failure a short rise had:
+  `epsilon` is sized to carry the *reported* position clear of the upper edge, which says nothing
+  about how far the mechanism must travel to disengage, and an actuator settling a percent low can
+  satisfy `>=` on a rise that physically fell short — leaving the app confidently, and wrongly,
+  believing it is released. A limit switch cannot be settled short of.
+
+  Accepting at `release_target` rather than at `100` is what keeps the step honest in the other
+  direction: the mechanism has provably let go by that height, so a blind that comes to rest a
+  percent below its own top limit still completes the plan without appeal to the executor's
+  deviation tolerance, which does not forgive rise steps at all.
 - **Guarded descent** (close, long-down, a descending `set_position`) — when `may_be_latched`,
   prefix `open_full`: an uncertain latch belief also means an uncertain calibration, so a short rise
   to a merely *reported* release height cannot be trusted. When the latch is known released,
@@ -158,7 +168,7 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
         enter: open fully, down to (lower - epsilon), up to upper, then to the landing
    NORMAL  ───────────────────────────────────────────────────────────►  TILT
  (height control)                                                  (slat control, latched)
-      ▲                  leave: up to release_target (commanded +2)          │
+      ▲            leave: open fully (satisfied once past release_target)     │
       └───────────────────────────────────────────────────────────────────────┘
                           (disengage is always upward)
 ```
@@ -175,10 +185,10 @@ notifies; it should be unreachable, and the tests exist to prove it:
   clear of the lower edge, the latching rise to the upper edge, and an optional fourth step to any
   target *inside the zone* (the landing). It starts from the upper edge, so it can only descend to
   another slat angle — never across an edge.
-- **X1** — leaving tilt is upward-only and only planned from a `LATCHED` belief, so a release is
-  never a rise to an unreferenced percentage; from an uncertain belief the release is L1's full open
-  instead. The tilt exit must also reach at least `release_target` and command at least as high as
-  it accepts.
+- **X1** — leaving tilt is a single upward step, only planned from a `LATCHED` belief; from an
+  uncertain belief the release is L1's full open instead. It must accept no lower than
+  `release_target`, and must be carried by the `open` *command*, since only a move referenced
+  against the top limit switch is immune to the calibration error a release cannot afford.
 
 N1, T1 and L1 — and `can_change_latch` with them — check both the satisfaction target and the
 commanded position of every step, since the hazard is where the blind physically travels and the two
@@ -209,8 +219,8 @@ With `upper = 44`, `lower = 38`, `epsilon = 2`:
 - entering dips to `lower - epsilon = 36`, then rises to `44` to latch, then moves to
   `tilt_enter_landing_pct` if that is not `44` as well (it is already a real position, so no
   conversion is involved in the move itself).
-- leaving rises to `release_target` — `upper + epsilon = 46` unless `tilt_zone_release_pct` says
-  otherwise — commanded two percent higher than that.
+- leaving drives fully open, and is satisfied on the way once the blind reports `release_target` —
+  `upper + epsilon = 46` unless `tilt_zone_release_pct` says otherwise.
 
 Because the zone is narrow (6% here) and KNX actuators report integer positions, the zone holds only
 about `span + 1` distinct slat positions (~7 for a 6% zone). A slat step must therefore be at least
@@ -242,7 +252,8 @@ latch, so a whole-blind move that aimed there would leave belief and reality div
 costs a couple of percent of travel and makes "normal mode never targets the band interior" an
 invariant (N1) instead of a hazard. Raising `tilt_zone_release_pct` raises `band_high` with it, so
 the snap grows to cover every height at which the blind might still be latched — that widening is
-the deliberate price of an exit that actually releases.
+the deliberate price of knowing when the mechanism has actually released. It is the only cost of
+setting the value high, since the exit travels to the top limit either way.
 
 ## KNX Wall-Button Handling
 
@@ -267,8 +278,19 @@ Two dedicated group addresses drive the app as `knx_event`s (telegram value `0 =
 
 Commands reach the app as a `gradhermetic_command` event carrying `virtual_id` and `command`
 (`open` / `close` / `stop` / `set_position` with `position`, or `set_tilt_mode` with `enabled`). The
-app filters by `virtual_id` and routes each to the logic engine. Position is reflected back with
-`set_state` on `sensor.gradhermetic_<virtual_id>_position`, which the template cover displays.
+app filters by `virtual_id` and routes each to the logic engine. State is reflected back with
+`set_state` on `sensor.gradhermetic_<virtual_id>_position`, which the template cover displays, and on
+`binary_sensor.gradhermetic_<virtual_id>_tilt_mode`.
+
+Both are written from one `PublishState` action, never separately. The position is on the inverted
+virtual slat scale while latched and on the real height scale otherwise, so a reader that saw the two
+disagree — even briefly — would be reading a slat angle as a height. Carrying them on one action
+makes that impossible by construction. The flag is also the only honest source for the mode: a real
+position inside the tilt zone is neither necessary nor sufficient for being latched, which is why the
+app event-sources a latch belief in the first place, so nothing on the HA side can derive it.
+
+`..._tilt` is an `input_button`: a press is a moment, not a state. A UI toggle that wants to show
+which mode the blind is in therefore reads the binary sensor, not the button.
 
 Step and tilt reach the app as `input_button` presses. The app watches
 `input_button.gradhermetic_<virtual_id>_step_up` / `_step_down` and routes each to `on_slat_step`
@@ -321,10 +343,16 @@ unprompted after a power cut.
 Commands are ignored until the seed has run: a command arriving before it would act on an unseeded
 belief, and every safety guard is derived from that belief.
 
-`on_real_position` publishes the virtual position on the first reading that makes an unknown position
-known again (no plan in flight, blind at rest). With no startup movement there is no plan completion
-to publish from, so a restart while Home Assistant is still booting the real cover would otherwise
-leave the position sensor stale until the next move.
+`on_real_position` publishes on the first reading that makes an unknown position known again (no plan
+in flight, blind at rest). With no startup movement there is no plan completion to publish from, so a
+restart while Home Assistant is still booting the real cover would otherwise leave the published
+state stale until the next move.
+
+It publishes again whenever feedback alone changes the latch belief while the blind is at rest. That
+belief decides what the very same number *means* — a slat angle in one mode, a height in the other —
+so a controller that reports positions without ever reporting motion (leaving the "external motion
+ended" branch unreached) would otherwise leave the app advertising a mode it has already stopped
+believing in. That is precisely when a dashboard has to stop offering slat control.
 
 ## Safety Behavior
 
@@ -355,8 +383,9 @@ position are all logged and ignored.
 ## Home Assistant Wiring
 
 No broker or add-on is required — everything runs through the AppDaemon HASS plugin already in use.
-Three pieces live in the private HA config repo. The position sensor
-(`sensor.gradhermetic_<id>_position`) needs no helper — the app publishes it.
+Three pieces live in the private HA config repo. The two entities the app owns
+(`sensor.gradhermetic_<id>_position` and `binary_sensor.gradhermetic_<id>_tilt_mode`) need no helper
+declared — the app publishes both.
 
 ### 1. Step/tilt trigger helpers (`input_buttons.yaml`)
 
@@ -370,9 +399,13 @@ gradhermetic_living_room_step_down:
   name: Living Room Blind Step Down
   icon: mdi:chevron-down
 gradhermetic_living_room_tilt:
-  name: Living Room Blind Tilt
-  icon: mdi:angle-acute
+  name: Living Room Blind Slat Mode
+  icon: mdi:blinds-horizontal
 ```
+
+The tilt helper's icon is fixed, like any button's. A dashboard control that should show the current
+mode binds its icon, colour and label to `binary_sensor.gradhermetic_living_room_tilt_mode` and
+presses this button on tap.
 
 ### 2. Template cover (a dumb forwarder, no logic)
 
@@ -477,8 +510,8 @@ No AppDaemon installation is required, and the whole suite runs in well under a 
 latch semantics consistent with the hardware: any upward crossing of the lower edge from below
 engages the latch, only a rise that actually reaches `release_target` releases it, and downward
 travel never changes it. Releasing is modelled as strictly harder than latching — clearing the
-reported upper edge is explicitly *not* enough — which is what makes the exit overshoot and
-`tilt_zone_release_pct` load-bearing rather than decorative. Plans correct under this model are
+reported upper edge is explicitly *not* enough — which is what makes `tilt_zone_release_pct`
+load-bearing rather than decorative. Plans correct under this model are
 correct under milder ones, since none of them relies on a crossing *not* latching. It records a
 **violation** whenever it is commanded to travel below the lower edge while latched, and it can be
 configured with the feedback quirks real controllers exhibit — duplicate settled reports, no motion
@@ -496,6 +529,7 @@ sweep under each feedback quirk. It then repeats the position, slat-position, qu
 interrupted-entry sweeps on the geometries the two optional settings produce — a release height far
 above the zone (so the ambiguity band is much wider than the zone) and an entry landing that is
 neither zone edge — and asserts that each entry lands on the configured slat angle and each exit
-physically clears the release height. The drift tests demonstrate why every latch sequence starts
-from the top limit, pin the bound the cheap tilt exit depends on, and show the exit failing to
-release when it is commanded at exactly its acceptance threshold.
+both physically clears the release height and finishes at the top limit. The drift tests demonstrate
+why every latch sequence starts from the top limit, pin the bound the tilt exit's acceptance
+threshold depends on, and show a *position*-commanded release failing on a drifted actuator — the
+failure the exit avoids by driving against the limit switch instead.

@@ -6,7 +6,6 @@ from gradhermetic_cover_control.planner import (
     COMMAND_OPEN,
     COMMAND_POSITION,
     DIRECTION_DOWN,
-    EXIT_OVERSHOOT_PCT,
     DIRECTION_UP,
     INTENT_CLOSE,
     INTENT_ENTER_TILT,
@@ -77,6 +76,12 @@ def _commands(movement):
     return [step.command for step in movement.steps]
 
 
+def _leave_plan(target, command=COMMAND_POSITION, command_pct=None):
+    """A hand-built exit plan, for the X1 checks that need shapes the planner will not produce."""
+    step = Step(STEP_RISE_TO_AT_LEAST, target, command, command_pct=command_pct)
+    return Plan(PLAN_LEAVE, (step,), LATCH_UNLATCHED)
+
+
 class TestEnterTilt(unittest.TestCase):
     """One canonical sequence from any start: full open, dip, latching rise."""
 
@@ -136,37 +141,29 @@ class TestEnterTilt(unittest.TestCase):
 
 class TestLeaveTilt(unittest.TestCase):
 
-    def test_latched_uses_the_cheap_upward_exit(self):
+    def test_latched_leaves_by_driving_fully_open(self):
         movement = plan(ZONE, _belief(UPPER, LATCH_LATCHED), Intent(INTENT_LEAVE_TILT))
         self.assertEqual(PLAN_LEAVE, movement.kind)
-        self.assertEqual([RELEASE], _targets(movement))
-        self.assertEqual([COMMAND_POSITION], _commands(movement))
+        self.assertEqual([COMMAND_OPEN], _commands(movement))
+        self.assertEqual([100.0], _commanded(movement))
         self.assertEqual(STEP_RISE_TO_AT_LEAST, movement.steps[0].kind)
         self.assertEqual(LATCH_UNLATCHED, movement.final_latch)
 
-    def test_the_exit_commands_higher_than_it_accepts(self):
-        # An actuator that settles a percent low must still end up at or above the release height,
-        # so the command aims past the threshold that satisfies the step.
+    def test_the_exit_is_satisfied_at_the_release_height_it_travels_past(self):
+        # The blind runs to the top limit, but the step has done its job the moment the reported
+        # position clears the height at which the mechanism lets go.
         movement = plan(ZONE, _belief(UPPER, LATCH_LATCHED), Intent(INTENT_LEAVE_TILT))
-        self.assertEqual([RELEASE + EXIT_OVERSHOOT_PCT], _commanded(movement))
+        self.assertEqual([RELEASE], _targets(movement))
         self.assertGreater(movement.steps[0].command_position, movement.steps[0].target)
         self.assertTrue(movement.steps[0].satisfied_by(RELEASE))
+        self.assertTrue(movement.steps[0].satisfied_by(100.0))
         self.assertFalse(movement.steps[0].satisfied_by(RELEASE - 1.0))
 
-    def test_the_exit_rises_to_a_configured_release_height(self):
+    def test_the_exit_accepts_no_lower_than_a_configured_release_height(self):
         movement = plan(CUSTOM_ZONE, _belief(UPPER, LATCH_LATCHED), Intent(INTENT_LEAVE_TILT))
         self.assertEqual([CUSTOM_RELEASE], _targets(movement))
-        self.assertEqual([CUSTOM_RELEASE + EXIT_OVERSHOOT_PCT], _commanded(movement))
-
-    def test_the_overshoot_cannot_exceed_full_travel(self):
-        # The highest release the geometry allows still leaves the band short of the top limit, but
-        # release + overshoot would pass it; the command is clamped to full travel.
-        zone = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
-                    tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
-                    tilt_zone_release_pct=99.0)
-        movement = plan(zone, _belief(UPPER, LATCH_LATCHED), Intent(INTENT_LEAVE_TILT))
-        self.assertEqual([99.0], _targets(movement))
         self.assertEqual([100.0], _commanded(movement))
+        self.assertFalse(movement.steps[0].satisfied_by(CUSTOM_RELEASE - 1.0))
 
     def test_uncertain_belief_has_nothing_to_leave(self):
         for latch in (LATCH_UNLATCHED, LATCH_UNKNOWN):
@@ -495,32 +492,39 @@ class TestInvariantRejections(unittest.TestCase):
         ), LATCH_LATCHED)
         self.assertIn("E1", check_plan(ZONE, _belief(80.0, LATCH_UNLATCHED), movement))
 
-    def test_x1_rejects_the_cheap_exit_from_an_uncertain_belief(self):
-        movement = Plan(PLAN_LEAVE, (Step(STEP_RISE_TO_AT_LEAST, RELEASE),), LATCH_UNLATCHED)
+    def test_x1_rejects_the_exit_from_an_uncertain_belief(self):
+        movement = _leave_plan(RELEASE)
         self.assertIn("X1", check_plan(ZONE, _belief(41.0, LATCH_UNKNOWN), movement))
 
     def test_x1_rejects_an_exit_that_does_not_clear_the_upper_edge(self):
-        movement = Plan(PLAN_LEAVE, (Step(STEP_RISE_TO_AT_LEAST, UPPER),), LATCH_UNLATCHED)
+        movement = _leave_plan(UPPER)
         self.assertIn("X1", check_plan(ZONE, _belief(UPPER, LATCH_LATCHED), movement))
 
     def test_x1_rejects_an_exit_short_of_a_configured_release_height(self):
         # The bare clearance is no longer enough once the true release height has been measured.
-        movement = Plan(PLAN_LEAVE, (Step(STEP_RISE_TO_AT_LEAST, RELEASE),), LATCH_UNLATCHED)
+        movement = _leave_plan(RELEASE)
         self.assertIn("X1", check_plan(CUSTOM_ZONE, _belief(UPPER, LATCH_LATCHED), movement))
 
-    def test_x1_rejects_an_exit_commanding_less_than_it_accepts(self):
-        # Commanding below the acceptance threshold lets feedback tolerance leave the rise short.
+    def test_x1_rejects_an_exit_that_stops_below_full_travel(self):
+        # Parking in the band leaves the slats shut and makes the release depend on the actuator's
+        # settling accuracy rather than on its top limit switch.
         movement = Plan(PLAN_LEAVE,
                         (Step(STEP_RISE_TO_AT_LEAST, RELEASE, COMMAND_POSITION,
-                              command_pct=RELEASE - 1.0),), LATCH_UNLATCHED)
+                              command_pct=RELEASE + 2.0),), LATCH_UNLATCHED)
         violation = check_plan(ZONE, _belief(UPPER, LATCH_LATCHED), movement)
         self.assertIn("X1", violation)
-        self.assertIn("acceptance", violation)
+        self.assertIn("fully open", violation)
 
-    def test_x1_allows_an_exit_commanding_exactly_its_target(self):
+    def test_x1_rejects_an_exit_that_reaches_full_travel_by_position(self):
+        # The open *command* is what runs the actuator against its limit switch; a position command
+        # of 100 is still referenced against whatever the actuator believes its travel to be.
         movement = Plan(PLAN_LEAVE,
                         (Step(STEP_RISE_TO_AT_LEAST, RELEASE, COMMAND_POSITION,
-                              command_pct=RELEASE),), LATCH_UNLATCHED)
+                              command_pct=100.0),), LATCH_UNLATCHED)
+        self.assertIn("X1", check_plan(ZONE, _belief(UPPER, LATCH_LATCHED), movement))
+
+    def test_x1_allows_the_exit_the_planner_builds(self):
+        movement = _leave_plan(RELEASE, command=COMMAND_OPEN, command_pct=100.0)
         self.assertIsNone(check_plan(ZONE, _belief(UPPER, LATCH_LATCHED), movement))
 
     def test_n1_rejects_a_commanded_position_inside_the_band(self):

@@ -43,7 +43,10 @@ ACTION_MOVE_TO = "move_to"
 ACTION_OPEN_FULL = "open_full"
 ACTION_CLOSE_FULL = "close_full"
 ACTION_STOP = "stop"
-ACTION_PUBLISH_POSITION = "publish_position"
+# Publish what the virtual cover shows: its position, and whether that position is a slat angle
+# rather than a height. The two always travel together -- a position on the inverted slat scale read
+# as a height is simply wrong -- so one action carries both.
+ACTION_PUBLISH_STATE = "publish_state"
 ACTION_ARM_SETTLE_TIMER = "arm_settle_timer"
 ACTION_CANCEL_SETTLE_TIMER = "cancel_settle_timer"
 ACTION_NOTIFY = "notify"
@@ -80,6 +83,7 @@ class Action:
 
     kind: str
     position: Optional[float] = None
+    in_tilt: Optional[bool] = None
     seconds: Optional[float] = None
     notify_kind: Optional[str] = None
     message: Optional[str] = None
@@ -236,8 +240,9 @@ class Executor:
         actions = [Action(ACTION_CANCEL_SETTLE_TIMER)]
         if position is not None:
             actions.append(
-                Action(ACTION_PUBLISH_POSITION,
-                       position=virtual_position(self._zone, movement.final_latch, position)))
+                Action(ACTION_PUBLISH_STATE,
+                       position=virtual_position(self._zone, movement.final_latch, position),
+                       in_tilt=movement.final_latch == LATCH_LATCHED))
         return Outcome(actions, STATUS_COMPLETED, movement)
 
     def _stall(self, reason: str) -> Outcome:

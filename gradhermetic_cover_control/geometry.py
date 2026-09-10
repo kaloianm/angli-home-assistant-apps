@@ -74,7 +74,9 @@ class Zone:
     - ``tilt_zone_release_pct`` -- how far the blind really has to rise before the latch lets go.
       The clearance margin ``tilt_zone_epsilon_pct`` is only large enough to carry the *reported*
       position clear of the upper edge; the mechanism itself may need several percent more. It
-      defaults to ``upper + epsilon``, which is the behaviour that predates the setting.
+      defaults to ``upper + epsilon``, which is the behaviour that predates the setting. Leaving
+      tilt travels past it to the top limit; what the height decides is when the release has
+      provably happened, and how far up the ambiguity band reaches.
     - ``tilt_enter_landing_pct`` -- the absolute real position the entry sequence finishes on, which
       being a slat position must lie inside ``[lower, upper]``. The latching rise necessarily ends
       at the upper (closed) edge, where on some blinds the slats are not visibly open yet, so entry
@@ -202,12 +204,16 @@ class Zone:
     @property
     def release_target(self) -> float:
         """
-        Real position risen to in order to release the latch.
+        Real position the blind must reach for the latch to have let go.
 
         ``tilt_zone_upper_pct + tilt_zone_epsilon_pct`` only clears the *reported* upper edge, which
         is all the geometry needs; disengaging the mechanism itself can take several percent more of
         real travel. ``tilt_zone_release_pct`` is that measured height, and defaults to the bare
         clearance so an unconfigured blind behaves exactly as before.
+
+        This is a threshold, not a destination: the tilt exit drives all the way to the top limit
+        and merely uses this height to know the mechanism has released. Where it does act as a
+        position is :attr:`band_high`, the top of the range a latched blind could be resting in.
         """
         if self.tilt_zone_release_pct is not None:
             return self.tilt_zone_release_pct

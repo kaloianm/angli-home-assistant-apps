@@ -6,7 +6,12 @@ HA config) forwards user commands to this app as ``gradhermetic_command`` events
 register a controllable cover entity by itself, so that template is the one irreducible HA-side
 shim; everything else the app owns. The displayed position is not an ``input_number`` helper the
 user must declare -- the app publishes it directly via ``set_state`` onto
-``sensor.gradhermetic_<id>_position``, which the template cover reads.
+``sensor.gradhermetic_<id>_position``, which the template cover reads. Beside it goes
+``binary_sensor.gradhermetic_<id>_tilt_mode``: whether that position is a slat angle rather than a
+height. Nothing in HA can derive that -- a real position inside the tilt zone is neither necessary
+nor sufficient for being latched, which is the whole reason the app event-sources a latch belief --
+so the app publishing its own belief is the only honest source, and it is what lets a dashboard show
+which mode the blind is in.
 
 Slat stepping and tilt engagement are exposed as dumb ``input_button`` helpers the app listens on:
 ``..._step_up`` / ``..._step_down`` step the slats within the tilt zone while latched (clamped at
@@ -34,7 +39,7 @@ from gradhermetic_cover_control.executor import (
     ACTION_MOVE_TO,
     ACTION_NOTIFY,
     ACTION_OPEN_FULL,
-    ACTION_PUBLISH_POSITION,
+    ACTION_PUBLISH_STATE,
     ACTION_STOP,
     NOTIFY_STALL,
     Action,
@@ -81,6 +86,7 @@ class GradhermeticCoverControl(hass.Hass):
         config = parse_app_config(self.args or {})
         self._config = config
         self._position_entity = f"sensor.gradhermetic_{config.virtual_id}_position"
+        self._tilt_mode_entity = f"binary_sensor.gradhermetic_{config.virtual_id}_tilt_mode"
         self._step_up_button = f"input_button.gradhermetic_{config.virtual_id}_step_up"
         self._step_down_button = f"input_button.gradhermetic_{config.virtual_id}_step_down"
         self._tilt_button = f"input_button.gradhermetic_{config.virtual_id}_tilt"
@@ -355,8 +361,8 @@ class GradhermeticCoverControl(hass.Hass):
                 self._command(runtime, "cover/close_cover")
             elif action.kind == ACTION_STOP:
                 self._command(runtime, "cover/stop_cover")
-            elif action.kind == ACTION_PUBLISH_POSITION:
-                self._publish_virtual(action.position)
+            elif action.kind == ACTION_PUBLISH_STATE:
+                self._publish_virtual(action.position, action.in_tilt)
             elif action.kind == ACTION_ARM_SETTLE_TIMER:
                 self._arm_settle(runtime, action.seconds)
             elif action.kind == ACTION_CANCEL_SETTLE_TIMER:
@@ -389,12 +395,15 @@ class GradhermeticCoverControl(hass.Hass):
             message=f"Cover '{runtime.config.virtual_id}' {message}",
         )
 
-    def _publish_virtual(self, virtual_position: Optional[float]) -> None:
+    def _publish_virtual(self, virtual_position: Optional[float],
+                         in_tilt: Optional[bool]) -> None:
         """
-        Publish the virtual cover position the template cover displays.
+        Publish what the virtual cover shows: its position, and which scale that position is on.
 
-        The app owns this value directly via ``set_state`` -- no user-declared ``input_number``
-        helper is required -- creating ``sensor.gradhermetic_<id>_position`` in Home Assistant.
+        The app owns both values directly via ``set_state`` -- no user-declared helpers are required
+        -- creating ``sensor.gradhermetic_<id>_position`` and
+        ``binary_sensor.gradhermetic_<id>_tilt_mode`` in Home Assistant. They are written together
+        from one action so a dashboard can never read a slat angle as though it were a height.
         """
         if virtual_position is None:
             return
@@ -404,6 +413,14 @@ class GradhermeticCoverControl(hass.Hass):
             attributes={
                 "friendly_name": f"{self._config.virtual_name} Position",
                 "unit_of_measurement": "%",
+            },
+        )
+        self.set_state(
+            self._tilt_mode_entity,
+            state="on" if in_tilt else "off",
+            attributes={
+                "friendly_name": f"{self._config.virtual_name} Slat Mode",
+                "icon": "mdi:blinds-horizontal",
             },
         )
 

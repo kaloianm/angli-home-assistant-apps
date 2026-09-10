@@ -15,9 +15,10 @@ Two facts about the mechanism drive the whole design:
   sequence, and any latch release from an uncertain state -- begins by driving fully open with the
   open *command*, which re-references the actuator against its own limit switch.
 
-The one exception is the tilt exit from a confidently ``LATCHED`` belief: that belief can only have
-been established by an enter sequence that just re-referenced the actuator, with nothing but small
-in-zone slat moves since, so the cheap rise to the zone's release target is trustworthy there.
+Leaving tilt drives fully open too, for the same reason plus one more: the release only has to
+clear the zone's release target, but stopping there would leave the blind parked in the band with
+the slats still shut, which is not a resting place anybody asks for. Driving to the limit switch
+makes the exit both unambiguous -- a top limit cannot be settled short of -- and useful.
 
 :func:`check_plan` restates the safety argument as executable invariants and runs on every plan
 before it is executed. It should be unreachable; the exhaustive tests exist to prove it is.
@@ -51,8 +52,8 @@ NEAR_EDGE_CLOSED = "closed"
 
 # Reach exactly this reported position.
 STEP_MOVE_TO = "move_to"
-# Reach at least this reported position. Used for the tilt exit, where anything above the release
-# target is equally good and the actuator may report a whole percent past it.
+# Reach at least this reported position. Used for the tilt exit, which travels to the top limit but
+# has only to clear the release target to have done its job.
 STEP_RISE_TO_AT_LEAST = "rise_to_at_least"
 
 # Which real-cover service carries a step. ``open``/``close`` send the commands rather than a
@@ -60,21 +61,6 @@ STEP_RISE_TO_AT_LEAST = "rise_to_at_least"
 COMMAND_POSITION = "position"
 COMMAND_OPEN = "open"
 COMMAND_CLOSE = "close"
-
-# How far above its acceptance threshold the tilt exit is commanded, in real travel percent.
-#
-# A position command is only satisfied to within the actuator's own settling accuracy, so commanding
-# exactly the release target lets a blind that stops a percent low report success while the
-# mechanism is still physically latched. Commanding higher than the threshold makes the shortfall
-# the actuator is allowed the app's margin rather than its risk.
-#
-# This is deliberately equal to ``executor.DEVIATION_TOLERANCE_PCT`` -- the amount the executor is
-# willing to forgive a ``MoveTo`` for -- so an actuator that settles anywhere within tolerance of
-# the commanded position still satisfies the ``>=`` predicate on its own, without the settle timer
-# having to forgive anything (it does not forgive rise steps at all). The constant lives here rather
-# than being imported, because the planner must not depend on the executor; if the executor's
-# tolerance is ever widened, widen this with it.
-EXIT_OVERSHOOT_PCT = 2.0
 
 # -- Plans -----------------------------------------------------------------------------------------
 
@@ -129,9 +115,10 @@ class Step:
     One waypoint of a movement plan, with the predicate that decides when it is done.
 
     ``target`` is the *satisfaction* threshold; ``command_pct`` optionally names a different
-    position to actually command. They differ only where commanding exactly the threshold would let
-    the actuator's settling accuracy leave the physical move short of what the mechanism needs --
-    the tilt exit. When it is ``None`` the target is commanded, which is the ordinary case.
+    position to actually command. They differ only where the step deliberately travels past what
+    satisfies it -- the tilt exit, which runs to the top limit but has done its job the moment the
+    blind is clear of the release height. When it is ``None`` the target is commanded, which is the
+    ordinary case.
     """
 
     kind: str
@@ -305,22 +292,25 @@ def _plan_enter_tilt(zone: Zone, near_edge: str, landing_virtual: Optional[float
 
 def _plan_leave_tilt(zone: Zone, belief: Belief) -> Optional[Plan]:
     """
-    Release the latch with a single rise clear of the upper edge.
+    Release the latch by driving the blind fully open.
 
-    Only available from a confident LATCHED belief, which implies the actuator was re-referenced by
-    the entry sequence and has only made small in-zone moves since. From an uncertain belief the
-    release is a full open instead (see :func:`_guard_descent`).
+    Only available from a confident LATCHED belief; from an uncertain one the release is folded into
+    the descent that needs it instead (see :func:`_guard_descent`).
 
-    The rise is *commanded* past the height it has to reach (see :data:`EXIT_OVERSHOOT_PCT`), so an
-    actuator that settles a little low still ends up at or above the release target rather than
-    reporting a rise that never physically disengaged the mechanism.
+    Two numbers, deliberately different. What the exit *commands* is the open command, so the blind
+    ends where leaving slat mode should leave it -- wide open -- and travels there against the
+    actuator's own limit switch, which no settling error can stop short of. What *satisfies* it is
+    still ``release_target``: that is the height at which the mechanism physically lets go, so the
+    moment the reported position clears it the latch is provably released and everything the step
+    exists to guarantee has happened. Accepting there rather than at 100 also means a blind that
+    settles a percent below its top limit still completes the plan honestly, with no appeal to the
+    executor's deviation tolerance (which does not forgive rise steps at all).
     """
     if not belief.in_tilt:
         return None
-    release = zone.release_target
-    step = Step(STEP_RISE_TO_AT_LEAST, release, COMMAND_POSITION,
-                command_pct=min(100.0, release + EXIT_OVERSHOOT_PCT))
-    return Plan(PLAN_LEAVE, (step,), LATCH_UNLATCHED)
+    return Plan(PLAN_LEAVE,
+                (Step(STEP_RISE_TO_AT_LEAST, zone.release_target, COMMAND_OPEN,
+                      command_pct=100.0),), LATCH_UNLATCHED)
 
 
 def _plan_slat_step(zone: Zone, belief: Belief, direction: Optional[str],
@@ -388,11 +378,12 @@ def _guard_descent(belief: Belief, steps: Tuple[Step, ...]) -> Tuple[Step, ...]:
     """
     Prefix a descent with a full-open latch release whenever the latch might be engaged.
 
-    The release is a full open rather than a short rise to a merely reported release height because an
-    uncertain belief also means an uncertain calibration: only the top limit is a position the
-    actuator cannot be wrong about. Rising from above the zone cannot re-latch, so the descent that
-    follows is safe. A known-released mechanism descends directly, which is the common case (closing
-    right after leaving tilt costs no detour).
+    The release is a full open for the same reason the tilt exit is: an uncertain belief also means
+    an uncertain calibration, and only the top limit is a position the actuator cannot be wrong
+    about. What differs is that this one cannot be satisfied early -- with no confident belief there
+    is no trustworthy release height to accept at, so it has to reach the limit itself. Rising from
+    above the zone cannot re-latch, so the descent that follows is safe. A known-released mechanism
+    descends directly, which is the common case (closing right after leaving tilt costs no detour).
     """
     if belief.may_be_latched:
         return (Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),) + steps
@@ -504,20 +495,22 @@ def _check_latching(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
 
 def _check_releases(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]:
     """
-    X1: leaving tilt is upward-only, and the short exit is only available from a confident LATCHED
-    belief -- from an uncertain one the release is a full open instead (see :func:`_guard_descent`).
+    X1: leaving tilt is a single upward step that drives fully open, and is only available from a
+    confident LATCHED belief -- from an uncertain one the release is folded into the descent that
+    needs it instead (see :func:`_guard_descent`).
     """
     if movement.kind == PLAN_LEAVE:
         if belief.latch != LATCH_LATCHED:
-            return f"X1: the short tilt exit requires a LATCHED belief, not {belief.latch}"
+            return f"X1: the tilt exit requires a LATCHED belief, not {belief.latch}"
         if len(movement.steps) != 1 or movement.steps[0].kind != STEP_RISE_TO_AT_LEAST:
             return "X1: leaving tilt must be a single upward step"
         step = movement.steps[0]
         if step.target < zone.release_target:
-            return f"X1: the tilt exit to {step.target} does not reach the release height"
-        # Commanding exactly the acceptance threshold would let an actuator that settles low report
-        # a release the mechanism never performed, so the command must aim at least that high.
-        if step.command_position < step.target:
-            return (f"X1: the tilt exit commands {step.command_position}, below its own acceptance "
-                    f"target {step.target}")
+            return f"X1: the tilt exit accepts {step.target}, below the release height"
+        # Stopping anywhere short of the top limit would leave the blind parked in the band with the
+        # slats shut, and would make the release depend on the actuator's settling accuracy rather
+        # than on a limit switch.
+        if step.command != COMMAND_OPEN or to_command(step.command_position) != 100:
+            return (f"X1: the tilt exit must drive fully open, not {step.command} "
+                    f"{step.command_position}")
     return None

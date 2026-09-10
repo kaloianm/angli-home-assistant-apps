@@ -34,7 +34,7 @@ from gradhermetic_cover_control import planner
 from gradhermetic_cover_control.executor import (
     ACTION_CANCEL_SETTLE_TIMER,
     ACTION_NOTIFY,
-    ACTION_PUBLISH_POSITION,
+    ACTION_PUBLISH_STATE,
     ACTION_STOP,
     NOTIFY_INVARIANT,
     STATUS_ABANDONED,
@@ -338,6 +338,7 @@ class GradhermeticCoverLogic:
 
         was_moving = self._is_moving
         was_unknown = self._position is None
+        was_latch = self._latch
         had_plan = self.has_pending_plan
         self._observe(position, is_moving)
 
@@ -355,6 +356,13 @@ class GradhermeticCoverLogic:
         # up when we seeded, or it had gone unavailable. Nothing else publishes until a plan
         # completes, and startup no longer runs one, so the sensor would otherwise stay stale.
         if was_unknown and position is not None and not is_moving:
+            return self._publish_current()
+        # Feedback that only degrades the latch belief still changes what the virtual cover means:
+        # the very same number is a slat angle in one mode and a height in the other. A controller
+        # reporting position but never motion (so the branch above never fires) would otherwise
+        # leave the published state claiming a mode the app has already stopped believing in --
+        # precisely the moment a dashboard must stop showing slat control.
+        if self._latch != was_latch and not is_moving:
             return self._publish_current()
         return []
 
@@ -466,12 +474,12 @@ class GradhermeticCoverLogic:
 
     def _publish_current(self) -> List[Action]:
         """
-        Emit the virtual position for where the blind rests now, if that is known.
+        Emit what the virtual cover shows for where the blind rests now, if that is known.
         """
         virtual = self.current_virtual_position()
         if virtual is None:
             return []
-        return [Action(ACTION_PUBLISH_POSITION, position=virtual)]
+        return [Action(ACTION_PUBLISH_STATE, position=virtual, in_tilt=self.in_tilt)]
 
     def _fail_invariant(self, violation: str) -> List[Action]:
         """

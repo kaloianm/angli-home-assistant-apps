@@ -16,7 +16,7 @@ from gradhermetic_cover_control.executor import (
     ACTION_MOVE_TO,
     ACTION_NOTIFY,
     ACTION_OPEN_FULL,
-    ACTION_PUBLISH_POSITION,
+    ACTION_PUBLISH_STATE,
     ACTION_STOP,
     NOTIFY_INVARIANT,
     NOTIFY_STALL,
@@ -32,6 +32,7 @@ from gradhermetic_cover_control.runtime import COMMAND_RATE_LIMIT
 REAL_COVER = "cover.living_room_blind"
 VIRTUAL_ID = "living_room"
 POSITION_ENTITY = f"sensor.gradhermetic_{VIRTUAL_ID}_position"
+TILT_MODE_ENTITY = f"binary_sensor.gradhermetic_{VIRTUAL_ID}_tilt_mode"
 MOVE_ADDRESS = "2/6/0"
 STEP_ADDRESS = "2/6/1"
 
@@ -434,11 +435,28 @@ class TestActionTranslation(unittest.TestCase):
         ], cover_logs)
 
     def test_publish_writes_the_position_sensor(self):
-        self._apply(Action(ACTION_PUBLISH_POSITION, position=66.6))
+        self._apply(Action(ACTION_PUBLISH_STATE, position=66.6))
         published = self.app.published[POSITION_ENTITY]
         self.assertEqual(67, published["state"])
         self.assertEqual("%", published["attributes"]["unit_of_measurement"])
         self.assertEqual("Living Room Blind Position", published["attributes"]["friendly_name"])
+
+    def test_publish_writes_the_tilt_mode_sensor_beside_it(self):
+        # Both are written from the one action, so a dashboard can never read a slat angle as a
+        # height: whichever scale the position is on, the flag beside it says so.
+        self._apply(Action(ACTION_PUBLISH_STATE, position=66.6, in_tilt=True))
+        published = self.app.published[TILT_MODE_ENTITY]
+        self.assertEqual("on", published["state"])
+        self.assertEqual("Living Room Blind Slat Mode", published["attributes"]["friendly_name"])
+
+        self._apply(Action(ACTION_PUBLISH_STATE, position=20.0, in_tilt=False))
+        self.assertEqual("off", self.app.published[TILT_MODE_ENTITY]["state"])
+
+    def test_an_unknown_tilt_mode_publishes_as_off(self):
+        # in_tilt is only ever None on an action built without it; "off" is the safe reading, since
+        # slat control is offered exactly when the app is confident it is latched.
+        self._apply(Action(ACTION_PUBLISH_STATE, position=66.6))
+        self.assertEqual("off", self.app.published[TILT_MODE_ENTITY]["state"])
 
     def test_the_settle_timer_is_armed_and_cancelled(self):
         self._apply(Action(ACTION_ARM_SETTLE_TIMER, seconds=45))
