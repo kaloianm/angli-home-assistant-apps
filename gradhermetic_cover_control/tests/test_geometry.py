@@ -1,6 +1,7 @@
 import unittest
 
 from gradhermetic_cover_control.geometry import (
+    DEFAULT_HEIGHT_STEP_PCT,
     MIN_EPSILON_PCT,
     MIN_STEP_PCT,
     Zone,
@@ -62,6 +63,10 @@ class TestLandmarks(unittest.TestCase):
         zone = _zone(tilt_enter_landing_pct=41.0)
         self.assertAlmostEqual(41.0, zone.enter_landing_real)
         self.assertAlmostEqual(50.0, zone.enter_landing_virtual)
+
+    def test_the_height_step_defaults_and_is_configurable(self):
+        self.assertAlmostEqual(DEFAULT_HEIGHT_STEP_PCT, self.zone.height_step_pct)
+        self.assertAlmostEqual(5.0, _zone(height_step_pct=5.0).height_step_pct)
 
 
 class TestConfiguredReleaseHeight(unittest.TestCase):
@@ -174,6 +179,22 @@ class TestSnapping(unittest.TestCase):
         self.assertAlmostEqual(100.0, self.zone.snap_normal_target(120.0))
         self.assertAlmostEqual(0.0, self.zone.snap_normal_target(-5.0))
 
+    def test_the_nearest_edge_is_skipped_when_the_blind_already_rests_on_it(self):
+        # A slider dragged into the band from an edge asked for a move, so the far edge wins.
+        self.assertAlmostEqual(46.0, self.zone.snap_normal_target(37.0, current=36.0))
+        self.assertAlmostEqual(36.0, self.zone.snap_normal_target(45.0, current=46.0))
+        # Resting anywhere else, the nearest edge is still the nearest edge.
+        self.assertAlmostEqual(36.0, self.zone.snap_normal_target(37.0, current=80.0))
+        self.assertAlmostEqual(46.0, self.zone.snap_normal_target(45.0, current=10.0))
+
+    def test_a_step_target_snaps_in_the_direction_of_travel(self):
+        # A step down into the band continues to the bottom of it, a step up to the top.
+        self.assertAlmostEqual(36.0, self.zone.snap_step_target(45.0, rising=False))
+        self.assertAlmostEqual(46.0, self.zone.snap_step_target(37.0, rising=True))
+        for target in (0.0, 36.0, 46.0, 100.0):
+            self.assertAlmostEqual(target, self.zone.snap_step_target(target, rising=True))
+            self.assertAlmostEqual(target, self.zone.snap_step_target(target, rising=False))
+
 
 class TestHelpers(unittest.TestCase):
 
@@ -238,6 +259,14 @@ class TestValidation(unittest.TestCase):
     def test_step_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "tilt_step_pct must be > 0"):
             _zone(tilt_step_pct=0.0)
+
+    def test_height_step_below_actuator_resolution_raises(self):
+        with self.assertRaisesRegex(ValueError, "height_step_pct must be >="):
+            _zone(height_step_pct=MIN_STEP_PCT / 2.0)
+
+    def test_height_step_above_full_travel_raises(self):
+        with self.assertRaisesRegex(ValueError, "height_step_pct must be <= 100"):
+            _zone(height_step_pct=101.0)
 
     def test_dip_target_at_or_below_zero_raises(self):
         # The band must stop short of the bottom limit: a blind resting fully closed is one the app

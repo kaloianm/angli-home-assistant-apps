@@ -3,7 +3,6 @@ import unittest
 from gradhermetic_cover_control.executor import (
     ACTION_ARM_SETTLE_TIMER,
     ACTION_CANCEL_SETTLE_TIMER,
-    ACTION_CLOSE_FULL,
     ACTION_MOVE_TO,
     ACTION_NOTIFY,
     ACTION_OPEN_FULL,
@@ -12,12 +11,14 @@ from gradhermetic_cover_control.executor import (
     DEVIATION_TOLERANCE_PCT,
     NOTIFY_STALL,
     SETTLE_TIMEOUT_SECONDS,
+    SETTLED_RECHECK_SECONDS,
     STATUS_ABANDONED,
     STATUS_COMPLETED,
     STATUS_IDLE,
     STATUS_RUNNING,
     STATUS_STALLED,
     Executor,
+    virtual_position,
 )
 from gradhermetic_cover_control.geometry import Zone
 from gradhermetic_cover_control.planner import (
@@ -25,6 +26,7 @@ from gradhermetic_cover_control.planner import (
     COMMAND_OPEN,
     COMMAND_POSITION,
     LATCH_LATCHED,
+    LATCH_UNKNOWN,
     LATCH_UNLATCHED,
     PLAN_ENTER,
     PLAN_NORMAL,
@@ -37,6 +39,7 @@ from gradhermetic_cover_control.planner import (
 
 UPPER = 44.0
 LOWER = 38.0
+RELEASE = 46.0
 ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=2.0,
             tilt_step_pct=1.2)
 
@@ -87,8 +90,15 @@ class TestActivation(unittest.TestCase):
     def test_a_wholly_satisfied_plan_completes_at_once(self):
         outcome = self.executor.start(_move_plan(50.0), 50.0, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
-        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_PUBLISH_STATE], _kinds(outcome))
+        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER], _kinds(outcome))
         self.assertFalse(self.executor.has_plan)
+
+    def test_the_current_step_is_exposed_while_a_plan_runs(self):
+        self.assertIsNone(self.executor.current_step)
+        self.executor.start(_enter_plan(), 80.0, False)
+        self.assertEqual(COMMAND_OPEN, self.executor.current_step.command)
+        self.executor.on_feedback(100.0, False)
+        self.assertAlmostEqual(36.0, self.executor.current_step.target)
 
     def test_rounding_decides_satisfaction(self):
         # The actuator speaks whole percent: 42.8 is commanded as 43 and satisfied by 43.
@@ -125,12 +135,12 @@ class TestArrival(unittest.TestCase):
         self.executor.on_feedback(100.0, False)  # completes step 1, commands the dip to 36
         self.assertEqual(STATUS_IDLE, self.executor.on_feedback(100.0, False).status)
 
-    def test_completion_cancels_the_timer_and_publishes(self):
+    def test_completion_cancels_the_timer_and_leaves_publishing_to_the_caller(self):
         self.executor.on_feedback(100.0, False)
         self.executor.on_feedback(36.0, False)
         outcome = self.executor.on_feedback(UPPER, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
-        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_PUBLISH_STATE], _kinds(outcome))
+        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER], _kinds(outcome))
         self.assertFalse(self.executor.has_plan)
 
     def test_feedback_without_a_plan_is_idle(self):
@@ -152,7 +162,6 @@ class TestRiseToAtLeast(unittest.TestCase):
         self.executor.start(self.plan, UPPER, False)
         outcome = self.executor.on_feedback(47.0, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
-        self.assertAlmostEqual(47.0, _of(outcome, ACTION_PUBLISH_STATE)[0].position)
 
     def test_short_of_the_target_does_not(self):
         self.executor.start(self.plan, UPPER, False)
@@ -182,7 +191,6 @@ class TestCommandDistinctFromTarget(unittest.TestCase):
         self.executor.start(self.plan, UPPER, False)
         outcome = self.executor.on_feedback(46.0, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
-        self.assertAlmostEqual(46.0, _of(outcome, ACTION_PUBLISH_STATE)[0].position)
 
     def test_short_of_the_target_still_does_not_arrive(self):
         self.executor.start(self.plan, UPPER, False)
@@ -220,27 +228,56 @@ class TestCommandDistinctFromTarget(unittest.TestCase):
         self.assertEqual(STATUS_COMPLETED, executor.on_feedback(30.0, False).status)
 
 
-class TestPublishedPosition(unittest.TestCase):
+class TestVirtualPosition(unittest.TestCase):
+    """The mapping the logic publishes with: a height outside tilt, a slat angle inside it."""
 
-    def test_normal_plans_publish_the_real_position(self):
-        executor = Executor(ZONE)
-        outcome = executor.start(_move_plan(30.0), 30.0, False)
-        self.assertAlmostEqual(30.0, _of(outcome, ACTION_PUBLISH_STATE)[0].position)
+    def test_unlatched_and_unknown_publish_the_real_position(self):
+        self.assertAlmostEqual(30.0, virtual_position(ZONE, LATCH_UNLATCHED, 30.0))
+        self.assertAlmostEqual(41.0, virtual_position(ZONE, LATCH_UNKNOWN, 41.0))
 
-    def test_slat_plans_publish_the_inverted_zone_mapping(self):
-        executor = Executor(ZONE)
-        movement = Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, 41.0),), LATCH_LATCHED)
-        outcome = executor.start(movement, 41.0, False)
-        self.assertAlmostEqual(50.0, _of(outcome, ACTION_PUBLISH_STATE)[0].position)
+    def test_latched_publishes_the_inverted_zone_mapping(self):
+        self.assertAlmostEqual(50.0, virtual_position(ZONE, LATCH_LATCHED, 41.0))
+        self.assertAlmostEqual(ZONE.real_to_virtual(43.0), virtual_position(ZONE, LATCH_LATCHED,
+                                                                            43.0))
 
-    def test_published_value_follows_the_blind_not_the_setpoint(self):
-        # A slat step commanded 42.8 -> 43; the honest virtual position is the one for 43.
+    def test_the_executor_never_publishes(self):
+        # Publishing needs the belief, which only the logic holds; the executor reports outcomes.
         executor = Executor(ZONE)
-        movement = Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, 42.8),), LATCH_LATCHED)
-        executor.start(movement, UPPER, False)
-        outcome = executor.on_feedback(43.0, False)
-        self.assertAlmostEqual(ZONE.real_to_virtual(43.0),
-                               _of(outcome, ACTION_PUBLISH_STATE)[0].position)
+        outcomes = [executor.start(_enter_plan(), 80.0, False),
+                    executor.on_feedback(100.0, False), executor.on_feedback(36.0, False),
+                    executor.on_feedback(UPPER, False)]
+        self.assertEqual([], [a for o in outcomes for a in _of(o, ACTION_PUBLISH_STATE)])
+
+
+class TestSettledRecheck(unittest.TestCase):
+    """A blind seen moving and then settled short is judged after a short recheck, not 45 s."""
+
+    def setUp(self):
+        self.executor = Executor(ZONE)
+        self.executor.start(_move_plan(30.0), 80.0, False)
+
+    def test_settling_short_after_motion_arms_the_recheck(self):
+        self.executor.on_feedback(60.0, True)
+        outcome = self.executor.on_feedback(41.0, False)
+        self.assertEqual(STATUS_RUNNING, outcome.status)
+        self.assertEqual([ACTION_ARM_SETTLE_TIMER], _kinds(outcome))
+        self.assertEqual(SETTLED_RECHECK_SECONDS, outcome.actions[0].seconds)
+        self.assertTrue(self.executor.has_plan)
+
+    def test_the_recheck_is_armed_once_per_stop(self):
+        self.executor.on_feedback(60.0, True)
+        self.executor.on_feedback(41.0, False)
+        self.assertEqual(STATUS_IDLE, self.executor.on_feedback(41.0, False).status)
+
+    def test_a_settled_report_before_any_motion_is_not_a_stop(self):
+        # The blind has not started yet; the inactivity timeout keeps waiting for it.
+        self.assertEqual(STATUS_IDLE, self.executor.on_feedback(80.0, False).status)
+
+    def test_the_recheck_then_judges_the_stop(self):
+        self.executor.on_feedback(60.0, True)
+        self.executor.on_feedback(41.0, False)
+        outcome = self.executor.on_timer(41.0, False)
+        self.assertEqual(STATUS_STALLED, outcome.status)
 
 
 class TestSettleTimer(unittest.TestCase):
@@ -263,7 +300,7 @@ class TestSettleTimer(unittest.TestCase):
         # Covers an actuator that reported no intermediate states at all.
         outcome = self.executor.on_timer(0.0, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
-        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_PUBLISH_STATE], _kinds(outcome))
+        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER], _kinds(outcome))
 
     def test_settled_within_the_deviation_tolerance_is_accepted(self):
         logged = []
@@ -278,19 +315,40 @@ class TestSettleTimer(unittest.TestCase):
         self.assertIn(("WARNING", "accepting 52.0 for target 50.0: settled within 2.0% of the "
                                   "setpoint"), logged)
 
-    def test_settled_short_stalls(self):
+    def test_settled_short_stalls_without_stopping_a_blind_that_is_at_rest(self):
+        # There is nothing to stop, and on a KNX actuator with no stop object a stop sent to an
+        # idle blind is a step telegram.
         outcome = self.executor.on_timer(50.0, False)
         self.assertEqual(STATUS_STALLED, outcome.status)
-        self.assertEqual([ACTION_STOP, ACTION_CANCEL_SETTLE_TIMER, ACTION_NOTIFY], _kinds(outcome))
+        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_NOTIFY], _kinds(outcome))
         self.assertEqual(NOTIFY_STALL, _of(outcome, ACTION_NOTIFY)[0].notify_kind)
         self.assertIn("0%", _of(outcome, ACTION_NOTIFY)[0].message)
         self.assertFalse(self.executor.has_plan)
 
-    def test_unreadable_position_stalls(self):
+    def test_unreadable_position_stalls_and_stops(self):
+        # It may well still be travelling, so this is the one stall that sends a stop.
         outcome = self.executor.on_timer(None, False)
         self.assertEqual(STATUS_STALLED, outcome.status)
+        self.assertEqual([ACTION_STOP, ACTION_CANCEL_SETTLE_TIMER, ACTION_NOTIFY], _kinds(outcome))
         self.assertIn("unreadable", _of(outcome, ACTION_NOTIFY)[0].message)
         self.assertFalse(self.executor.has_plan)
+
+    def test_deviation_tolerance_does_not_apply_to_a_target_in_the_band(self):
+        # A percent short of the release height leaves the mechanism latched; a percent short of
+        # the enter dip never clears the lower edge. Those must land or stall.
+        executor = Executor(ZONE)
+        executor.start(_move_plan(RELEASE), 20.0, False)
+        self.assertEqual(STATUS_STALLED, executor.on_timer(RELEASE - 1.0, False).status)
+        executor = Executor(ZONE)
+        executor.start(_enter_plan(), 100.0, False)  # commanded the dip to 36
+        self.assertEqual(STATUS_STALLED, executor.on_timer(38.0, False).status)
+
+    def test_deviation_tolerance_does_not_apply_to_slat_steps(self):
+        # A slat step is smaller than the tolerance: accepting the pre-step position would silently
+        # complete a move that never happened.
+        executor = Executor(ZONE)
+        executor.start(Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, 42.8),), LATCH_LATCHED), UPPER, False)
+        self.assertEqual(STATUS_STALLED, executor.on_timer(UPPER, False).status)
 
     def test_a_deviation_accepted_mid_plan_continues(self):
         executor = Executor(ZONE)

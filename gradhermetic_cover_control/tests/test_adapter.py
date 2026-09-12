@@ -18,6 +18,8 @@ from gradhermetic_cover_control.executor import (
     ACTION_OPEN_FULL,
     ACTION_PUBLISH_STATE,
     ACTION_STOP,
+    MOTION_CLOSING,
+    MOTION_IDLE,
     NOTIFY_INVARIANT,
     NOTIFY_STALL,
     Action,
@@ -278,9 +280,16 @@ class TestCommandEvents(unittest.TestCase):
         self.app.command_event(command="open")
         self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/open_cover"))
 
-    def test_stop_reaches_the_real_cover(self):
+    def test_stop_reaches_the_real_cover_while_a_move_is_in_flight(self):
+        self.app.command_event(command="close")
         self.app.command_event(command="stop")
         self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/stop_cover"))
+
+    def test_stop_on_an_idle_blind_sends_nothing(self):
+        # On a KNX actuator without a stop object a stop is carried on the step object, which
+        # nudges an idle blind; with nothing moving there is nothing to send.
+        self.app.command_event(command="stop")
+        self.assertEqual([], self.app.calls_to("cover/stop_cover"))
 
     def test_set_position_sends_a_whole_percent(self):
         self.app.command_event(command="set_position", position="30.4")
@@ -316,8 +325,9 @@ class TestKnxTelegrams(unittest.TestCase):
         self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/close_cover"))
 
     def test_a_short_press_uses_the_step_address(self):
-        self.app.knx_event(STEP_ADDRESS, 1)  # from above the zone, a down press enters tilt
-        self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/open_cover"))
+        self.app.knx_event(STEP_ADDRESS, 1)  # 1 = down: one height step from 80
+        self.assertEqual([{"entity_id": REAL_COVER, "position": 78}],
+                         self.app.calls_to("cover/set_cover_position"))
 
     def test_telegrams_for_other_addresses_are_ignored(self):
         self.app.knx_event("9/9/9", 1)
@@ -400,18 +410,26 @@ class TestButtonPresses(unittest.TestCase):
         self.app.press(self.tilt, old=stamp, new=stamp)
         self.assertEqual([], self.app.service_calls)
 
-    def test_a_step_press_pointing_away_from_the_zone_does_nothing(self):
-        # Resting at 80, above the zone: up is away from it, and the long-press equivalent (the
-        # cover's own open) covers the extremes.
+    def test_a_step_press_nudges_the_height_when_not_latched(self):
         self.app.press(self.step_up)
-        self.assertEqual([], self.app.service_calls)
+        self.assertEqual([{"entity_id": REAL_COVER, "position": 82}],
+                         self.app.calls_to("cover/set_cover_position"))
+        self.app.report(82.0)
+        self.app.press(f"input_button.gradhermetic_{VIRTUAL_ID}_step_down")
+        self.assertEqual({"entity_id": REAL_COVER, "position": 80},
+                         self.app.calls_to("cover/set_cover_position")[-1])
 
-    def test_a_step_press_toward_the_zone_enters_tilt(self):
-        # A dashboard-only blind has no wall switch, so the step helpers are the only directional
-        # way into tilt; entry always begins by re-referencing at the top limit.
-        step_down = f"input_button.gradhermetic_{VIRTUAL_ID}_step_down"
-        self.app.press(step_down)
-        self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/open_cover"))
+    def test_a_step_press_never_enters_tilt(self):
+        self.app.press(f"input_button.gradhermetic_{VIRTUAL_ID}_step_down")
+        self.assertEqual([], self.app.calls_to("cover/open_cover"))
+        self.assertFalse(self.app._runtime.logic.in_tilt)  # pylint: disable=protected-access
+
+    def test_a_step_press_while_moving_stops_the_blind(self):
+        self.app.command_event(command="close")
+        self.app.report(70.0, state="closing")
+        self.app.press(self.step_up)
+        self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/stop_cover"))
+        self.assertEqual([], self.app.calls_to("cover/set_cover_position"))
 
 
 class TestServiceTargeting(unittest.TestCase):
@@ -485,6 +503,19 @@ class TestActionTranslation(unittest.TestCase):
         self.assertEqual(67, published["state"])
         self.assertEqual("%", published["attributes"]["unit_of_measurement"])
         self.assertEqual("Living Room Blind Position", published["attributes"]["friendly_name"])
+        self.assertEqual(MOTION_IDLE, published["attributes"]["motion"])
+
+    def test_publish_writes_the_motion_beside_the_position(self):
+        # The template cover's state template reads it to report opening/closing.
+        self._apply(Action(ACTION_PUBLISH_STATE, position=40.0, in_tilt=False,
+                           motion=MOTION_CLOSING))
+        published = self.app.published[POSITION_ENTITY]
+        self.assertEqual(MOTION_CLOSING, published["attributes"]["motion"])
+
+    def test_an_unknown_position_publishes_the_sensor_as_unavailable(self):
+        self._apply(Action(ACTION_PUBLISH_STATE, position=None, in_tilt=False, motion=MOTION_IDLE))
+        self.assertEqual("unavailable", self.app.published[POSITION_ENTITY]["state"])
+        self.assertEqual("off", self.app.published[TILT_MODE_ENTITY]["state"])
 
     def test_publish_writes_the_tilt_mode_sensor_beside_it(self):
         # Both are written from the one action, so a dashboard can never read a slat angle as a
@@ -553,8 +584,27 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
         self.app.service_calls.clear()
         self.app.cover_state = cover_state(55.0)  # settled well short of the target
         self.app.fire_timers()
-        self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/stop_cover"))
+        # The blind is at rest, so no stop goes out: on KNX that would be a step telegram.
+        self.assertEqual([], self.app.calls_to("cover/stop_cover"))
         self.assertIn("GradhermeticCoverControl stalled", self.app.notify_titles())
+        self.assertEqual(55, self.app.published[POSITION_ENTITY]["state"])
+
+    def test_feedback_shows_travel_as_it_happens(self):
+        self.app.command_event(command="close")
+        self.app.report(60.0, state="closing")
+        published = self.app.published[POSITION_ENTITY]
+        self.assertEqual(60, published["state"])
+        self.assertEqual("closing", published["attributes"]["motion"])
+        self.app.report(0.0, state="closed")
+        published = self.app.published[POSITION_ENTITY]
+        self.assertEqual(0, published["state"])
+        self.assertEqual("idle", published["attributes"]["motion"])
+
+    def test_the_direction_comes_from_the_cover_state(self):
+        # An external move: no plan of the app's own, so the cover's own state is the only source.
+        self.app.report(85.0, state="opening")
+        self.assertEqual("opening", self.app.published[POSITION_ENTITY]["attributes"]["motion"])
+        self.assertEqual(85, self.app.published[POSITION_ENTITY]["state"])
 
     def test_the_settle_timer_completes_a_silent_move(self):
         self.app.command_event(command="set_position", position=30)

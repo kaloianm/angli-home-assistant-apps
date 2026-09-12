@@ -19,7 +19,12 @@ The lifecycle is what makes two whole classes of race impossible:
 
 The settle timer is an inactivity timeout rather than a travel-time cap: a blind still reporting
 motion is merely slow, so the timer re-arms. It only declares a stall when the blind has settled
-short of its target, or when its position has become unreadable while a plan is pending.
+short of its target, or when its position has become unreadable while a plan is pending. A blind
+seen moving and then settling short does not wait out the whole timeout: a short recheck is armed
+instead, so a percent of mis-settling costs seconds rather than most of a minute.
+
+What the virtual cover shows is not decided here. The executor reports what became of the plan;
+:mod:`logic` publishes, because only it knows the belief the published state has to be on.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from gradhermetic_cover_control.planner import (
     COMMAND_CLOSE,
     COMMAND_OPEN,
     LATCH_LATCHED,
+    PLAN_SLAT,
     STEP_MOVE_TO,
     Plan,
     Step,
@@ -43,9 +49,9 @@ ACTION_MOVE_TO = "move_to"
 ACTION_OPEN_FULL = "open_full"
 ACTION_CLOSE_FULL = "close_full"
 ACTION_STOP = "stop"
-# Publish what the virtual cover shows: its position, and whether that position is a slat angle
-# rather than a height. The two always travel together -- a position on the inverted slat scale read
-# as a height is simply wrong -- so one action carries both.
+# Publish what the virtual cover shows: its position, whether that position is a slat angle rather
+# than a height, and whether it is travelling. They always travel together -- a position on the
+# inverted slat scale read as a height is simply wrong -- so one action carries all three.
 ACTION_PUBLISH_STATE = "publish_state"
 ACTION_ARM_SETTLE_TIMER = "arm_settle_timer"
 ACTION_CANCEL_SETTLE_TIMER = "cancel_settle_timer"
@@ -54,11 +60,26 @@ ACTION_NOTIFY = "notify"
 NOTIFY_STALL = "stall"
 NOTIFY_INVARIANT = "invariant"
 
+# What the virtual cover is doing, on the virtual scale: "opening" is toward more light whichever
+# mode the blind is in, so a slat move toward the open edge is opening even though the blind's real
+# position is falling.
+MOTION_OPENING = "opening"
+MOTION_CLOSING = "closing"
+MOTION_IDLE = "idle"
+
 # How long a step may go without progress before the fallback timer looks at it.
 SETTLE_TIMEOUT_SECONDS = 45
 
+# How long to wait before judging a blind that was seen moving and then settled short of its
+# target. It has demonstrably stopped, so the only question left is whether a late report is
+# still on its way.
+SETTLED_RECHECK_SECONDS = 10
+
 # Real actuators occasionally settle a percent or so off their setpoint. A move that stopped this
-# close to its target is accepted (with a warning) rather than reported as an obstruction.
+# close to its target is accepted (with a warning) rather than reported as an obstruction -- but
+# only where a percent is harmless: an ordinary height move clear of the band. A slat step is
+# smaller than the tolerance, and a target on a band edge or inside the band is exactly where a
+# percent decides whether the mechanism latched or released, so those must land or stall.
 DEVIATION_TOLERANCE_PCT = 2.0
 
 # -- Outcomes --------------------------------------------------------------------------------------
@@ -84,6 +105,7 @@ class Action:
     kind: str
     position: Optional[float] = None
     in_tilt: Optional[bool] = None
+    motion: Optional[str] = None
     seconds: Optional[float] = None
     notify_kind: Optional[str] = None
     message: Optional[str] = None
@@ -121,6 +143,10 @@ class Executor:
         self._log = log
         self._plan: Optional[Plan] = None
         self._index = 0
+        # Whether the blind has reported motion since the current step was commanded. A settled
+        # report short of the target after that is a blind that stopped, not one that has yet to
+        # start, and is rechecked quickly rather than after the whole inactivity timeout.
+        self._saw_motion = False
 
     @property
     def plan(self) -> Optional[Plan]:
@@ -135,6 +161,15 @@ class Executor:
         Whether a movement plan is in progress.
         """
         return self._plan is not None
+
+    @property
+    def current_step(self) -> Optional[Step]:
+        """
+        The step the blind is currently being driven toward, if a plan is in progress.
+        """
+        if self._plan is None:
+            return None
+        return self._step()
 
     # -- Events ------------------------------------------------------------------------------------
 
@@ -153,12 +188,21 @@ class Executor:
         """
         Consume controller feedback, completing the current step once it has genuinely arrived.
         """
-        if self._plan is None or position is None or is_moving:
+        if self._plan is None or position is None:
             return Outcome()
-        if not self._step().satisfied_by(position):
+        if is_moving:
+            self._saw_motion = True
             return Outcome()
-        self._index += 1
-        return self._advance(position, is_moving)
+        if self._step().satisfied_by(position):
+            self._index += 1
+            return self._advance(position, is_moving)
+        if self._saw_motion:
+            # It moved and has now stopped somewhere else: judge it soon, not after the timeout.
+            self._saw_motion = False
+            self._log(f"settled at {position} short of {self._step().target}; rechecking in "
+                      f"{SETTLED_RECHECK_SECONDS}s", level="DEBUG")
+            return Outcome([_arm(SETTLED_RECHECK_SECONDS)], STATUS_RUNNING, self._plan)
+        return Outcome()
 
     def on_timer(self, position: Optional[float], is_moving: bool) -> Outcome:
         """
@@ -168,7 +212,8 @@ class Executor:
             # A stray firing after the plan already finished; there is nothing left to time.
             return Outcome()
         if position is None:
-            return self._stall("its position is unreadable")
+            # It may still be travelling for all anyone can tell, so this stall does send a stop.
+            return self._stall("its position is unreadable", stop=True)
         if is_moving:
             # An inactivity timeout, not a travel cap: the move is simply long.
             self._log("settle timer fired while still moving; waiting longer", level="DEBUG")
@@ -181,12 +226,28 @@ class Executor:
             return self._advance(position, is_moving)
         # Judged against the satisfaction target, which is the threshold the step actually needs;
         # a step that aims past it (the tilt exit) is a rise step and is never forgiven here.
-        if step.kind == STEP_MOVE_TO and abs(position - step.target) <= DEVIATION_TOLERANCE_PCT:
+        deviation = abs(position - step.target)
+        if self._tolerates_deviation(step) and deviation <= DEVIATION_TOLERANCE_PCT:
             self._log(f"accepting {position} for target {step.target}: settled within "
                       f"{DEVIATION_TOLERANCE_PCT}% of the setpoint", level="WARNING")
             self._index += 1
             return self._advance(position, is_moving)
-        return self._stall(f"it settled at {position}%")
+        # The blind is at rest: there is nothing to stop, and on a KNX actuator without a dedicated
+        # stop object a stop sent to an idle blind is a step telegram that nudges it.
+        return self._stall(f"it settled at {position}%", stop=False)
+
+    def _tolerates_deviation(self, step: Step) -> bool:
+        """
+        Whether settling a percent or so off this step's target may be accepted as arrival.
+
+        Only an ordinary height move clear of the band qualifies. A slat step is smaller than the
+        tolerance, so accepting the pre-step position would silently complete a move that never
+        happened; a target in the band -- the enter dip, the latching rise, a band edge -- is where
+        a percent decides whether the mechanism latched or released, and must land exactly.
+        """
+        if step.kind != STEP_MOVE_TO or self._plan.kind == PLAN_SLAT:
+            return False
+        return not self._zone.in_band(step.target)
 
     def abandon(self) -> Outcome:
         """
@@ -213,6 +274,7 @@ class Executor:
         """
         self._plan = None
         self._index = 0
+        self._saw_motion = False
 
     def _advance(self, position: Optional[float], is_moving: bool) -> Outcome:
         """
@@ -227,25 +289,20 @@ class Executor:
                 continue
             self._log(f"commanding {step.kind} {step.command_position} (satisfied at "
                       f"{step.target}) from {position}", level="DEBUG")
+            self._saw_motion = False
             return Outcome([_command(step), _arm()], STATUS_RUNNING, self._plan)
         return self._complete(position)
 
     def _complete(self, position: Optional[float]) -> Outcome:
         """
-        Finish the plan: cancel the fallback timer and publish where the blind ended up.
+        Finish the plan and cancel the fallback timer. The caller commits the latch and publishes.
         """
         movement = self._plan
         self._clear()
         self._log(f"plan complete: latch={movement.final_latch} position={position}")
-        actions = [Action(ACTION_CANCEL_SETTLE_TIMER)]
-        if position is not None:
-            actions.append(
-                Action(ACTION_PUBLISH_STATE,
-                       position=virtual_position(self._zone, movement.final_latch, position),
-                       in_tilt=movement.final_latch == LATCH_LATCHED))
-        return Outcome(actions, STATUS_COMPLETED, movement)
+        return Outcome([Action(ACTION_CANCEL_SETTLE_TIMER)], STATUS_COMPLETED, movement)
 
-    def _stall(self, reason: str) -> Outcome:
+    def _stall(self, reason: str, stop: bool) -> Outcome:
         """
         Abandon a plan the blind is not going to finish, and say so.
 
@@ -256,15 +313,15 @@ class Executor:
         movement = self._plan
         target = to_command(self._step().target)
         self._clear()
-        message = (f"did not reach {target}% within {SETTLE_TIMEOUT_SECONDS} seconds ({reason}) "
-                   "and was stopped. Check the blind for a mechanical obstruction or a "
-                   "misconfigured tilt zone.")
+        message = (f"did not reach {target}% ({reason}) and the move was abandoned. Check the "
+                   "blind for a mechanical obstruction or a misconfigured tilt zone.")
         self._log(f"plan stalled short of {target}%: {reason}", level="ERROR")
-        return Outcome([
-            Action(ACTION_STOP),
+        actions = [Action(ACTION_STOP)] if stop else []
+        actions += [
             Action(ACTION_CANCEL_SETTLE_TIMER),
             Action(ACTION_NOTIFY, notify_kind=NOTIFY_STALL, message=message),
-        ], STATUS_STALLED, movement)
+        ]
+        return Outcome(actions, STATUS_STALLED, movement)
 
 
 def virtual_position(zone: Zone, latch: str, position: float) -> float:
@@ -295,8 +352,8 @@ def _command(step: Step) -> Action:
     return Action(ACTION_MOVE_TO, position=step.command_position)
 
 
-def _arm() -> Action:
+def _arm(seconds: float = SETTLE_TIMEOUT_SECONDS) -> Action:
     """
-    Arm the fallback settle timer for the step just commanded.
+    Arm the fallback settle timer for the step just commanded, or a shorter recheck.
     """
-    return Action(ACTION_ARM_SETTLE_TIMER, seconds=SETTLE_TIMEOUT_SECONDS)
+    return Action(ACTION_ARM_SETTLE_TIMER, seconds=seconds)

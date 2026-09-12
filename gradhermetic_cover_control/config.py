@@ -47,6 +47,7 @@ class GradhermeticConfig:
                 f"tilt_zone_release_pct={self.zone.release_target}, "
                 f"tilt_enter_landing_pct={self.zone.enter_landing_real}, "
                 f"tilt_step_pct={self.zone.tilt_step_pct}, "
+                f"height_step_pct={self.zone.height_step_pct}, "
                 f"knx_move_address={self.knx_move_address}, "
                 f"knx_step_address={self.knx_step_address}, "
                 f"knx_tilt_address={self.knx_tilt_address}"
@@ -71,6 +72,7 @@ def parse_app_config(args: Dict[str, Any]) -> GradhermeticConfig:
         # Both optional: absent means "keep the geometric default", which Zone supplies.
         tilt_zone_release_pct=_optional_percentage(args, "tilt_zone_release_pct"),
         tilt_enter_landing_pct=_optional_percentage(args, "tilt_enter_landing_pct"),
+        **_optional_field(args, "height_step_pct", _parse_positive_float),
     )
 
     return GradhermeticConfig(
@@ -124,6 +126,16 @@ def _optional_percentage(source: Dict[str, Any], key: str) -> Optional[float]:
     if source.get(key) is None:
         return None
     return _parse_percentage(source, key)
+
+
+def _optional_field(source: Dict[str, Any], key: str, parse: Any) -> Dict[str, float]:
+    """
+    Read an optional numeric field as keyword arguments: empty when absent, so the dataclass
+    default applies, else ``{key: parsed value}``.
+    """
+    if source.get(key) is None:
+        return {}
+    return {key: parse(source, key)}
 
 
 def _parse_positive_float(source: Dict[str, Any], key: str) -> float:

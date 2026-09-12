@@ -68,6 +68,18 @@ class TestConfigParsing(unittest.TestCase):
         self.assertEqual(50.0, config.zone.step)
         self.assertIn("tilt_step_pct=3.0", str(config))
 
+    def test_the_height_step_is_optional_and_parsed(self):
+        self.assertEqual(2.0, parse_app_config(_valid_args()).zone.height_step_pct)
+        config = parse_app_config(_valid_args(height_step_pct="5"))
+        self.assertEqual(5.0, config.zone.height_step_pct)
+        self.assertIn("height_step_pct=5.0", str(config))
+
+    def test_height_step_must_move_the_actuator(self):
+        with self.assertRaisesRegex(ValueError, "height_step_pct must be >="):
+            parse_app_config(_valid_args(height_step_pct=0.5))
+        with self.assertRaisesRegex(ValueError, "height_step_pct must be > 0"):
+            parse_app_config(_valid_args(height_step_pct=0))
+
     def test_an_explicitly_null_key_falls_back_to_the_default(self):
         config = parse_app_config(
             _valid_args(tilt_zone_release_pct=None, tilt_enter_landing_pct=None))
@@ -75,7 +87,7 @@ class TestConfigParsing(unittest.TestCase):
         self.assertEqual(44.0, config.zone.enter_landing_real)
 
     def test_release_below_the_bare_clearance_raises(self):
-        # Delegated to geometry: it must clear upper + epsilon, which is what a release at all means.
+        # Delegated to geometry: it must clear upper + epsilon, which is what a release means.
         with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be >="):
             parse_app_config(_valid_args(tilt_zone_release_pct=45.0))
 

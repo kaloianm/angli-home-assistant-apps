@@ -13,11 +13,14 @@ nor sufficient for being latched, which is the whole reason the app event-source
 so the app publishing its own belief is the only honest source, and it is what lets a dashboard show
 which mode the blind is in.
 
-Slat stepping and tilt engagement are exposed as dumb ``input_button`` helpers the app listens on:
-``..._step_up`` / ``..._step_down`` step the slats within the tilt zone while latched (clamped at
-both edges) and otherwise enter the zone when the press points toward it, and ``..._tilt`` toggles
-tilt mode. Unlike a KNX wall-button short press, the step helpers never *leave* the zone and never
-stop a move in flight -- that is the tilt helper's and the cover's job.
+Stepping and tilt engagement are exposed as dumb ``input_button`` helpers the app listens on:
+``..._step_up`` / ``..._step_down`` stop a moving blind, step the slats while latched, and step the
+height otherwise -- the same rule a KNX stop/step object follows -- and ``..._tilt`` toggles tilt
+mode (cancelling an entry or exit in flight).
+
+The position sensor also carries a ``motion`` attribute (``opening`` / ``closing`` / ``idle``) so
+the template cover can show travel as it happens; the app publishes on every feedback event, not
+only when a move ends.
 
 Every decision -- which sequence to run, when a waypoint is reached, when the settle timer is armed
 or cancelled, when a stall is declared -- is made in the pure core. What is left here is transport:
@@ -41,6 +44,7 @@ from gradhermetic_cover_control.executor import (
     ACTION_OPEN_FULL,
     ACTION_PUBLISH_STATE,
     ACTION_STOP,
+    MOTION_IDLE,
     NOTIFY_STALL,
     Action,
 )
@@ -133,8 +137,8 @@ class GradhermeticCoverControl(hass.Hass):
         and the first action that needs a trusted position re-references the actuator itself.
         """
         try:
-            position, is_moving = self._read_real_position()
-            self._apply_actions(self._runtime.logic.on_startup(position, is_moving))
+            position, is_moving, direction = self._read_real_position()
+            self._apply_actions(self._runtime.logic.on_startup(position, is_moving, direction))
             self._ready = True  # pylint: disable=attribute-defined-outside-init
         except Exception as exc:
             self._report_error("_seed_startup_state", exc)
@@ -197,8 +201,9 @@ class GradhermeticCoverControl(hass.Hass):
         stale position and motion beliefs rather than reasoning from them indefinitely.
         """
         try:
-            position, is_moving = _extract_position(new)
-            self._apply_actions(self._runtime.logic.on_real_position(position, is_moving))
+            position, is_moving, direction = _extract_feedback(new)
+            self._apply_actions(
+                self._runtime.logic.on_real_position(position, is_moving, direction))
         except Exception as exc:
             self._report_error(f"_on_real_state(entity={entity!r})", exc)
 
@@ -211,7 +216,7 @@ class GradhermeticCoverControl(hass.Hass):
         """
         try:
             self._runtime.settle_timer_handle = None
-            position, is_moving = self._read_real_position()
+            position, is_moving, _direction = self._read_real_position()
             self._apply_actions(self._runtime.logic.on_settle_timer(position, is_moving))
         except Exception as exc:
             self._report_error("_on_settle", exc)
@@ -241,7 +246,7 @@ class GradhermeticCoverControl(hass.Hass):
             if destination == config.knx_tilt_address:
                 if not _knx_trigger(data):
                     return
-                self._apply_actions(logic.on_set_tilt_mode(not logic.in_tilt))
+                self._apply_actions(logic.on_toggle_tilt_mode())
                 return
             direction = _knx_direction(data)
             if direction is None:
@@ -259,12 +264,10 @@ class GradhermeticCoverControl(hass.Hass):
     def _on_step_button(self, entity: str, attribute: str, old: Any, new: Any,
                         kwargs: Dict[str, Any]) -> None:
         """
-        Route an ``input_button`` step press to the slat-step logic.
+        Route an ``input_button`` step press to the step logic.
 
-        The direction follows which helper fired. While latched these helpers adjust slats within
-        the tilt zone, clamping at both edges; while not latched they enter the zone when the press
-        points toward it, exactly as a KNX wall-button short press would. What they never do is
-        leave tilt or stop a move in flight -- leaving is the dedicated tilt helper's job.
+        The direction follows which helper fired. The logic decides what a step means: stop while
+        anything is moving, a slat step while latched, a height step otherwise.
         """
         try:
             if not self._is_button_press(old, new):
@@ -273,7 +276,7 @@ class GradhermeticCoverControl(hass.Hass):
                 self.log("Ignoring step press before startup state is seeded")
                 return
             direction = DIRECTION_UP if entity == self._step_up_button else DIRECTION_DOWN
-            self._apply_actions(self._runtime.logic.on_slat_step(direction))
+            self._apply_actions(self._runtime.logic.on_step(direction))
         except Exception as exc:
             self._report_error(f"_on_step_button(entity={entity!r})", exc)
 
@@ -288,8 +291,7 @@ class GradhermeticCoverControl(hass.Hass):
             if not self._ready:
                 self.log("Ignoring tilt press before startup state is seeded")
                 return
-            logic = self._runtime.logic
-            self._apply_actions(logic.on_set_tilt_mode(not logic.in_tilt))
+            self._apply_actions(self._runtime.logic.on_toggle_tilt_mode())
         except Exception as exc:
             self._report_error("_on_tilt_button", exc)
 
@@ -371,7 +373,7 @@ class GradhermeticCoverControl(hass.Hass):
             elif action.kind == ACTION_STOP:
                 self._command(runtime, "cover/stop_cover")
             elif action.kind == ACTION_PUBLISH_STATE:
-                self._publish_virtual(action.position, action.in_tilt)
+                self._publish_virtual(action.position, action.in_tilt, action.motion)
             elif action.kind == ACTION_ARM_SETTLE_TIMER:
                 self._arm_settle(runtime, action.seconds)
             elif action.kind == ACTION_CANCEL_SETTLE_TIMER:
@@ -404,24 +406,27 @@ class GradhermeticCoverControl(hass.Hass):
             message=f"Cover '{runtime.config.virtual_id}' {message}",
         )
 
-    def _publish_virtual(self, virtual_position: Optional[float],
-                         in_tilt: Optional[bool]) -> None:
+    def _publish_virtual(self, virtual_position: Optional[float], in_tilt: Optional[bool],
+                         motion: Optional[str]) -> None:
         """
-        Publish what the virtual cover shows: its position, and which scale that position is on.
+        Publish what the virtual cover shows: its position, which scale that position is on, and
+        whether it is travelling.
 
-        The app owns both values directly via ``set_state`` -- no user-declared helpers are required
-        -- creating ``sensor.gradhermetic_<id>_position`` and
+        The app owns both entities directly via ``set_state`` -- no user-declared helpers are
+        required -- creating ``sensor.gradhermetic_<id>_position`` and
         ``binary_sensor.gradhermetic_<id>_tilt_mode`` in Home Assistant. They are written together
-        from one action so a dashboard can never read a slat angle as though it were a height.
+        from one action so a dashboard can never read a slat angle as though it were a height. The
+        motion rides on the position sensor as an attribute, which the template cover's state
+        template reads to report ``opening`` / ``closing``. An unknown position publishes the sensor
+        as ``unavailable`` rather than leaving a stale number in it.
         """
-        if virtual_position is None:
-            return
         self.set_state(
             self._position_entity,
-            state=to_command(virtual_position),
+            state="unavailable" if virtual_position is None else to_command(virtual_position),
             attributes={
                 "friendly_name": f"{self._config.virtual_name} Position",
                 "unit_of_measurement": "%",
+                "motion": motion or MOTION_IDLE,
             },
         )
         self.set_state(
@@ -452,11 +457,11 @@ class GradhermeticCoverControl(hass.Hass):
 
     # -- Safety ------------------------------------------------------------------------------------
 
-    def _read_real_position(self) -> Tuple[Optional[float], bool]:
+    def _read_real_position(self) -> Tuple[Optional[float], bool, Optional[str]]:
         """
-        Read the real cover's current position and motion from Home Assistant.
+        Read the real cover's current position, motion and direction from Home Assistant.
         """
-        return _extract_position(self.get_state(self._config.real_cover, attribute="all"))
+        return _extract_feedback(self.get_state(self._config.real_cover, attribute="all"))
 
     def _disable(self, runtime: CoverRuntime) -> None:
         """
@@ -514,22 +519,27 @@ def _describe_command(service: str, data: Dict[str, Any]) -> str:
     return f"{service} {data or ''}".strip()
 
 
-def _extract_position(state: Any) -> Tuple[Optional[float], bool]:
+def _extract_feedback(state: Any) -> Tuple[Optional[float], bool, Optional[str]]:
     """
-    Extract (current_position, is_moving) from a full Home Assistant cover state object.
+    Extract (current_position, is_moving, direction) from a full Home Assistant cover state object.
+
+    The direction is the real one the cover integration reports through its ``opening`` /
+    ``closing`` state, or None when it is not moving.
 
     A missing or unreadable position yields None, which the logic treats as "the cover is
     unavailable": bad state from a flaky integration must not reach the error boundary and disable
     the blind.
     """
     if not isinstance(state, dict):
-        return None, False
+        return None, False, None
     raw_position = state.get("attributes", {}).get("current_position")
-    is_moving = state.get("state") in ("opening", "closing")
+    cover_state = state.get("state")
+    direction = {"opening": DIRECTION_UP, "closing": DIRECTION_DOWN}.get(cover_state)
+    is_moving = direction is not None
     try:
-        return float(raw_position), is_moving
+        return float(raw_position), is_moving, direction
     except (TypeError, ValueError):
-        return None, is_moving
+        return None, is_moving, direction
 
 
 def _knx_direction(data: Dict[str, Any]) -> Optional[str]:

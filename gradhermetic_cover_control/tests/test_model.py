@@ -33,6 +33,7 @@ from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 from gradhermetic_cover_control.planner import (
     DIRECTION_DOWN,
     DIRECTION_UP,
+    LATCH_UNKNOWN,
     LATCH_UNLATCHED,
 )
 from gradhermetic_cover_control.tests.simulator import BlindSimulator, Quirks
@@ -160,6 +161,12 @@ class Harness:
                 self.commands += 1
                 self.sim.stop_cover()
             elif action.kind == ACTION_PUBLISH_STATE:
+                # Publishes happen mid-move too now, so the mode is checked against the truth at
+                # every one of them, not only at rest.
+                if action.in_tilt and not self.sim.latched:
+                    raise AssertionError(
+                        f"published slat mode at {action.position} while the mechanism is not "
+                        "latched")
                 self.published.append(action.position)
             elif action.kind == ACTION_ARM_SETTLE_TIMER:
                 self.timer_armed = True
@@ -237,8 +244,8 @@ INTENTS = [
     ("stop", lambda logic: logic.on_stop()),
     ("tilt_on", lambda logic: logic.on_set_tilt_mode(True)),
     ("tilt_off", lambda logic: logic.on_set_tilt_mode(False)),
-    ("slat_up", lambda logic: logic.on_slat_step(DIRECTION_UP)),
-    ("slat_down", lambda logic: logic.on_slat_step(DIRECTION_DOWN)),
+    ("step_up", lambda logic: logic.on_step(DIRECTION_UP)),
+    ("step_down", lambda logic: logic.on_step(DIRECTION_DOWN)),
     ("short_up", lambda logic: logic.on_knx_short(DIRECTION_UP)),
     ("short_down", lambda logic: logic.on_knx_short(DIRECTION_DOWN)),
     ("long_up", lambda logic: logic.on_knx_long(DIRECTION_UP)),
@@ -346,7 +353,9 @@ class TestInterruptions(ModelTestCase):
         # The tilt exit is a short move, so it needs a finer stride to have interior points at all.
         ("leave_tilt", lambda: latched_at(LOWER, stride=2.0), lambda l: l.on_set_tilt_mode(False)),
         ("slat_step", lambda: latched_at(UPPER, stride=0.25),
-         lambda l: l.on_slat_step(DIRECTION_UP)),
+         lambda l: l.on_step(DIRECTION_UP)),
+        ("height_step_through_the_band", lambda: fresh(47.0, stride=2.0),
+         lambda l: l.on_step(DIRECTION_DOWN)),
         # The same two sequences on the geometry the optional settings produce: a four-step entry
         # that finishes mid-zone, and a much longer exit through a much wider ambiguity band.
         ("enter_custom_zone", lambda: fresh(10.0, stride=8.0, zone=CUSTOM_ZONE),
@@ -363,6 +372,8 @@ class TestInterruptions(ModelTestCase):
         ("tilt_off", lambda h: h.run(h.logic.on_set_tilt_mode(False))),
         ("long_down", lambda h: h.run(h.logic.on_knx_long(DIRECTION_DOWN))),
         ("short_down", lambda h: h.run(h.logic.on_knx_short(DIRECTION_DOWN))),
+        ("step_down", lambda h: h.run(h.logic.on_step(DIRECTION_DOWN))),
+        ("tilt_toggle", lambda h: h.run(h.logic.on_toggle_tilt_mode())),
         ("set_position", lambda h: h.run(h.logic.on_set_position(70.0))),
         ("restart", lambda h: h.restart()),
         ("unavailable_then_restart", lambda h: (h.go_unavailable(), h.restart())),
@@ -456,7 +467,7 @@ class TestFeedbackQuirks(ModelTestCase):
                 harness = latched_at(UPPER, quirks=quirks)
                 for _ in range(6):
                     harness.published = []
-                    harness.run(harness.logic.on_slat_step(DIRECTION_UP))
+                    harness.run(harness.logic.on_step(DIRECTION_UP))
                     self.assert_nominal(harness)
                 self.assertAlmostEqual(100.0, harness.logic.current_virtual_position())
                 self.assertEqual(to_command(LOWER), harness.sim.reported)
@@ -557,6 +568,61 @@ class TestAlternateGeometries(ModelTestCase):
                     self.assert_at_rest(harness)
 
 
+class TestHeightSteps(ModelTestCase):
+    """Step presses outside tilt walk the blind through its whole travel, band included."""
+
+    def test_stepping_down_from_the_top_reaches_the_bottom(self):
+        harness = fresh(100.0)
+        previous = 100
+        while harness.sim.reported > 0:
+            harness.published = []
+            harness.commands = 0
+            harness.run(harness.logic.on_step(DIRECTION_DOWN))
+            self.assert_nominal(harness)
+            self.assertLess(harness.sim.reported, previous, "a step down did not move the blind")
+            self.assertFalse(ZONE.band_low < harness.sim.reported < ZONE.band_high)
+            previous = harness.sim.reported
+        self.assertEqual([], harness.logic.on_step(DIRECTION_DOWN))
+
+    def test_stepping_up_from_the_bottom_reaches_the_top(self):
+        harness = fresh(0.0)
+        previous = 0
+        while harness.sim.reported < 100:
+            harness.published = []
+            harness.commands = 0
+            harness.run(harness.logic.on_step(DIRECTION_UP))
+            self.assert_nominal(harness)
+            self.assertGreater(harness.sim.reported, previous, "a step up did not move the blind")
+            self.assertFalse(ZONE.band_low < harness.sim.reported < ZONE.band_high)
+            previous = harness.sim.reported
+        self.assertEqual(LATCH_UNLATCHED, harness.logic.latch)
+        self.assertEqual([], harness.logic.on_step(DIRECTION_UP))
+
+    def test_a_step_up_through_the_band_stays_honest_about_the_latch(self):
+        harness = fresh(35.0)
+        harness.run(harness.logic.on_step(DIRECTION_UP))
+        self.assertEqual(to_command(RELEASE), harness.sim.reported)
+        self.assertEqual(LATCH_UNKNOWN, harness.logic.latch)
+        self.assert_nominal(harness)
+        # The step back down pays the release it cannot be sure of.
+        harness.published = []
+        harness.commands = 0
+        harness.run(harness.logic.on_step(DIRECTION_DOWN))
+        self.assertEqual(to_command(DIP), harness.sim.reported)
+        self.assertEqual(2, harness.commands)
+        self.assert_nominal(harness)
+
+    def test_a_step_press_mid_move_stops_the_blind(self):
+        harness = fresh(80.0, stride=8.0)
+        harness.run_partial(harness.logic.on_close(), 2)
+        harness.run(harness.logic.on_step(DIRECTION_UP))
+        self.assertFalse(harness.logic.has_pending_plan)
+        self.assertGreater(harness.sim.reported, 0)
+        self.assert_no_violation(harness)
+        self.assert_belief_is_sound(harness)
+        self.assert_at_rest(harness)
+
+
 class TestSettleTimerAgainstTheModel(ModelTestCase):
     """The fallback timer must be inert on healthy runs and honest on jammed ones."""
 
@@ -620,7 +686,7 @@ class TestCalibrationDrift(ModelTestCase):
         for _ in range(3):
             harness.published = []
             harness.commands = 0
-            harness.run(harness.logic.on_slat_step(DIRECTION_UP))
+            harness.run(harness.logic.on_step(DIRECTION_UP))
             self.assert_nominal(harness)
 
         harness.published = []
@@ -673,6 +739,24 @@ class TestCalibrationDrift(ModelTestCase):
         self.assertGreaterEqual(harness.sim.physical, RELEASE)
         self.assertEqual(LATCH_UNLATCHED, harness.logic.latch)
         self.assert_nominal(harness)
+
+    def test_a_rise_to_the_release_height_by_position_never_claims_a_release(self):
+        # From below the zone a slider target inside the band snaps up to the release height. On a
+        # drifted actuator the blind stops physically short of it -- latched, while the feedback
+        # says it arrived. The app must not believe it is released, and the close that follows
+        # must buy the full-open release rather than drive down on a latched mechanism.
+        for drift in (0.0, 0.5, 1.0, 1.5):
+            with self.subTest(drift=drift):
+                harness = fresh(20.0, quirks=Quirks(drift_per_move=drift))
+                harness.run(harness.logic.on_set_position(45.0))
+                self.assertEqual(to_command(RELEASE), harness.sim.reported)
+                self.assert_belief_is_sound(harness)
+                self.assertEqual(LATCH_UNKNOWN, harness.logic.latch)
+                harness.published = []
+                harness.commands = 0
+                harness.run(harness.logic.on_close())
+                self.assertEqual(0, harness.sim.reported)
+                self.assert_nominal(harness)
 
     def test_a_short_rise_from_an_uncalibrated_state_would_not_release(self):
         # The cheap release the descent guard deliberately does not use, and the bound the tilt exit

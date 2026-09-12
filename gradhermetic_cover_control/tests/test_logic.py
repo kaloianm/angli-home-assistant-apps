@@ -10,6 +10,9 @@ from gradhermetic_cover_control.executor import (
     ACTION_OPEN_FULL,
     ACTION_PUBLISH_STATE,
     ACTION_STOP,
+    MOTION_CLOSING,
+    MOTION_IDLE,
+    MOTION_OPENING,
     NOTIFY_INVARIANT,
 )
 from gradhermetic_cover_control.geometry import Zone
@@ -279,19 +282,13 @@ class TestEnterLanding(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "tilt_enter_landing_pct must be between"):
                     _config(tilt_enter_landing_pct=landing)
 
-    def test_the_landing_does_not_apply_to_a_wall_button_entry(self):
-        # The KNX rule is directional: a down press from above lands closed whatever the config.
+    def test_the_toggle_lands_on_the_configured_landing_too(self):
+        # The tilt helper and the KNX tilt address go through the toggle; it is the same entry.
         logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=41.0))
         logic.seed_state(80.0)
-        actions = run_plan(logic, logic.on_knx_short(DIRECTION_DOWN))
-        self.assertAlmostEqual(UPPER, _moves(actions)[-1].position)
-        self.assertAlmostEqual(0.0, logic.current_virtual_position())
-
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=41.0))
-        logic.seed_state(10.0)
-        actions = run_plan(logic, logic.on_knx_short(DIRECTION_UP))
-        self.assertAlmostEqual(LOWER, _moves(actions)[-1].position)
-        self.assertAlmostEqual(100.0, logic.current_virtual_position())
+        actions = run_plan(logic, logic.on_toggle_tilt_mode())
+        self.assertAlmostEqual(41.0, _moves(actions)[-1].position)
+        self.assertAlmostEqual(50.0, logic.current_virtual_position())
 
 
 class TestInsideTilt(unittest.TestCase):
@@ -338,10 +335,10 @@ class TestInsideTilt(unittest.TestCase):
         self.assertFalse(self.logic.in_tilt)
 
 
-class TestSlatStepHelper(unittest.TestCase):
+class TestStepHelperWhileLatched(unittest.TestCase):
     """
-    The dedicated ``..._step_up`` / ``..._step_down`` helpers: slats while latched, and otherwise
-    the wall button's "enter toward the zone" rule. They never leave tilt and never stop a move.
+    The ``..._step_up`` / ``..._step_down`` helpers while latched: slat steps clamped at both
+    edges, and a stop whenever anything is moving.
     """
 
     def setUp(self):
@@ -350,105 +347,138 @@ class TestSlatStepHelper(unittest.TestCase):
         run_plan(self.logic, self.logic.on_set_tilt_mode(True))  # latched, virtual 0 / real UPPER.
 
     def test_step_up_moves_toward_open(self):
-        actions = self.logic.on_slat_step(DIRECTION_UP)
+        actions = self.logic.on_step(DIRECTION_UP)
         self.assertAlmostEqual(UPPER - STEP, _moves(actions)[0].position)
         run_plan(self.logic, actions)
         self.assertTrue(self.logic.in_tilt)
 
     def test_step_down_moves_toward_closed(self):
         run_plan(self.logic, self.logic.on_open())  # virtual 100 / real LOWER (fully open).
-        actions = self.logic.on_slat_step(DIRECTION_DOWN)
+        actions = self.logic.on_step(DIRECTION_DOWN)
         self.assertAlmostEqual(LOWER + STEP, _moves(actions)[0].position)
         run_plan(self.logic, actions)
         self.assertTrue(self.logic.in_tilt)
 
     def test_step_up_at_open_edge_clamps_and_stays_in_tilt(self):
         run_plan(self.logic, self.logic.on_open())  # virtual 100 / real LOWER (fully open).
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_UP))
+        self.assertEqual([], self.logic.on_step(DIRECTION_UP))
         self.assertTrue(self.logic.in_tilt)
         self.assertAlmostEqual(LOWER, self.logic.last_position)
 
     def test_step_down_at_closed_edge_is_noop(self):
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_DOWN))
+        self.assertEqual([], self.logic.on_step(DIRECTION_DOWN))
         self.assertTrue(self.logic.in_tilt)
 
-    def test_step_ignored_while_moving(self):
+    def test_a_step_while_moving_stops_the_blind(self):
         self.logic.on_real_position(42.0, True)  # blind reports it is travelling.
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_UP))
+        actions = self.logic.on_step(DIRECTION_UP)
+        self.assertEqual(ACTION_STOP, _kinds(actions)[0])
+        self.assertEqual([], _moves(actions))
 
-    def test_step_ignored_while_plan_pending(self):
-        self.logic.on_set_position(50.0)  # starts a plan; no feedback yet.
+    def test_a_step_while_a_slat_move_is_pending_stops_it_and_keeps_the_latch_belief(self):
+        self.logic.on_set_position(50.0)  # starts a slat plan; no feedback yet.
         self.assertTrue(self.logic.has_pending_plan)
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_UP))
+        actions = self.logic.on_step(DIRECTION_UP)
+        self.assertEqual(ACTION_STOP, _kinds(actions)[0])
+        self.assertFalse(self.logic.has_pending_plan)
+        self.assertEqual(LATCH_LATCHED, self.logic.latch)
 
 
-class TestSlatStepHelperEntersTheZone(unittest.TestCase):
+class TestStepHelperWhileNotLatched(unittest.TestCase):
     """
-    Unlatched and idle, a step press adopts the wall button's rule 3 and enters toward the zone.
-
-    Without it a blind with no KNX wall switch has no directional way into tilt from the dashboard
-    at all: the buttons would simply do nothing, which is what the field reported.
+    The same helpers outside tilt step the height by ``height_step_pct``, in either direction,
+    from anywhere -- and stop the blind if it is moving. Entering tilt is the tilt helper's job.
     """
 
     def setUp(self):
         self.logic = GradhermeticCoverLogic(_config())
 
-    def test_down_from_above_enters_at_the_closed_edge(self):
-        self.logic.seed_state(80.0)
-        actions = run_plan(self.logic, self.logic.on_slat_step(DIRECTION_DOWN))
-        self.assertEqual([ACTION_OPEN_FULL, ACTION_MOVE_TO, ACTION_MOVE_TO],
-                         _kinds(_moves(actions)))
-        self.assertAlmostEqual(DIP, _moves(actions)[1].position)
-        self.assertAlmostEqual(UPPER, _moves(actions)[2].position)
-        self.assertTrue(self.logic.in_tilt)
-        self.assertAlmostEqual(0.0, self.logic.current_virtual_position())
+    def test_a_step_moves_the_height_by_one_increment(self):
+        cases = ((80.0, DIRECTION_DOWN, 78.0), (80.0, DIRECTION_UP, 82.0),
+                 (10.0, DIRECTION_UP, 12.0), (10.0, DIRECTION_DOWN, 8.0))
+        for start, direction, expected in cases:
+            with self.subTest(start=start, direction=direction):
+                logic = GradhermeticCoverLogic(_config())
+                logic.seed_state(start)
+                actions = run_plan(logic, logic.on_step(direction))
+                self.assertEqual([ACTION_MOVE_TO], _kinds(_moves(actions)))
+                self.assertAlmostEqual(expected, _moves(actions)[0].position)
+                self.assertAlmostEqual(expected, _published(actions)[-1].position)
+                self.assertFalse(_published(actions)[-1].in_tilt)
+                self.assertEqual(LATCH_UNLATCHED, logic.latch)
 
-    def test_up_from_below_enters_at_the_open_edge(self):
-        self.logic.seed_state(10.0)
-        actions = run_plan(self.logic, self.logic.on_slat_step(DIRECTION_UP))
-        self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
-        self.assertAlmostEqual(LOWER, _moves(actions)[-1].position)
-        self.assertTrue(self.logic.in_tilt)
-        self.assertAlmostEqual(100.0, self.logic.current_virtual_position())
+    def test_the_step_size_is_configurable(self):
+        logic = GradhermeticCoverLogic(_config(height_step_pct=5.0))
+        logic.seed_state(80.0)
+        self.assertAlmostEqual(75.0, _moves(logic.on_step(DIRECTION_DOWN))[0].position)
 
-    def test_a_press_pointing_away_from_the_zone_does_nothing(self):
-        self.logic.seed_state(80.0)
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_UP))
-        self.logic.seed_state(10.0)
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_DOWN))
+    def test_a_step_at_a_travel_limit_does_nothing_and_says_so(self):
+        entries = []
+        logic = GradhermeticCoverLogic(_config(), log=lambda m, level="INFO": entries.append(m))
+        logic.seed_state(100.0)
+        self.assertEqual([], logic.on_step(DIRECTION_UP))
+        logic.seed_state(0.0)
+        self.assertEqual([], logic.on_step(DIRECTION_DOWN))
+        self.assertTrue(any("top limit" in m for m in entries))
+        self.assertTrue(any("bottom limit" in m for m in entries))
 
-    def test_a_press_from_inside_the_band_without_a_latch_belief_does_nothing(self):
-        # Neither direction points toward a zone the blind already sits in, and there are no slats
-        # to step: the tilt helper and the cover's own controls are the way out.
-        self.logic.seed_state(41.0)
+    def test_a_step_into_the_band_crosses_to_the_far_edge(self):
+        self.logic.seed_state(47.0)
+        actions = run_plan(self.logic, self.logic.on_step(DIRECTION_DOWN))
+        self.assertAlmostEqual(DIP, _moves(actions)[0].position)
+        self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
+        actions = run_plan(self.logic, self.logic.on_step(DIRECTION_UP))
+        self.assertAlmostEqual(RELEASE, _moves(actions)[0].position)
+        # Rising from below the lower edge to exactly the release height proves nothing about the
+        # latch, so the belief is honest rather than optimistic...
         self.assertEqual(LATCH_UNKNOWN, self.logic.latch)
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_UP))
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_DOWN))
+        # ...and clears itself the moment the blind rests clear of the band.
+        actions = run_plan(self.logic, self.logic.on_step(DIRECTION_UP))
+        self.assertAlmostEqual(RELEASE + 2.0, _moves(actions)[0].position)
+        self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
 
-    def test_a_press_with_an_unknown_position_does_nothing(self):
+    def test_a_step_down_from_the_band_with_no_latch_belief_releases_first(self):
+        self.logic.seed_state(41.0)
+        actions = run_plan(self.logic, self.logic.on_step(DIRECTION_DOWN))
+        self.assertEqual([ACTION_OPEN_FULL, ACTION_MOVE_TO], _kinds(_moves(actions)))
+        self.assertAlmostEqual(DIP, _moves(actions)[1].position)
+        self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
+
+    def test_a_step_up_from_the_band_with_no_latch_belief_rises_directly(self):
+        self.logic.seed_state(41.0)
+        actions = run_plan(self.logic, self.logic.on_step(DIRECTION_UP))
+        self.assertEqual([ACTION_MOVE_TO], _kinds(_moves(actions)))
+        self.assertAlmostEqual(RELEASE, _moves(actions)[0].position)
+        self.assertEqual(LATCH_UNKNOWN, self.logic.latch)
+
+    def test_a_step_with_an_unknown_position_does_nothing(self):
         self.logic.seed_state(None)
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_DOWN))
+        self.assertEqual([], self.logic.on_step(DIRECTION_DOWN))
+        self.assertEqual([], self.logic.on_step(DIRECTION_UP))
 
-    def test_a_press_mid_plan_is_still_ignored(self):
-        # Entering must not be able to abort a sequence already in flight.
+    def test_a_step_mid_plan_stops_the_plan(self):
         self.logic.seed_state(80.0)
         self.logic.on_close()
-        self.assertTrue(self.logic.has_pending_plan)
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_DOWN))
-        self.assertTrue(self.logic.has_pending_plan)
+        actions = self.logic.on_step(DIRECTION_DOWN)
+        self.assertEqual(ACTION_STOP, _kinds(actions)[0])
+        self.assertFalse(self.logic.has_pending_plan)
 
-    def test_a_press_while_moving_is_still_ignored(self):
+    def test_a_step_while_moving_externally_stops_the_blind(self):
         self.logic.seed_state(80.0)
-        self.logic.on_real_position(70.0, True)  # travelling under external control
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_DOWN))
+        self.logic.on_real_position(70.0, True)
+        actions = self.logic.on_step(DIRECTION_DOWN)
+        self.assertEqual(ACTION_STOP, _kinds(actions)[0])
+        self.assertEqual([], _moves(actions))
 
-    def test_entry_ignores_the_configured_landing(self):
-        # This is the wall-button rule, so the near edge decides -- not tilt_enter_landing_pct.
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=41.0))
-        logic.seed_state(80.0)
-        actions = run_plan(logic, logic.on_slat_step(DIRECTION_DOWN))
-        self.assertAlmostEqual(UPPER, _moves(actions)[-1].position)
-        self.assertAlmostEqual(0.0, logic.current_virtual_position())
+    def test_a_step_never_enters_tilt(self):
+        for start in (80.0, 10.0):
+            for direction in (DIRECTION_UP, DIRECTION_DOWN):
+                with self.subTest(start=start, direction=direction):
+                    logic = GradhermeticCoverLogic(_config())
+                    logic.seed_state(start)
+                    actions = run_plan(logic, logic.on_step(direction))
+                    self.assertEqual([ACTION_MOVE_TO], _kinds(_moves(actions)))
+                    self.assertFalse(logic.in_tilt)
 
 
 class TestKnxLongPress(unittest.TestCase):
@@ -489,42 +519,31 @@ class TestKnxShortPress(unittest.TestCase):
         self.logic.on_open()  # starts a plan
         self.logic.on_real_position(70.0, True)  # now moving
         actions = self.logic.on_knx_short(DIRECTION_UP)
-        self.assertEqual([ACTION_STOP, ACTION_CANCEL_SETTLE_TIMER], _kinds(actions))
+        self.assertEqual([ACTION_STOP, ACTION_CANCEL_SETTLE_TIMER], _kinds(actions)[:2])
         self.assertFalse(self.logic.has_pending_plan)
 
-    def test_short_down_from_above_enters_closed(self):
+    def test_short_press_steps_the_height_when_not_latched(self):
+        # The same rule as the dashboard step helpers: a nudge, never a tilt entry.
         self.logic.seed_state(80.0)
-        actions = run_plan(self.logic, self.logic.on_knx_short(DIRECTION_DOWN))
-        self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
-        self.assertTrue(self.logic.in_tilt)
-        self.assertAlmostEqual(0.0, self.logic.current_virtual_position())
-
-    def test_short_up_from_below_enters_open(self):
-        self.logic.seed_state(10.0)
-        actions = run_plan(self.logic, self.logic.on_knx_short(DIRECTION_UP))
-        self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
-        self.assertTrue(self.logic.in_tilt)
-        self.assertAlmostEqual(100.0, self.logic.current_virtual_position())
-
-    def test_short_up_from_above_does_nothing(self):
-        self.logic.seed_state(80.0)
-        self.assertEqual([], self.logic.on_knx_short(DIRECTION_UP))
-
-    def test_short_down_from_below_does_nothing(self):
-        self.logic.seed_state(10.0)
-        self.assertEqual([], self.logic.on_knx_short(DIRECTION_DOWN))
+        self.assertAlmostEqual(78.0, _moves(self.logic.on_knx_short(DIRECTION_DOWN))[0].position)
+        logic = GradhermeticCoverLogic(_config())
+        logic.seed_state(10.0)
+        self.assertAlmostEqual(12.0, _moves(logic.on_knx_short(DIRECTION_UP))[0].position)
+        self.assertFalse(logic.in_tilt)
 
     def test_short_press_ignored_when_position_unknown(self):
         self.logic.seed_state(None)
         self.assertEqual([], self.logic.on_knx_short(DIRECTION_DOWN))
 
-    def test_short_press_while_idle_inside_the_zone_does_nothing(self):
-        # Q3: neither direction points toward a zone the blind already sits in, and it is not
-        # believed latched, so there are no slats to step. The long press is the escape hatch.
+    def test_short_press_inside_the_band_without_a_latch_belief_steps_the_height(self):
+        # Resting in the band with the latch unknown (after a restart, say) used to make both
+        # buttons dead. Now up rises out of the band and down pays the release first.
         self.logic.seed_state(41.0)
         self.assertEqual(LATCH_UNKNOWN, self.logic.latch)
-        self.assertEqual([], self.logic.on_knx_short(DIRECTION_UP))
-        self.assertEqual([], self.logic.on_knx_short(DIRECTION_DOWN))
+        self.assertAlmostEqual(RELEASE, _moves(self.logic.on_knx_short(DIRECTION_UP))[0].position)
+        logic = GradhermeticCoverLogic(_config())
+        logic.seed_state(41.0)
+        self.assertEqual(ACTION_OPEN_FULL, _moves(logic.on_knx_short(DIRECTION_DOWN))[0].kind)
 
 
 class TestStartupAndMisc(unittest.TestCase):
@@ -546,7 +565,10 @@ class TestStartupAndMisc(unittest.TestCase):
 
     def test_startup_with_an_unknown_position_seeds_an_unknown_latch_without_moving(self):
         actions = self.logic.on_startup(None)
-        self.assertEqual([], actions)
+        # Nothing moves; the sensor is published as unavailable rather than left to a stale value.
+        self.assertEqual([ACTION_PUBLISH_STATE], _kinds(actions))
+        self.assertIsNone(actions[0].position)
+        self.assertFalse(actions[0].in_tilt)
         self.assertEqual(LATCH_UNKNOWN, self.logic.latch)
         self.assertFalse(self.logic.has_pending_plan)
 
@@ -605,9 +627,11 @@ class TestStartupAndMisc(unittest.TestCase):
     def test_stop_clears_pending_plan(self):
         self.logic.seed_state(50.0)
         self.logic.on_open()
-        self.assertEqual([ACTION_STOP, ACTION_CANCEL_SETTLE_TIMER], _kinds(self.logic.on_stop()))
-        # With the plan cleared, position feedback no longer advances anything.
-        self.assertEqual([], self.logic.on_real_position(70.0, True))
+        actions = self.logic.on_stop()
+        self.assertEqual([ACTION_STOP, ACTION_CANCEL_SETTLE_TIMER], _kinds(actions)[:2])
+        self.assertFalse(self.logic.has_pending_plan)
+        # With the plan cleared, position feedback only updates what the cover shows.
+        self.assertEqual([ACTION_PUBLISH_STATE], _kinds(self.logic.on_real_position(70.0, True)))
 
 
 class TestLatchSafetyGuard(unittest.TestCase):
@@ -694,7 +718,7 @@ class TestBeliefTransitions(unittest.TestCase):
         # Every target of a slat plan lies inside the zone, so it can neither engage nor release the
         # latch: stopping one must not drop the blind out of tilt mode.
         self._latch()
-        self.logic.on_slat_step(DIRECTION_UP)
+        self.logic.on_step(DIRECTION_UP)
         self.logic.on_real_position(43.0, True)
         self.logic.on_stop()
         self.assertEqual(LATCH_LATCHED, self.logic.latch)
@@ -741,9 +765,10 @@ class TestCommandReplacesPlan(unittest.TestCase):
         self.assertFalse(self.logic.in_tilt)
 
     def test_a_noop_intent_leaves_a_running_plan_alone(self):
+        # Leaving tilt from a known release plans nothing, so the close keeps running.
         self.logic.seed_state(80.0)
         self.logic.on_close()
-        self.assertEqual([], self.logic.on_slat_step(DIRECTION_UP))
+        self.assertEqual([], self.logic.on_set_tilt_mode(False))
         self.assertTrue(self.logic.has_pending_plan)
 
 
@@ -756,19 +781,24 @@ class TestSettleTimer(unittest.TestCase):
     def test_a_long_move_rearms_rather_than_stalling(self):
         self.logic.on_close()
         actions = self.logic.on_settle_timer(40.0, True)
-        self.assertEqual([ACTION_ARM_SETTLE_TIMER], _kinds(actions))
+        self.assertIn(ACTION_ARM_SETTLE_TIMER, _kinds(actions))
+        self.assertNotIn(ACTION_NOTIFY, _kinds(actions))
         self.assertTrue(self.logic.has_pending_plan)
 
-    def test_settled_short_stalls_and_notifies(self):
+    def test_settled_short_stalls_and_notifies_without_a_stop(self):
+        # The blind is at rest: a stop has nothing to stop, and on a KNX actuator without a stop
+        # object it would be a step telegram instead.
         self.logic.on_close()
         actions = self.logic.on_settle_timer(50.0, False)
-        self.assertEqual([ACTION_STOP, ACTION_CANCEL_SETTLE_TIMER, ACTION_NOTIFY], _kinds(actions))
+        self.assertEqual([ACTION_CANCEL_SETTLE_TIMER, ACTION_NOTIFY, ACTION_PUBLISH_STATE],
+                         _kinds(actions))
         self.assertFalse(self.logic.has_pending_plan)
 
-    def test_an_unreadable_position_stalls(self):
+    def test_an_unreadable_position_stalls_and_stops(self):
         self.logic.on_close()
         actions = self.logic.on_settle_timer(None, False)
-        self.assertEqual(ACTION_NOTIFY, _kinds(actions)[-1])
+        self.assertEqual([ACTION_STOP, ACTION_CANCEL_SETTLE_TIMER, ACTION_NOTIFY],
+                         _kinds(actions)[:3])
         self.assertEqual(LATCH_UNKNOWN, self.logic.latch)
 
     def test_a_stray_firing_without_a_plan_does_nothing(self):
@@ -819,7 +849,7 @@ class TestConfirmedBugRegressions(unittest.TestCase):
         # duplicate report of the pre-step position used to complete the plan instantly.
         self.logic.seed_state(100.0)
         run_plan(self.logic, self.logic.on_set_tilt_mode(True))  # latched at real UPPER, virtual 0.
-        self.logic.on_slat_step(DIRECTION_UP)
+        self.logic.on_step(DIRECTION_UP)
 
         actions = self.logic.on_real_position(UPPER, False)
         self.assertEqual([], actions)
@@ -898,6 +928,198 @@ class TestLogging(unittest.TestCase):
             logic.on_close()
 
         self.assertIn(("ERROR", "refusing a plan that violates L1: boom"), entries)
+
+
+class TestPublishing(unittest.TestCase):
+    """
+    What the virtual cover shows, and when: every event publishes whatever changed, so travel is
+    visible as it happens rather than only where it ended.
+    """
+
+    def setUp(self):
+        self.logic = GradhermeticCoverLogic(_config())
+
+    def test_a_height_move_publishes_its_progress(self):
+        self.logic.seed_state(80.0)
+        actions = self.logic.on_close()
+        # Commanded but not yet reported moving: the cover already shows what is about to happen.
+        self.assertEqual(MOTION_CLOSING, _published(actions)[-1].motion)
+        for position in (70.0, 50.0, 30.0):
+            actions = self.logic.on_real_position(position, True)
+            self.assertAlmostEqual(position, _published(actions)[-1].position)
+            self.assertEqual(MOTION_CLOSING, _published(actions)[-1].motion)
+        actions = self.logic.on_real_position(0.0, False)
+        self.assertAlmostEqual(0.0, _published(actions)[-1].position)
+        self.assertEqual(MOTION_IDLE, _published(actions)[-1].motion)
+
+    def test_an_external_move_publishes_its_progress_too(self):
+        self.logic.seed_state(20.0)
+        actions = self.logic.on_real_position(30.0, True, DIRECTION_UP)
+        self.assertAlmostEqual(30.0, _published(actions)[-1].position)
+        self.assertEqual(MOTION_OPENING, _published(actions)[-1].motion)
+
+    def test_the_direction_is_read_off_the_trend_when_the_controller_gives_none(self):
+        self.logic.seed_state(20.0)
+        self.logic.on_real_position(20.0, True)
+        actions = self.logic.on_real_position(18.0, True)
+        self.assertEqual(MOTION_CLOSING, _published(actions)[-1].motion)
+
+    def test_a_slat_move_publishes_on_the_slat_scale(self):
+        self.logic.seed_state(100.0)
+        run_plan(self.logic, self.logic.on_set_tilt_mode(True))  # latched at UPPER, virtual 0.
+        actions = self.logic.on_open()  # slats toward the lower edge: the blind itself descends
+        published = _published(actions)[-1]
+        self.assertTrue(published.in_tilt)
+        self.assertEqual(MOTION_OPENING, published.motion)
+        actions = self.logic.on_real_position(41.0, True, DIRECTION_DOWN)
+        published = _published(actions)[-1]
+        self.assertAlmostEqual(50.0, published.position)
+        self.assertTrue(published.in_tilt)
+        self.assertEqual(MOTION_OPENING, published.motion)
+
+    def test_an_entry_shows_height_mode_until_it_latches(self):
+        self.logic.seed_state(80.0)
+        actions = self.logic.on_set_tilt_mode(True)
+        self.assertFalse(_published(actions)[-1].in_tilt)
+        self.assertEqual(MOTION_OPENING, _published(actions)[-1].motion)
+        actions = self.logic.on_real_position(90.0, True, DIRECTION_UP)
+        self.assertAlmostEqual(90.0, _published(actions)[-1].position)
+        self.assertFalse(_published(actions)[-1].in_tilt)
+        self.logic.on_real_position(100.0, False)  # the full open is done; the dip is commanded
+        actions = self.logic.on_real_position(60.0, True, DIRECTION_DOWN)
+        self.assertAlmostEqual(60.0, _published(actions)[-1].position)
+        self.assertEqual(MOTION_CLOSING, _published(actions)[-1].motion)
+        self.assertFalse(_published(actions)[-1].in_tilt)
+        self.logic.on_real_position(DIP, False)  # the dip is done; the latching rise is commanded
+        actions = self.logic.on_real_position(UPPER, False)
+        published = _published(actions)[-1]
+        self.assertTrue(published.in_tilt)
+        self.assertAlmostEqual(0.0, published.position)
+        self.assertEqual(MOTION_IDLE, published.motion)
+
+    def test_an_exit_shows_height_mode_from_the_start(self):
+        self.logic.seed_state(100.0)
+        run_plan(self.logic, self.logic.on_set_tilt_mode(True))
+        actions = self.logic.on_set_tilt_mode(False)
+        published = _published(actions)[-1]
+        self.assertFalse(published.in_tilt)
+        self.assertAlmostEqual(UPPER, published.position)  # the real height, not a slat angle
+        self.assertEqual(MOTION_OPENING, published.motion)
+
+    def test_the_rest_after_a_stop_publishes_idle(self):
+        self.logic.seed_state(80.0)
+        self.logic.on_close()
+        self.logic.on_real_position(60.0, True, DIRECTION_DOWN)
+        self.logic.on_stop()
+        actions = self.logic.on_real_position(58.0, False)
+        self.assertAlmostEqual(58.0, _published(actions)[-1].position)
+        self.assertEqual(MOTION_IDLE, _published(actions)[-1].motion)
+
+    def test_a_stop_on_a_controller_without_motion_state_still_publishes_the_rest(self):
+        # No opening/closing state ever arrives, so nothing but the stop itself can say "idle".
+        self.logic.seed_state(80.0)
+        self.logic.on_close()
+        self.logic.on_real_position(70.0, False)
+        actions = self.logic.on_stop()
+        self.assertAlmostEqual(70.0, _published(actions)[-1].position)
+        self.assertEqual(MOTION_IDLE, _published(actions)[-1].motion)
+
+    def test_a_stall_publishes_where_the_blind_rests(self):
+        self.logic.seed_state(80.0)
+        self.logic.on_close()
+        actions = self.logic.on_settle_timer(50.0, False)
+        self.assertIn(ACTION_NOTIFY, _kinds(actions))
+        self.assertAlmostEqual(50.0, _published(actions)[-1].position)
+        self.assertEqual(MOTION_IDLE, _published(actions)[-1].motion)
+
+    def test_unavailable_publishes_as_such_and_drops_the_mode(self):
+        self.logic.seed_state(100.0)
+        run_plan(self.logic, self.logic.on_set_tilt_mode(True))
+        actions = self.logic.on_real_position(None, False)
+        published = _published(actions)[-1]
+        self.assertIsNone(published.position)
+        self.assertFalse(published.in_tilt)
+        self.assertEqual(MOTION_IDLE, published.motion)
+
+    def test_nothing_is_published_twice(self):
+        self.logic.on_startup(60.0)
+        self.assertEqual([], self.logic.on_real_position(60.0, False))
+        self.assertEqual([], self.logic.on_real_position(60.0, False))
+
+
+class TestTiltToggle(unittest.TestCase):
+    """The stateless toggle behind the tilt helper and the KNX tilt address."""
+
+    def setUp(self):
+        self.logic = GradhermeticCoverLogic(_config())
+
+    def test_the_toggle_enters_and_leaves(self):
+        self.logic.seed_state(80.0)
+        run_plan(self.logic, self.logic.on_toggle_tilt_mode())
+        self.assertTrue(self.logic.in_tilt)
+        run_plan(self.logic, self.logic.on_toggle_tilt_mode())
+        self.assertFalse(self.logic.in_tilt)
+        self.assertAlmostEqual(100.0, self.logic.last_position)
+
+    def test_the_toggle_cancels_an_entry_in_flight(self):
+        self.logic.seed_state(80.0)
+        self.logic.on_toggle_tilt_mode()
+        self.logic.on_real_position(90.0, True, DIRECTION_UP)
+        actions = self.logic.on_toggle_tilt_mode()
+        self.assertEqual(ACTION_STOP, _kinds(actions)[0])
+        self.assertEqual([], _moves(actions))
+        self.assertFalse(self.logic.has_pending_plan)
+
+    def test_the_toggle_cancels_an_exit_in_flight(self):
+        self.logic.seed_state(100.0)
+        run_plan(self.logic, self.logic.on_toggle_tilt_mode())
+        self.logic.on_toggle_tilt_mode()
+        self.logic.on_real_position(RELEASE - 1.0, True, DIRECTION_UP)
+        actions = self.logic.on_toggle_tilt_mode()
+        self.assertEqual(ACTION_STOP, _kinds(actions)[0])
+        self.assertFalse(self.logic.has_pending_plan)
+        self.assertEqual(LATCH_UNKNOWN, self.logic.latch)
+
+    def test_repeating_a_request_in_flight_does_not_restart_it(self):
+        # Each restart would be another real-cover command against the rate limit.
+        self.logic.seed_state(80.0)
+        first = self.logic.on_set_tilt_mode(True)
+        self.assertEqual([ACTION_OPEN_FULL], _kinds(_moves(first)))
+        self.assertEqual([], self.logic.on_set_tilt_mode(True))
+        self.assertTrue(self.logic.has_pending_plan)
+        run_plan(self.logic, first)
+        self.logic.on_set_tilt_mode(False)
+        self.assertEqual([], self.logic.on_set_tilt_mode(False))
+        self.assertTrue(self.logic.has_pending_plan)
+
+    def test_asking_to_leave_during_an_entry_stops_it(self):
+        self.logic.seed_state(80.0)
+        self.logic.on_set_tilt_mode(True)
+        actions = self.logic.on_set_tilt_mode(False)
+        self.assertEqual(ACTION_STOP, _kinds(actions)[0])
+        self.assertFalse(self.logic.has_pending_plan)
+
+
+class TestStopIsOnlySentWhenSomethingMoves(unittest.TestCase):
+    """
+    Every command reaches the actuator through this app, and on a KNX actuator without a stop
+    object a stop is carried on the step object -- which nudges an idle blind.
+    """
+
+    def setUp(self):
+        self.logic = GradhermeticCoverLogic(_config())
+        self.logic.seed_state(80.0)
+
+    def test_stop_on_an_idle_blind_sends_no_stop_command(self):
+        self.assertNotIn(ACTION_STOP, _kinds(self.logic.on_stop()))
+
+    def test_stop_with_a_plan_pending_sends_it(self):
+        self.logic.on_close()
+        self.assertIn(ACTION_STOP, _kinds(self.logic.on_stop()))
+
+    def test_stop_while_moving_externally_sends_it(self):
+        self.logic.on_real_position(70.0, True)
+        self.assertIn(ACTION_STOP, _kinds(self.logic.on_stop()))
 
 
 if __name__ == "__main__":

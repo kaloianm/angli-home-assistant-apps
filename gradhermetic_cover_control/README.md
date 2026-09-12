@@ -14,21 +14,24 @@ Tilt mode is toggled by firing a `gradhermetic_command` event with `command: set
 
 > The app additionally calls AppDaemon's `register_service` for `gradhermetic_cover_control/set_tilt_mode`, but that registers a service in AppDaemon's own namespace, not a Home Assistant service callable from HA scripts or the UI. Prefer the event form above from Home Assistant.
 
-For step and tilt from the UI, the app watches three `input_button` helpers per blind. `..._tilt` toggles tilt mode (enter/leave). `..._step_up` and `..._step_down` do one of two things, depending on whether the mechanism is latched:
+For step and tilt from the UI, the app watches three `input_button` helpers per blind. `..._tilt` toggles tilt mode (enter/leave), and cancels an entry or exit that is still in progress. `..._step_up` and `..._step_down` follow one rule — the same one a KNX stop/step object follows — in priority order:
 
-- **Latched** — step the slat angle by `tilt_step_pct` (the real travel one slat step moves the blind), clamping at both zone edges. Unlike a KNX wall button (below), they never step *out* of tilt at the open edge; leaving is the tilt helper's job.
-- **Not latched** — enter the tilt zone when the press points toward it, exactly as a wall-button short press would: from above the zone a **down** press enters at the most-closed end, and from below an **up** press enters at the most-open end. A press pointing away from the zone, or one made while the blind rests inside the ambiguity band without a latch belief, does nothing.
+1. **If anything is moving** — a sequence the app started, or the blind reported travelling — **stop it.**
+2. **Otherwise, if the mechanism is latched, step the slat angle** by `tilt_step_pct` (the real travel one slat step moves the blind), clamping at both zone edges. The helpers never step *out* of tilt at the open edge; leaving is the tilt helper's job.
+3. **Otherwise, step the blind's height** by `height_step_pct` of real travel. A step that would land inside the ambiguity band continues to the band edge ahead of it, so the band is crossed in one press rather than being a place the blind gets stuck in front of. A step down while the latch might be engaged pays the full-open release first, like every other descent.
 
-The second case exists for blinds with no wall switch: without it, the step buttons would be inert whenever the blind is not already in tilt, leaving the dashboard with no directional way in. A press is ignored outright while a movement is already in progress, so it can never abort a sequence.
+A step press never enters tilt mode. A press with nowhere to go — at a travel limit, at a slat edge, with no position known — is logged and does nothing else.
 
 The guiding principle for every control surface is **up = more light, down = less light** — applied to the whole blind's height when outside the tilt zone, and to the slat angle when inside it.
 
 The app publishes two entities of its own per blind, needing no helper declared for either:
 
-- `sensor.gradhermetic_<id>_position` — the position the virtual cover displays, which the template cover reads.
+- `sensor.gradhermetic_<id>_position` — the position the virtual cover displays, which the template cover reads. It carries a `motion` attribute (`opening` / `closing` / `idle`) the template cover's state template reads, so the cover shows travel as it happens.
 - `binary_sensor.gradhermetic_<id>_tilt_mode` — `on` while slat control is engaged, `off` otherwise.
 
 The second exists because nothing in Home Assistant can work it out: a real position inside the tilt zone is neither necessary nor sufficient for the mechanism being latched, which is the whole reason the app event-sources a latch belief rather than deriving one from the position. Both are written together, from the same moment, so the flag always says which scale the position beside it is on — a slat angle or a height. That is what lets a dashboard show which mode a blind is in, and what a toggle control should read to label itself: `..._tilt` is a button, and a button has no state to show.
+
+Both are republished after every event that changes what they show — every position report during travel included, not only the end of a move — and the position sensor goes `unavailable` (rather than holding a stale number) whenever the real cover's position is unreadable. While an entry or exit sequence is running the cover shows height mode and the real height climbing to the top and back; it switches to the slat scale only once the mechanism has actually latched.
 
 ### Outside tilt mode
 
@@ -36,9 +39,11 @@ The standard cover services target the full blind travel range:
 
 - `cover.open_cover` opens the blind fully (`100%`).
 - `cover.close_cover` closes the blind fully (`0%`).
-- `cover.set_cover_position` moves to the requested absolute position, except that a target landing *inside* the tilt zone's ambiguity band (between `tilt_zone_lower_pct - tilt_zone_epsilon_pct` and `tilt_zone_release_pct`) is snapped outward to the nearer edge of that band. Rising into the band would silently engage the latch while the application believed it was still doing height control, so whole-blind moves stay clear of it. The reported position is the snapped value.
+- `cover.set_cover_position` moves to the requested absolute position, except that a target landing *inside* the tilt zone's ambiguity band (between `tilt_zone_lower_pct - tilt_zone_epsilon_pct` and `tilt_zone_release_pct`) is snapped outward to the nearer edge of that band — or to the far edge when the nearer one is where the blind already rests, so a slider dragged into the band always moves the blind. Rising into the band would silently engage the latch while the application believed it was still doing height control, so whole-blind moves stay clear of it. The reported position is the snapped value.
 
   The band's upper end is the height at which the latch genuinely releases, because a latched-but-not-yet-released mechanism can be resting anywhere below it. Configuring a `tilt_zone_release_pct` well above the zone therefore widens the range of heights the blind refuses to stop at — with the default (`tilt_zone_upper_pct + tilt_zone_epsilon_pct`) the adjustment is a couple of percent of travel, but a blind that only releases much higher up will skip past more than that.
+
+  A rise that ends *exactly* on that upper end — from below the zone, or from a latch belief that is not a known release — leaves the latch belief **unknown** rather than released. The rise may have latched the mechanism on its way across the lower edge and reached the release height with no margin at all; an actuator settling a percent short, or a percent of calibration error, leaves it latched while the feedback says it arrived, and only the top limit switch can tell. The next downward command therefore drives fully open first, and the belief clears itself as soon as the blind rests clear of the band.
 
 ### Inside tilt mode
 
@@ -63,7 +68,9 @@ Entering tilt mode is therefore a single sequence, run from wherever the blind h
 3. Move up to `tilt_zone_upper_pct`. The upward crossing of the lower edge latches the mechanism in tilt mode, with the slats parallel (closed).
 4. Move to the slat angle given by `tilt_enter_landing_pct` — an absolute real position that must lie inside the zone (`tilt_zone_lower_pct` = slats fully open, `tilt_zone_upper_pct` = slats closed). This is one more small in-zone move and is omitted when the landing rounds to the position step 3 already reached. It defaults to `tilt_zone_upper_pct`, the closed edge the latching rise ends on anyway — i.e. no fourth step at all.
 
-Step 4 exists because the latching rise necessarily ends with the slats fully closed, and on a real blind the slats often do not visibly open until a couple of percent below `tilt_zone_upper_pct` — so an entry that lands exactly on the closed edge looks like it did nothing. Set `tilt_enter_landing_pct` to the height at which the slats are as open as you want tilt mode to start; on a zone of `[29, 34]`, for instance, `32` is a slightly-open landing. This applies to deliberate entry (the tilt helper, the event, the service); a wall-button or step-button entry keeps the directional rule below instead, landing on whichever end of the zone the press came toward.
+Step 4 exists because the latching rise necessarily ends with the slats fully closed, and on a real blind the slats often do not visibly open until a couple of percent below `tilt_zone_upper_pct` — so an entry that lands exactly on the closed edge looks like it did nothing. Set `tilt_enter_landing_pct` to the height at which the slats are as open as you want tilt mode to start; on a zone of `[29, 34]`, for instance, `32` is a slightly-open landing. Every entry goes through this same sequence: the tilt helper, the KNX slat-mode address, the event and the service.
+
+Asking to enter while an entry is already running, or to leave while an exit is, is a no-op rather than a restart; asking to leave while an entry is running stops it. The tilt helper and the KNX slat-mode address toggle, and a toggle during either sequence cancels it.
 
 To leave tilt mode:
 
@@ -113,17 +120,13 @@ The slat-mode address is a **stateless trigger, not a mode level**: it acts on a
 
 A short press is evaluated in this priority order:
 
-1. **If the blind is currently moving, stop it.** (This matches the native KNX "Stop/Step" behavior.)
-2. **Otherwise, if the mechanism is latched, step the slats** by `tilt_step_pct` of real travel — up steps toward open (more light), down steps toward closed (less light).
-3. **Otherwise (idle, not latched), enter the tilt zone** when the press points *toward* it:
-   - From above the zone, a **down** press enters tilt mode at the most-closed end (its near edge).
-   - From below the zone, an **up** press enters tilt mode at the most-open end (its near edge).
-   - A short press pointing *away* from the zone (when already past it) does nothing — long press covers the extremes.
-   - A short press while the blind is *resting inside* the zone without being believed latched also does nothing: neither direction points toward a zone it already sits in, and there are no slats to step. Use the long press or the tilt control to get out of that state.
+1. **If anything is moving, stop it.** (This matches the native KNX "Stop/Step" behavior.)
+2. **Otherwise, if the mechanism is latched, step the slats** by `tilt_step_pct` of real travel — up steps toward open (more light), down steps toward closed (less light). An up step at the open edge leaves tilt mode upward and resumes whole-blind control: a two-button switch has no other way out.
+3. **Otherwise, step the height** by `height_step_pct` of real travel, exactly as the dashboard step helpers do — skipping the ambiguity band in the direction of travel, and paying the full-open release first when stepping down from an uncertain latch belief.
 
-Stepping naturally crosses the zone boundaries: an up step at the open edge of the zone leaves tilt mode upward and resumes whole-blind control, and a down press from just above the zone enters it. Boundary crossings execute the full engage/disengage sequence rather than a small `tilt_step_pct` nudge.
+A short press never enters tilt mode; the slat-mode address does that. The dashboard step helpers follow the same rule except for rule 2's upward exit: they never leave tilt, since the dashboard has a tilt control of its own.
 
-The dashboard step helpers share rule 3 exactly (that is how a blind without a wall switch gets into tilt) but not rules 1 and 2's upward exit: they never stop a move and never leave tilt.
+Because every command reaches the actuator through this application, the application never relies on the actuator's own stop/step object either: a stop is sent only while something is moving. On a KNX actuator without a dedicated stop object, Home Assistant carries `stop_cover` on the step object, which would *nudge* an idle blind instead of stopping it.
 
 ## Position And Restart Behavior
 
@@ -134,9 +137,9 @@ The application does not persist state across restarts. After Home Assistant or 
 
 Deferring the reference this way costs nothing in safety: every move that could harm the mechanism still buys it first. What it buys is that a restart — after a power cut, say — never raises the blind unprompted in the middle of the night.
 
-One consequence is worth knowing. While the blind rests inside the band with the latch belief unknown, a wall-button short press and a dashboard step press both do nothing; that is the rule described above, not a new one — neither direction points toward a zone the blind already sits in, and there are no slats to step. Use `cover.open_cover`, `cover.close_cover`, a long press, or the tilt control to get out of that state.
+One consequence is worth knowing. While the blind rests inside the band with the latch belief unknown, the step controls still work, but asymmetrically: a step up rises out of the band directly (rising is always safe), while a step down — like every descent from an uncertain belief — drives fully open first and then descends.
 
-The latch belief works the same way during normal operation, not just at restart. The application tracks the latch as one of three states — **latched**, **released**, or **unknown** — and only a completed entry sequence establishes "latched". It falls back to "unknown" whenever a sequence is interrupted part-way, the underlying cover becomes unavailable, or the blind moves without being told to; and it clears to "released" whenever the blind comes to rest clearly outside the `[tilt_zone_lower_pct - tilt_zone_epsilon_pct, tilt_zone_release_pct]` band, where a latched mechanism cannot be.
+The latch belief works the same way during normal operation, not just at restart. The application tracks the latch as one of three states — **latched**, **released**, or **unknown** — and only a completed entry sequence establishes "latched". It falls back to "unknown" whenever a sequence is interrupted part-way, the underlying cover becomes unavailable, the blind moves without being told to, or a height move rises by position command to exactly the release height; and it clears to "released" whenever the blind comes to rest clearly outside the `[tilt_zone_lower_pct - tilt_zone_epsilon_pct, tilt_zone_release_pct]` band, where a latched mechanism cannot be.
 
 Any command that would drive the blind downward while the latch is not known to be released first drives fully open to release it, then descends. A blind that is *known* released descends straight away — closing right after leaving tilt mode, for instance, costs no detour.
 
@@ -188,6 +191,10 @@ gradhermetic_living_room:
   # step larger than the whole zone is meaningless. A 6% zone therefore yields at most six usable
   # slat positions. The app rejects an out-of-range step at startup.
   tilt_step_pct: 1.2
+
+  # Optional. Real travel percent one step button press moves the blind while it is not in slat
+  # mode. Same lower bound as tilt_step_pct, for the same reason; at most 100. Defaults to 2.0.
+  height_step_pct: 2.0
 
   # Optional KNX wall-button group addresses, each of which nothing but Home Assistant may listen
   # on. The "move" address receives long presses; the "step" address receives short presses, with

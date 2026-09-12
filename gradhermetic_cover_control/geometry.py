@@ -36,10 +36,14 @@ from typing import Optional
 # actuator's reported integer position clear of a zone edge, so one whole percent suffices.
 MIN_EPSILON_PCT = 1.0
 
-# Smallest usable slat step, in real travel percent. The actuator speaks whole percent, so a step
-# that moves the blind less than one reported percent rounds back to the current setpoint and moves
-# nothing at all.
+# Smallest usable step, slat or height, in real travel percent. The actuator speaks whole percent,
+# so a step that moves the blind less than one reported percent rounds back to the current setpoint
+# and moves nothing at all.
 MIN_STEP_PCT = 1.0
+
+# Real travel one height step moves the blind while it is not latched, unless apps.yaml says
+# otherwise. Two percent is a short nudge on a blind whose full travel takes about fifteen seconds.
+DEFAULT_HEIGHT_STEP_PCT = 2.0
 
 
 def clamp_pct(value: float) -> float:
@@ -68,6 +72,9 @@ class Zone:
     - ``tilt_step_pct`` -- how far one slat step moves the blind, in real travel. It has to be at
       least one whole reported percent (or the rounded command repeats the current setpoint) and at
       most the zone's own width (a step larger than the zone is meaningless).
+    - ``height_step_pct`` -- how far one step press moves the blind while it is *not* latched, in
+      real travel. Same lower bound, for the same reason; it defaults to
+      :data:`DEFAULT_HEIGHT_STEP_PCT`.
 
     The two optional fields are the ones a real installation has to be calibrated for:
 
@@ -90,6 +97,7 @@ class Zone:
     tilt_step_pct: float
     tilt_zone_release_pct: Optional[float] = None
     tilt_enter_landing_pct: Optional[float] = None
+    height_step_pct: float = DEFAULT_HEIGHT_STEP_PCT
 
     def __post_init__(self) -> None:
         """
@@ -152,6 +160,12 @@ class Zone:
         if self.tilt_step_pct > self.span:
             raise ValueError("tilt_step_pct must be <= tilt_zone_upper_pct - tilt_zone_lower_pct, "
                              "the real travel the whole tilt zone spans")
+        if self.height_step_pct < MIN_STEP_PCT:
+            raise ValueError(
+                f"height_step_pct must be >= {MIN_STEP_PCT} so one step moves the actuator at "
+                "least one reported percent of real travel")
+        if self.height_step_pct > 100.0:
+            raise ValueError("height_step_pct must be <= 100, the blind's whole travel")
 
     # -- Named landmarks ---------------------------------------------------------------------------
 
@@ -301,7 +315,7 @@ class Zone:
         """
         return clamp_pct((self.upper - real) / self.span * 100.0)
 
-    def snap_normal_target(self, target: float) -> float:
+    def snap_normal_target(self, target: float, current: Optional[float] = None) -> float:
         """
         Snap a whole-height target that falls inside the ambiguity band to the nearest band edge.
 
@@ -311,6 +325,10 @@ class Zone:
         never targets the band interior" an invariant instead of a hazard. Ties rise, because an
         upward move never needs a latch release first.
 
+        ``current`` is where the blind rests now. When the nearest edge is that very position the
+        far edge is chosen instead: a slider dragged into the band from an edge asked for a move,
+        and snapping it straight back would move nothing and look broken.
+
         A configured ``tilt_zone_release_pct`` raises :attr:`band_high` and so widens the range of
         heights this refuses to stop at: the cost of the snap grows with the distance the mechanism
         genuinely needs to release.
@@ -319,5 +337,23 @@ class Zone:
         if not self.band_low < target < self.band_high:
             return target
         if target - self.band_low < self.band_high - target:
-            return self.band_low
-        return self.band_high
+            nearest, farthest = self.band_low, self.band_high
+        else:
+            nearest, farthest = self.band_high, self.band_low
+        if current is not None and to_command(nearest) == to_command(current):
+            return farthest
+        return nearest
+
+    def snap_step_target(self, target: float, rising: bool) -> float:
+        """
+        Snap a height-step target that falls inside the ambiguity band to the edge ahead of it.
+
+        A step has a direction, so unlike a slider target it never snaps back the way it came: a
+        step down into the band continues to :attr:`band_low`, a step up continues to
+        :attr:`band_high`. The band is crossed in one step instead of being a place the blind can
+        get stuck in front of.
+        """
+        target = clamp_pct(target)
+        if not self.band_low < target < self.band_high:
+            return target
+        return self.band_high if rising else self.band_low
