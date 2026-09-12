@@ -27,6 +27,7 @@ from gradhermetic_cover_control.gradhermetic_cover_control import (
     STARTUP_DELAY_SECONDS,
     GradhermeticCoverControl,
 )
+from gradhermetic_cover_control.planner import LATCH_LATCHED, LATCH_UNLATCHED
 from gradhermetic_cover_control.runtime import COMMAND_RATE_LIMIT
 
 REAL_COVER = "cover.living_room_blind"
@@ -35,6 +36,7 @@ POSITION_ENTITY = f"sensor.gradhermetic_{VIRTUAL_ID}_position"
 TILT_MODE_ENTITY = f"binary_sensor.gradhermetic_{VIRTUAL_ID}_tilt_mode"
 MOVE_ADDRESS = "2/6/0"
 STEP_ADDRESS = "2/6/1"
+TILT_ADDRESS = "2/6/2"
 
 ARGS = {
     "real_cover": REAL_COVER,
@@ -46,6 +48,7 @@ ARGS = {
     "tilt_step_pct": 1.2,
     "knx_move_address": MOVE_ADDRESS,
     "knx_step_address": STEP_ADDRESS,
+    "knx_tilt_address": TILT_ADDRESS,
 }
 
 
@@ -213,6 +216,7 @@ class TestInitialize(unittest.TestCase):
         args = dict(ARGS)
         del args["knx_move_address"]
         del args["knx_step_address"]
+        del args["knx_tilt_address"]
         app = FakeApp(args).start(seed_startup_state=False)
         self.assertEqual([COMMAND_EVENT], [e for e, _ in app.event_listeners])
 
@@ -331,6 +335,47 @@ class TestKnxTelegrams(unittest.TestCase):
     def test_a_list_payload_is_decoded(self):
         self.app.knx_event(MOVE_ADDRESS, [1])
         self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/close_cover"))
+
+    def test_a_tilt_telegram_enters_tilt_mode(self):
+        # Resting at 80 and not latched, so the toggle means "enter" -- which begins by
+        # re-referencing at the top limit.
+        self.app.knx_event(TILT_ADDRESS, 1)
+        self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/open_cover"))
+        self.assertEqual(LATCH_LATCHED, self._pending_final_latch())
+
+    def test_a_tilt_telegram_leaves_tilt_mode_when_latched(self):
+        # The tilt object carries no mode of its own: what it does is read off the app's own latch
+        # belief, exactly as the dashboard tilt helper does.
+        self._latch_in_zone()
+        self.app.knx_event(TILT_ADDRESS, 1)
+        self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/open_cover"))
+        self.assertEqual(LATCH_UNLATCHED, self._pending_final_latch())
+
+    def test_a_tilt_release_telegram_is_ignored(self):
+        # A momentary pushbutton parameterized as a switch sends 1 on press and 0 on release. Acting
+        # on both edges would cancel out to nothing per press, so only the 1 is a trigger.
+        self.app.knx_event(TILT_ADDRESS, 0)
+        self.assertEqual([], self.app.service_calls)
+
+    def test_a_malformed_tilt_payload_is_ignored_not_fatal(self):
+        self.app.knx_event(TILT_ADDRESS, "maybe")
+        self.assertEqual([], self.app.service_calls)
+        self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
+
+    # pylint: disable=protected-access
+    def _latch_in_zone(self):
+        """
+        Put the logic in the belief it holds after a completed enter sequence.
+        """
+        logic = self.app._runtime.logic
+        logic._latch = LATCH_LATCHED
+        logic._position = 41.0
+
+    def _pending_final_latch(self):
+        """
+        The latch belief the plan now in flight will commit when it completes.
+        """
+        return self.app._runtime.logic._executor.plan.final_latch
 
 
 class TestButtonPresses(unittest.TestCase):

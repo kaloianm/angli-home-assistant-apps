@@ -112,7 +112,7 @@ class GradhermeticCoverControl(hass.Hass):
         self.listen_state(self._on_step_button, self._step_down_button)
         self.listen_state(self._on_tilt_button, self._tilt_button)
 
-        if config.knx_move_address or config.knx_step_address:
+        if config.knx_move_address or config.knx_step_address or config.knx_tilt_address:
             self.listen_event(self._on_knx, "knx_event")
 
         self.register_service("gradhermetic_cover_control/set_tilt_mode", self._on_set_tilt_mode)
@@ -220,27 +220,36 @@ class GradhermeticCoverControl(hass.Hass):
 
     def _on_knx(self, event_name: str, data: Dict[str, Any], kwargs: Dict[str, Any]) -> None:
         """
-        Route a KNX wall-button telegram to a long/short logic event.
+        Route a KNX wall-button telegram to a long/short/tilt logic event.
         """
         try:
             destination = data.get("destination")
             config = self._config
             # Guard against a telegram with no destination matching a None-valued address attribute
-            # when only one of the two KNX addresses is configured.
+            # when only some of the three KNX addresses are configured.
             if destination is None:
                 return
-            if destination not in (config.knx_move_address, config.knx_step_address):
+            if destination not in (config.knx_move_address, config.knx_step_address,
+                                   config.knx_tilt_address):
                 return
             if not self._ready:
                 self.log("Ignoring KNX press before startup state is seeded")
+                return
+            logic = self._runtime.logic
+            # The tilt address carries no direction, so it is handled before any direction is
+            # decoded: it is a trigger, and what it does depends only on the current mode.
+            if destination == config.knx_tilt_address:
+                if not _knx_trigger(data):
+                    return
+                self._apply_actions(logic.on_set_tilt_mode(not logic.in_tilt))
                 return
             direction = _knx_direction(data)
             if direction is None:
                 return
             if destination == config.knx_move_address:
-                actions = self._runtime.logic.on_knx_long(direction)
+                actions = logic.on_knx_long(direction)
             else:
-                actions = self._runtime.logic.on_knx_short(direction)
+                actions = logic.on_knx_short(direction)
             self._apply_actions(actions)
         except Exception as exc:
             self._report_error(f"_on_knx(destination={data.get('destination')!r})", exc)
@@ -539,6 +548,28 @@ def _knx_direction(data: Dict[str, Any]) -> Optional[str]:
     except (TypeError, ValueError):
         return None
     return DIRECTION_UP if value == 0 else DIRECTION_DOWN
+
+
+def _knx_trigger(data: Dict[str, Any]) -> bool:
+    """
+    Decode a KNX tilt telegram into "act" or "ignore", acting only on a 1.
+
+    The tilt object is a stateless trigger, not a mode level: what it means is "toggle", and the app
+    toggles off its own latch belief exactly as the dashboard tilt helper does. Ignoring 0 is what
+    makes it correct on a momentary pushbutton parameterized as a two-state switch, which sends 1 on
+    press and 0 on release -- toggling on both edges would cancel out to nothing per press.
+    """
+    raw = data.get("data")
+    if isinstance(raw, (list, tuple)):
+        raw = raw[0] if raw else None
+    if raw is None:
+        return False
+    # As in _knx_direction, a malformed telegram value is bad external input rather than an app bug.
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return False
+    return value == 1
 
 
 def _as_bool(value: Any) -> bool:

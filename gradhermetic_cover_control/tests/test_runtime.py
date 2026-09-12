@@ -22,6 +22,7 @@ def _runtime():
         zone=zone,
         knx_move_address=None,
         knx_step_address=None,
+        knx_tilt_address=None,
     )
     return CoverRuntime(config=config, logic=GradhermeticCoverLogic(zone))
 

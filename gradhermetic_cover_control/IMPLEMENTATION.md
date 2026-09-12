@@ -20,7 +20,8 @@ The adapter's whole vocabulary is the `Action` list the core returns: `move_to` 
 `close_full` / `stop` become real-cover service calls, `publish_position` becomes a `set_state`,
 `arm_settle_timer` / `cancel_settle_timer` become `run_in` / `cancel_timer`, and `notify` becomes a
 persistent notification. What is left in the adapter is transport only: listening and filtering,
-gating commands until the startup state is seeded, decoding KNX telegrams and button presses, the
+gating commands until the startup state is seeded, decoding KNX telegrams (a direction for the move
+and step addresses, a trigger-or-ignore for the tilt address) and button presses, the
 command rate limit, and the callback `try`/`except` boundary.
 
 ## Transport: template cover, not MQTT
@@ -484,6 +485,7 @@ GradhermeticLivingRoom:
 
   knx_move_address: "2/6/0"
   knx_step_address: "2/6/1"
+  knx_tilt_address: "2/6/2"
 ```
 
 ## Running Tests

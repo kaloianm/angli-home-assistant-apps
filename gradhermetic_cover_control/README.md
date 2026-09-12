@@ -89,12 +89,20 @@ Entering tilt mode costs an upward trip to fully open first. That is deliberate:
 
 ## Wall-Button (KNX) Control
 
-The application can be driven by a two-button KNX wall switch (an up button and a down button, each distinguishing a short press from a long press). This maps onto the two standard KNX blind communication objects:
+The application can be driven by a two-button KNX wall switch (an up button and a down button, each distinguishing a short press from a long press). This maps onto the two standard KNX blind communication objects, plus one address of the application's own for slat mode:
 
-- A **"Move"** group address that receives **long** presses.
-- A **"Stop/Step"** group address that receives **short** presses.
+- A **"Move"** group address that receives **long** presses (`knx_move_address`).
+- A **"Stop/Step"** group address that receives **short** presses (`knx_step_address`).
+- A **slat-mode** group address that toggles tilt mode (`knx_tilt_address`).
 
-In both cases the telegram's value selects the direction (up = more light, down = less light). These group addresses are surfaced to the application as `knx_event`s on the Home Assistant event bus.
+For move and step the telegram's value selects the direction (up = more light, down = less light). These group addresses are surfaced to the application as `knx_event`s on the Home Assistant event bus.
+
+These must be group addresses **nothing else listens on** — in particular not the actuator's own move objects. A wall button linked directly to those drives the actuator itself, and no amount of listening lets the application mediate the press; the button has to be linked to a dedicated address instead, which the application then acts on by calling the ordinary cover services.
+
+The slat-mode address is a **stateless trigger, not a mode level**: it acts on a `1` and ignores a `0`, and what it does is read off the application's own latch belief — the same toggle the `..._tilt` dashboard helper performs. Two consequences for how the pushbutton is parameterized:
+
+- It should be configured to **send the ON telegram only**. A momentary button parameterized as a two-state switch sends `1` on press and `0` on release; ignoring the `0` is what keeps one physical press from toggling twice and cancelling itself out.
+- A stateful "1 = enter, 0 = leave" object would have been wrong regardless, because the wall switch cannot see tilt mode changing by any other route. A long up press leaves tilt mode, and a switch holding its own idea of the mode would be inverted from then on.
 
 ### Long press — jump to an extreme
 
@@ -181,9 +189,11 @@ gradhermetic_living_room:
   # slat positions. The app rejects an out-of-range step at startup.
   tilt_step_pct: 1.2
 
-  # Optional KNX wall-button group addresses. The "move" address receives long
-  # presses; the "step" address receives short presses. Direction (up/down) is
-  # carried by the telegram value.
+  # Optional KNX wall-button group addresses, each of which nothing but Home Assistant may listen
+  # on. The "move" address receives long presses; the "step" address receives short presses, with
+  # the direction (up/down) carried by the telegram value. The "tilt" address toggles slat mode: it
+  # is a trigger rather than a level, acting on a 1 and ignoring a 0.
   knx_move_address: "1/2/3"
   knx_step_address: "1/2/4"
+  knx_tilt_address: "1/2/5"
 ```

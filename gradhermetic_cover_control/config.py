@@ -31,6 +31,7 @@ class GradhermeticConfig:
     zone: Zone
     knx_move_address: Optional[str]
     knx_step_address: Optional[str]
+    knx_tilt_address: Optional[str]
 
     def __str__(self) -> str:
         """
@@ -47,7 +48,8 @@ class GradhermeticConfig:
                 f"tilt_enter_landing_pct={self.zone.enter_landing_real}, "
                 f"tilt_step_pct={self.zone.tilt_step_pct}, "
                 f"knx_move_address={self.knx_move_address}, "
-                f"knx_step_address={self.knx_step_address}"
+                f"knx_step_address={self.knx_step_address}, "
+                f"knx_tilt_address={self.knx_tilt_address}"
                 ")")
 
 
@@ -78,6 +80,7 @@ def parse_app_config(args: Dict[str, Any]) -> GradhermeticConfig:
         zone=zone,
         knx_move_address=_optional_str(args, "knx_move_address"),
         knx_step_address=_optional_str(args, "knx_step_address"),
+        knx_tilt_address=_optional_str(args, "knx_tilt_address"),
     )
 
 
