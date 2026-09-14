@@ -675,8 +675,24 @@ The bound they pin is tighter than `tilt_zone_epsilon_pct` on its own suggests. 
 only clears at a travel limit, and the enter sequence spends up to three position commands — the
 dip, the latching rise, the configured landing — before any slat move begins, none of which touches
 a limit, so whatever error the actuator adds per move gets three chances to compound first: the
-tolerable per-move error is roughly a third of the margin, not all of it. A slat move to the
-fully-open edge has no margin of its own either way, since it targets `lower` exactly rather than a
-clearance-padded number; on an actuator that drifts more than the zone tolerates, `tilt_zone_lower_pct`
-should be configured a little above the true mechanical open edge, so accumulated drift stops short
-of it instead of past it.
+tolerable per-move error is roughly a third of the margin, not all of it.
+
+A slat move to the fully-open edge is where that matters most, because it targets `lower` exactly
+rather than a clearance-padded number — the one landmark in the design with no margin of its own.
+The answer is calibration rather than code: **configure `tilt_zone_lower_pct` a point above the
+mechanism's true open edge**, so accumulated drift stops short of that edge instead of past it, at
+the cost of a point of slat range at the open end. Both blinds in this installation are configured
+that way (`apps/apps.yaml`).
+
+Raising the lower edge means raising `tilt_zone_epsilon_pct` with it. The entry dip is
+`lower - epsilon`, and it has to end up *below* the height the mechanism really latches across, or
+the rise back up never crosses it and the entry silently fails to engage. Widening epsilon by the
+same point holds the dip, and with it the ambiguity band, exactly where it was.
+
+`TestSlatEdgeMargin` in `test_model.py` is the proof, and it is the one place the model's simulated
+mechanism is deliberately given a *different* geometry from the one the app is configured with: the
+simulator gets the true open edge, the app gets the margined one, and the gap between them is what
+absorbs the drift. It also pins what a point of margin is worth — spread across the four position
+commands an entry plus a slat move spends, it covers roughly a quarter of a percent of error per
+move, comfortably above the tenth of a percent the rest of the suite treats as realistic. Past that
+the answer is a wider margin measured on the blind, not a larger number invented in a test.
