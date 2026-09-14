@@ -125,8 +125,6 @@ class GradhermeticCoverControl(hass.Hass):
         if config.knx_move_address or config.knx_step_address or config.knx_tilt_address:
             self.listen_event(self._on_knx, "knx_event")
 
-        self.register_service("gradhermetic_cover_control/set_tilt_mode", self._on_set_tilt_mode)
-
         self.run_in(self._seed_startup_state, STARTUP_DELAY_SECONDS)
 
         self.log(f"GradhermeticCoverControl initialized for '{config.virtual_id}' "
@@ -317,45 +315,6 @@ class GradhermeticCoverControl(hass.Hass):
         if old in (None, "unknown", "unavailable"):
             return False
         return new != old
-
-    # -- Custom service ----------------------------------------------------------------------------
-
-    def _on_set_tilt_mode(self, namespace: str, domain: str, service: str, data: Dict[str,
-                                                                                      Any]) -> None:
-        """
-        Handle ``gradhermetic_cover_control.set_tilt_mode``.
-        """
-        try:
-            if not self._service_targets_me(data):
-                return
-            if not self._ready:
-                self.log("Ignoring set_tilt_mode before startup state is seeded")
-                return
-            if data.get("enabled") is None:
-                self.log("Ignoring set_tilt_mode without 'enabled'", level="WARNING")
-                return
-            self._apply_actions(self._runtime.logic.on_set_tilt_mode(_as_bool(data["enabled"])))
-        except Exception as exc:
-            self._report_error("_on_set_tilt_mode", exc)
-
-    def _service_targets_me(self, data: Dict[str, Any]) -> bool:
-        """
-        Whether a set_tilt_mode call is addressed to this instance.
-
-        A call with neither ``virtual_id`` nor ``entity_id`` applies to every instance; otherwise it
-        only applies when the target matches this blind.
-        """
-        config = self._config
-        target_virtual_id = data.get("virtual_id")
-        if target_virtual_id is not None:
-            return str(target_virtual_id) == config.virtual_id
-        target_entity = data.get("entity_id")
-        if target_entity is not None:
-            expected = f"cover.gradhermetic_{config.virtual_id}"
-            if isinstance(target_entity, (list, tuple)):
-                return any(str(entity) == expected for entity in target_entity)
-            return str(target_entity) == expected
-        return True
 
     # -- Action dispatch ---------------------------------------------------------------------------
 

@@ -146,10 +146,10 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
   The latching rise can only end at the upper edge, so any other landing is one more in-zone slat
   move. That landing is unconditionally the configured `tilt_enter_landing_pct` — a real position
   inside the zone, which `Zone.enter_landing_virtual` converts to the virtual scale the intent
-  carries — however the entry was triggered: the tilt helper, the KNX slat-mode address, the
-  `set_tilt_mode` event and the AppDaemon service all resolve to the same enter intent with the same
-  configured landing. The fourth step is dropped when its landing rounds to the same integer command
-  as the upper edge, because a command that repeats the current setpoint moves nothing.
+  carries — however the entry was triggered: the tilt helper, the KNX slat-mode address and the
+  `set_tilt_mode` event all resolve to the same enter intent with the same configured landing. The
+  fourth step is dropped when its landing rounds to the same integer command as the upper edge,
+  because a command that repeats the current setpoint moves nothing.
 - **Leave tilt** — `RiseToAtLeast(release_target)` carried by `open_full`, available only from a
   confident `LATCHED` belief. `release_target` is `tilt_zone_release_pct`, or `upper + epsilon` when
   that is not configured.
@@ -379,15 +379,6 @@ nothing, is logged with its reason.
 Tilt mode is also toggled from Home Assistant with a `gradhermetic_command` event carrying
 `command: set_tilt_mode` and `enabled: true|false` — this is the HA-facing entry point. A call whose
 `enabled` is missing is ignored (rather than silently coerced to "leave tilt").
-
-The app also registers `gradhermetic_cover_control/set_tilt_mode` via AppDaemon's `register_service`,
-targeted by `virtual_id` (or the virtual `entity_id`, accepted as a string or a single-item list); a
-call with neither applies to every instance. Note this lives in AppDaemon's namespace and is **not** a
-Home Assistant service callable from HA scripts or the UI — use the event form from Home Assistant.
-
-> Multi-instance note: every instance registers the same service name. If a future AppDaemon version
-> does not multiplex a shared service name across apps, use the event form (or namespace the service
-> per blind).
 
 ## Restart Behavior
 

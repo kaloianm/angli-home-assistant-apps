@@ -12,8 +12,6 @@ Each configured blind exposes one virtual cover entity, surfaced to Home Assista
 
 Tilt mode is toggled by firing a `gradhermetic_command` event with `command: set_tilt_mode` and `enabled: true|false` — `true` enters tilt mode, `false` leaves it. This is the Home-Assistant-facing entry point (usable from any script, button, or automation) because the template cover already speaks to the app over that event bus. Entering tilt mode moves the blind through the mechanical sequence required to engage slat control; leaving tilt mode returns the virtual cover to regular position control.
 
-> The app additionally calls AppDaemon's `register_service` for `gradhermetic_cover_control/set_tilt_mode`, but that registers a service in AppDaemon's own namespace, not a Home Assistant service callable from HA scripts or the UI. Prefer the event form above from Home Assistant.
-
 For step and tilt from the UI, the app watches three `input_button` helpers per blind. `..._tilt` toggles tilt mode (enter/leave), and cancels an entry or exit that is still in progress. `..._step_up` and `..._step_down` follow one rule — the same one a KNX stop/step object follows — in priority order:
 
 1. **If anything is moving** — a sequence the app started, or the blind reported travelling — **stop it.**

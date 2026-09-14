@@ -83,7 +83,6 @@ class FakeApp(GradhermeticCoverControl):
         self.published = {}
         self.state_listeners = []
         self.event_listeners = []
-        self.registered_services = []
         self.timers = {}
         self.now = datetime(2026, 4, 15, 12, 0, 0)
         self._handles = 0
@@ -175,9 +174,6 @@ class FakeApp(GradhermeticCoverControl):
         self.event_listeners.append((event, callback))
         return self._handle()
 
-    def register_service(self, name, callback):
-        self.registered_services.append((name, callback))
-
     def run_in(self, callback, seconds, **kwargs):
         handle = self._handle()
         self.timers[handle] = (callback, seconds)
@@ -202,7 +198,7 @@ class FakeApp(GradhermeticCoverControl):
 
 class TestInitialize(unittest.TestCase):
 
-    def test_wires_every_listener_and_the_service(self):
+    def test_wires_every_listener(self):
         app = FakeApp().start(seed_startup_state=False)
         watched = [entity for entity, _ in app.state_listeners]
         self.assertIn(REAL_COVER, watched)
@@ -210,8 +206,6 @@ class TestInitialize(unittest.TestCase):
         self.assertIn(f"input_button.gradhermetic_{VIRTUAL_ID}_step_down", watched)
         self.assertIn(f"input_button.gradhermetic_{VIRTUAL_ID}_tilt", watched)
         self.assertEqual([COMMAND_EVENT, "knx_event"], [e for e, _ in app.event_listeners])
-        self.assertEqual(["gradhermetic_cover_control/set_tilt_mode"],
-                         [name for name, _ in app.registered_services])
         self.assertEqual([STARTUP_DELAY_SECONDS], [s for _, s in app.timers.values()])
 
     def test_no_knx_listener_without_addresses(self):
@@ -430,40 +424,6 @@ class TestButtonPresses(unittest.TestCase):
         self.app.press(self.step_up)
         self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/stop_cover"))
         self.assertEqual([], self.app.calls_to("cover/set_cover_position"))
-
-
-class TestServiceTargeting(unittest.TestCase):
-
-    def setUp(self):
-        self.app = FakeApp(state=cover_state(80.0)).start()
-        self.handler = self.app.registered_services[0][1]
-
-    def _call(self, **data):
-        self.handler("appdaemon", "gradhermetic_cover_control", "set_tilt_mode", data)
-
-    def test_targeted_by_virtual_id(self):
-        self._call(virtual_id=VIRTUAL_ID, enabled=True)
-        self.assertEqual(1, len(self.app.calls_to("cover/open_cover")))
-
-    def test_targeted_by_entity_id(self):
-        self._call(entity_id=f"cover.gradhermetic_{VIRTUAL_ID}", enabled=True)
-        self.assertEqual(1, len(self.app.calls_to("cover/open_cover")))
-
-    def test_targeted_by_entity_id_list(self):
-        self._call(entity_id=[f"cover.gradhermetic_{VIRTUAL_ID}"], enabled=True)
-        self.assertEqual(1, len(self.app.calls_to("cover/open_cover")))
-
-    def test_untargeted_applies_to_every_instance(self):
-        self._call(enabled=True)
-        self.assertEqual(1, len(self.app.calls_to("cover/open_cover")))
-
-    def test_another_blind_is_ignored(self):
-        self._call(virtual_id="kitchen", enabled=True)
-        self.assertEqual([], self.app.service_calls)
-
-    def test_missing_enabled_is_ignored(self):
-        self._call(virtual_id=VIRTUAL_ID)
-        self.assertEqual([], self.app.service_calls)
 
 
 class TestActionTranslation(unittest.TestCase):
