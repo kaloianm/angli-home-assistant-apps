@@ -677,22 +677,20 @@ dip, the latching rise, the configured landing — before any slat move begins, 
 a limit, so whatever error the actuator adds per move gets three chances to compound first: the
 tolerable per-move error is roughly a third of the margin, not all of it.
 
-A slat move to the fully-open edge is where that matters most, because it targets `lower` exactly
+A slat move to the fully-open edge is where that shows up first, because it targets `lower` exactly
 rather than a clearance-padded number — the one landmark in the design with no margin of its own.
-The answer is calibration rather than code: **configure `tilt_zone_lower_pct` a point above the
-mechanism's true open edge**, so accumulated drift stops short of that edge instead of past it, at
-the cost of a point of slat range at the open end. Both blinds in this installation are configured
-that way (`apps/apps.yaml`).
+That is deliberate, and `TestTheSlatOpenEdge` in `test_model.py` carries the argument. The rule a
+margin here would pad is L1, "never travel below the lower edge while latched", and what L1 exists
+to prevent is a plan *aiming* a descent through the slat range on an engaged mechanism. No plan
+ever does; the planner sweep proves it, and the test restates it directly as "no in-zone intent,
+from any slat position, on any configured geometry, ever commands or targets below `lower`".
 
-Raising the lower edge means raising `tilt_zone_epsilon_pct` with it. The entry dip is
-`lower - epsilon`, and it has to end up *below* the height the mechanism really latches across, or
-the rise back up never crosses it and the entry silently fails to engage. Widening epsilon by the
-same point holds the dip, and with it the ambiguity band, exactly where it was.
-
-`TestSlatEdgeMargin` in `test_model.py` is the proof, and it is the one place the model's simulated
-mechanism is deliberately given a *different* geometry from the one the app is configured with: the
-simulator gets the true open edge, the app gets the margined one, and the gap between them is what
-absorbs the drift. It also pins what a point of margin is worth — spread across the four position
-commands an entry plus a slat move spends, it covers roughly a quarter of a percent of error per
-move, comfortably above the tenth of a percent the rest of the suite treats as realistic. Past that
-the answer is a wider margin measured on the blind, not a larger number invented in a test.
+The only thing a margin would add is padding against the actuator overshooting its own setpoint,
+and the only way to buy it is to raise `tilt_zone_lower_pct`, which moves what virtual `100`
+*means* — fully open would stop short of the slats being fully open. That is a bad trade: the cost
+is visible on every slat move, while the overshoot is a few tens of milliseconds of travel against
+a stop the slats have already reached. An actuator drifting that far has already displaced every
+slat angle and the entry landing with them, so the open edge is not a weak point in the design,
+just the place a zero-tolerance assertion notices drift first. The bound above is the honest
+statement of how much drift the geometry tolerates; the answer to exceeding it is a re-measured
+zone, not a padded edge.

@@ -55,7 +55,7 @@ Once latched, the same services control slat orientation within the narrow **til
 
 Note the inversion relative to normal travel: inside the tilt zone a *higher* absolute blind position means *more closed* slats.
 
-`tilt_zone_lower_pct` should be configured a point above the height at which the slats are *mechanically* fully open, so virtual `100%` means "as far open as the application will drive them" rather than the mechanism's own limit. That point of margin is what keeps calibration drift from turning a slat move into a descent past the open edge on a latched blind; see [Calibrating `tilt_zone_lower_pct`](#calibrating-tilt_zone_lower_pct) for why, and for the matching adjustment to `tilt_zone_epsilon_pct`.
+Virtual `100%` targets `tilt_zone_lower_pct` exactly, so configure that setting as the height at which the slats are genuinely fully open: fully open on the slider then means fully open on the blind. See [Calibrating `tilt_zone_lower_pct`](#calibrating-tilt_zone_lower_pct) for why this edge needs no clearance margin of its own.
 
 That inverted **virtual slat scale is only what the cover entity's position slider shows while tilt mode is engaged.** Every percentage in the YAML configuration — the zone edges, the clearance margin, the release height, the entry landing and the slat step alike — is real blind travel, the numbers the underlying actuator reports and accepts.
 
@@ -100,11 +100,11 @@ Entering tilt mode costs an upward trip to fully open first. That is deliberate:
 
 ### Calibrating `tilt_zone_lower_pct`
 
-Measure where the slats sit fully open, then configure `tilt_zone_lower_pct` **one point above that height**, and add the same point to `tilt_zone_epsilon_pct`.
+Set it to the height at which the slats are fully open, and no higher. Virtual `100%` targets this edge exactly, so it is what makes the slider's "fully open" mean the angle the slats are actually built to reach.
 
-The reason is that a slat move to the fully-open end targets this edge exactly. Every other landmark in the design carries a clearance margin; this one does not, and it is reached at the worst moment for accuracy — the actuator last re-referenced itself at the top limit, and the entry sequence has spent three position commands since then, each free to add a little calibration error. Without the margin, that error turns "go to the fully-open slat angle" into a descent below the mechanism's open edge on a latched blind, which is the one move the design exists to prevent. With it, the drift is absorbed and the only cost is a point of slat range at the open end.
+It is the one landmark in the design with no clearance margin of its own, which looks like an oversight next to the dip and the release height. It is not. The rule a margin here would pad is "never travel below the lower edge while latched", and what that rule exists to prevent is the application *aiming* a descent through the slat range — a close, a long press down — on an engaged mechanism. It never does; that is invariant L1, and the planner sweep proves it over every plan the planner can emit.
 
-The second point matters just as much. The entry dip is `tilt_zone_lower_pct - tilt_zone_epsilon_pct`, and it has to finish *below* the height the mechanism latches across, or the rise back up never crosses it and entering tilt mode silently does nothing. Widening the clearance by the same point you raised the edge by leaves the dip exactly where it was.
+What a margin would actually buy is padding against the actuator overshooting its own setpoint by a fraction of a percent, and the only way to buy it is to raise this number, which makes fully open stop short of fully open. That trade is not worth making. The cost is visible every time you open the slats, while the overshoot is a few tens of milliseconds of travel against a stop the slats have already reached. And an actuator drifting far enough for it to matter has already put every slat angle, the entry landing included, somewhere other than where the application believes — so this edge is not a weak point, it is simply where a strict check notices the drift first.
 
 ## Wall-Button (KNX) Control
 

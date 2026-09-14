@@ -33,8 +33,16 @@ from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 from gradhermetic_cover_control.planner import (
     DIRECTION_DOWN,
     DIRECTION_UP,
+    INTENT_OPEN,
+    INTENT_SET_POSITION,
+    INTENT_SLAT_STEP,
+    LATCH_LATCHED,
     LATCH_UNKNOWN,
     LATCH_UNLATCHED,
+    Belief,
+    Intent,
+    check_plan,
+    plan,
 )
 from gradhermetic_cover_control.tests.simulator import BlindSimulator, Quirks
 
@@ -71,20 +79,13 @@ class Harness:
     One app instance wired to one simulated blind, plus the side effects the adapter would perform.
     """
 
-    def __init__(self, position=100.0, latched=False, quirks=None, stride=1.0, zone=ZONE,
-                 sim_zone=None):
+    def __init__(self, position=100.0, latched=False, quirks=None, stride=1.0, zone=ZONE):
         """
         Create an app and a blind resting at ``position``.
-
-        ``sim_zone`` lets the mechanism's real geometry differ from the one the app is configured
-        with, which is the only way to model a deliberately conservative calibration: the app is
-        told the slat zone starts a little above where the mechanism's open edge really is, so the
-        margin between the two is what absorbs the actuator's calibration error. With it left
-        unset the two are the same, which is every other test's assumption.
         """
         self.zone = zone
-        self.sim = BlindSimulator(sim_zone or zone, position=position, latched=latched,
-                                  quirks=quirks, stride=stride)
+        self.sim = BlindSimulator(zone, position=position, latched=latched, quirks=quirks,
+                                  stride=stride)
         self.logic = GradhermeticCoverLogic(zone)
         self.published = []
         self.notifications = []
@@ -721,79 +722,55 @@ class TestSettleTimerAgainstTheModel(ModelTestCase):
         self.assertFalse(harness.logic.has_pending_plan)
 
 
-class TestSlatEdgeMargin(ModelTestCase):
+class TestTheSlatOpenEdge(ModelTestCase):
     """
-    Why both deployed blinds configure ``tilt_zone_lower_pct`` a point above the mechanism's real
-    open edge.
+    The fully-open slat angle is the zone's lower edge exactly, and deliberately so.
 
-    A slat move to virtual 100 targets the configured lower edge exactly, so unlike every other
-    landmark in the design it has no clearance of its own. The entry re-references at the top limit
-    and then spends three position commands (the dip, the latching rise, the landing) before any
-    slat move begins, so by the time one runs the actuator has had three moves in which to drift.
-    Configuring the edge a point high is what that point of margin is for: the app's "fully open"
-    sits just above the height below which travelling would be a descent on a latched mechanism.
+    It is the one landmark with no clearance margin of its own, which looks like an oversight next
+    to the dip and the release height until you ask what the margin would be protecting. The rule
+    it would pad is "never travel below the lower edge while latched", and what that rule exists to
+    prevent is the app *aiming* a descent through the slat range -- a close, a long press down -- on
+    an engaged mechanism. That is invariant L1, and the planner sweep proves no plan ever does it.
+
+    A margin here would instead pad against the actuator overshooting its own setpoint by a
+    fraction of a percent, and it could only be bought by moving the configured edge up, which
+    would make the slider's "fully open" stop short of the slats actually being fully open. That
+    trade is not worth making: the cost is visible every time the slats are opened, while the
+    overshoot is a few tens of milliseconds of travel against a stop the slats have already reached.
+    An actuator drifting far enough for it to matter has already put every slat angle, the entry
+    landing included, somewhere other than where the app believes -- so the open edge is not a weak
+    point in the design, it is simply where a zero-tolerance assertion happens to trip first.
     """
 
-    # The mechanism as measured: slats are fully open at 38, which is the height the app must not
-    # drive below while latched.
-    TRUE_EDGE = 38.0
-    MECHANISM = Zone(tilt_zone_upper_pct=45.0, tilt_zone_lower_pct=TRUE_EDGE,
-                     tilt_zone_epsilon_pct=2.0, tilt_step_pct=1.0, tilt_zone_release_pct=57.0,
-                     tilt_enter_landing_pct=40.0)
-    # What the app is told, as apps.yaml now configures it: the same zone with its lower edge a
-    # point high, and epsilon widened to hold the entry dip at the height it always cleared.
-    CONFIGURED = Zone(tilt_zone_upper_pct=45.0, tilt_zone_lower_pct=TRUE_EDGE + 1.0,
-                      tilt_zone_epsilon_pct=2.0, tilt_step_pct=1.0, tilt_zone_release_pct=57.0,
-                      tilt_enter_landing_pct=40.0)
+    def test_the_app_never_aims_below_the_open_edge_while_latched(self):
+        # The invariant stated as what it actually means. Every in-zone intent, from every slat
+        # position the blind can rest at, on each configured geometry.
+        for label, zone in TestAlternateGeometries.ZONES + [("default", ZONE)]:
+            for position in range(int(zone.lower), int(zone.upper) + 1):
+                belief = Belief(position=float(position), latch=LATCH_LATCHED)
+                for name, intent in (
+                        ("open", Intent(INTENT_OPEN)),
+                        ("step_up", Intent(INTENT_SLAT_STEP, direction=DIRECTION_UP)),
+                        ("set_position_100", Intent(INTENT_SET_POSITION, virtual_pct=100.0))):
+                    with self.subTest(zone=label, latched_at=position, intent=name):
+                        movement = plan(zone, belief, intent)
+                        if movement is None:
+                            continue
+                        self.assertIsNone(check_plan(zone, belief, movement))
+                        for step in movement.steps:
+                            self.assertGreaterEqual(step.command_position, zone.lower)
+                            self.assertGreaterEqual(step.target, zone.lower)
 
-    def test_the_dip_still_clears_the_mechanism_s_real_edge(self):
-        # The margin would be worthless if it stopped the blind latching: the dip has to end below
-        # the real edge so the rise back up crosses it.
-        self.assertLess(self.CONFIGURED.dip_target, self.TRUE_EDGE)
-        harness = Harness(position=80.0, zone=self.CONFIGURED, sim_zone=self.MECHANISM)
-        harness.logic.seed_state(80.0)
-        harness.run(harness.logic.on_set_tilt_mode(True))
-        self.assertTrue(harness.sim.latched, "the entry sequence no longer engages the latch")
-        self.assert_nominal(harness)
-
-    def test_the_margin_absorbs_the_drift_a_slat_move_inherits(self):
-        # Without the margin this is the case that drove the blind below the real edge while
-        # latched: three position commands' worth of accumulated error, then a slat move to what
-        # the app believes is the open edge.
-        #
-        # What one point of margin buys is exactly that: one point, spread over the four position
-        # commands an entry-then-slat-move spends after the top limit re-references the actuator.
-        # So it covers about a quarter of a percent of error per move, which is comfortably above
-        # the tenth of a percent the rest of this suite treats as a realistic actuator. Beyond it
-        # the margin runs out and the blind reaches the real edge again -- the honest answer there
-        # is a wider margin, measured on the blind, not a larger number invented here.
-        for drift in (0.0, 0.1, 0.2):
-            with self.subTest(drift_per_move=drift):
-                harness = Harness(position=80.0, zone=self.CONFIGURED, sim_zone=self.MECHANISM,
-                                  quirks=Quirks(drift_per_move=drift))
-                harness.logic.seed_state(80.0)
-                harness.run(harness.logic.on_set_tilt_mode(True))
-                harness.published = []
-                harness.commands = 0
-                harness.run(harness.logic.on_open())  # slats to virtual 100
-                self.assertEqual(to_command(self.CONFIGURED.lower), harness.sim.reported)
-                self.assertGreaterEqual(harness.sim.physical, self.TRUE_EDGE)
-                self.assertTrue(harness.logic.in_tilt)
-                self.assert_nominal(harness)
-
-    def test_stepping_the_slats_wide_open_stays_clear_too(self):
-        # The same edge reached a step at a time rather than in one move.
-        harness = Harness(position=80.0, zone=self.CONFIGURED, sim_zone=self.MECHANISM,
-                          quirks=Quirks(drift_per_move=0.1))
-        harness.logic.seed_state(80.0)
-        harness.run(harness.logic.on_set_tilt_mode(True))
-        for _ in range(10):
-            harness.published = []
-            harness.commands = 0
-            harness.run(harness.logic.on_step(DIRECTION_UP))
-            self.assert_nominal(harness)
+    def test_opening_the_slats_fully_reaches_the_mechanism_s_own_open_edge(self):
+        # What the revert is for: virtual 100 puts the blind on the lower edge itself, so "fully
+        # open" on the slider is the angle the slats are actually built to reach.
+        harness = latched_at(UPPER)
+        harness.published = []
+        harness.commands = 0
+        harness.run(harness.logic.on_open())
+        self.assertEqual(to_command(ZONE.lower), harness.sim.reported)
         self.assertAlmostEqual(100.0, harness.logic.current_virtual_position())
-        self.assertGreaterEqual(harness.sim.physical, self.TRUE_EDGE)
+        self.assert_nominal(harness)
 
 
 class TestCalibrationDrift(ModelTestCase):
