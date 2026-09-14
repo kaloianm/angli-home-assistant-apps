@@ -23,6 +23,7 @@ from gradhermetic_cover_control.planner import (
     LATCH_LATCHED,
     LATCH_UNKNOWN,
     LATCH_UNLATCHED,
+    PLAN_LEAVE,
 )
 
 # Geometry used throughout: zone [38, 44], epsilon 2, step 1.2 real travel percent. Every
@@ -852,9 +853,13 @@ class TestConfirmedBugRegressions(unittest.TestCase):
         self.logic.on_step(DIRECTION_UP)
 
         actions = self.logic.on_real_position(UPPER, False)
-        self.assertEqual([], actions)
+        # The plan does not advance: the blind is still where the step started from. What the
+        # report does change is the motion, since a settled report answers the outstanding command,
+        # so the cover stops claiming travel -- but nothing moved and no move was commanded.
+        self.assertEqual([], _moves(actions))
         self.assertTrue(self.logic.has_pending_plan)
         self.assertAlmostEqual(0.0, self.logic.current_virtual_position())
+        self.assertEqual(MOTION_IDLE, _published(actions)[-1].motion)
 
     def test_unavailable_clears_motion_belief(self):
         # B3: the position and motion beliefs used to survive the cover going unavailable, so a
@@ -1016,12 +1021,26 @@ class TestPublishing(unittest.TestCase):
         self.assertEqual(MOTION_IDLE, _published(actions)[-1].motion)
 
     def test_a_stop_on_a_controller_without_motion_state_still_publishes_the_rest(self):
-        # No opening/closing state ever arrives, so nothing but the stop itself can say "idle".
+        # This controller publishes positions but never an opening/closing state, so its reports
+        # say nothing about whether the blind is travelling: the stop must still go out, and the
+        # position it came to rest at must still be published.
         self.logic.seed_state(80.0)
         self.logic.on_close()
         self.logic.on_real_position(70.0, False)
         actions = self.logic.on_stop()
+        self.assertEqual(ACTION_STOP, _kinds(actions)[0])
         self.assertAlmostEqual(70.0, _published(actions)[-1].position)
+        self.assertEqual(MOTION_IDLE, _published(actions)[-1].motion)
+
+    def test_a_settled_report_stops_the_cover_animating(self):
+        # The pending step says where the blind is headed, which is only worth showing while a
+        # command for it is still outstanding. Once the controller reports the blind at rest,
+        # claiming travel would animate a stopped blind for the whole recheck.
+        self.logic.seed_state(80.0)
+        self.logic.on_close()
+        self.logic.on_real_position(70.0, True, DIRECTION_DOWN)
+        actions = self.logic.on_real_position(65.0, False)
+        self.assertTrue(self.logic.has_pending_plan)
         self.assertEqual(MOTION_IDLE, _published(actions)[-1].motion)
 
     def test_a_stall_publishes_where_the_blind_rests(self):
@@ -1099,6 +1118,45 @@ class TestTiltToggle(unittest.TestCase):
         self.assertEqual(ACTION_STOP, _kinds(actions)[0])
         self.assertFalse(self.logic.has_pending_plan)
 
+    def test_asking_to_enter_during_an_exit_stops_it(self):
+        # Symmetric with the entry case. The raw latch still reads LATCHED all through the exit, so
+        # deciding "already in tilt" from it would swallow the request and let the exit finish --
+        # leaving the user out of the very mode they just asked to be in.
+        self.logic.seed_state(100.0)
+        run_plan(self.logic, self.logic.on_set_tilt_mode(True))
+        self.logic.on_set_tilt_mode(False)
+        self.assertEqual(PLAN_LEAVE, self.logic._executor.plan.kind)  # pylint: disable=W0212
+        actions = self.logic.on_set_tilt_mode(True)
+        self.assertEqual(ACTION_STOP, _kinds(actions)[0])
+        self.assertFalse(self.logic.has_pending_plan)
+
+    def test_the_toggle_follows_the_mode_the_cover_displays(self):
+        # A KNX long press up starts a PLAN_NORMAL from a latched belief. That plan can release the
+        # latch, so the displayed belief drops to height mode at once while the raw latch stays
+        # LATCHED until the plan finishes. The chip says "Height Mode", so a tap has to mean enter.
+        self.logic.seed_state(100.0)
+        run_plan(self.logic, self.logic.on_set_tilt_mode(True))
+        actions = self.logic.on_knx_long(DIRECTION_UP)
+        self.assertFalse(_published(actions)[-1].in_tilt)
+        self.assertEqual(LATCH_LATCHED, self.logic.latch)  # the raw belief still disagrees
+        entering = self.logic.on_toggle_tilt_mode()
+        self.assertEqual([ACTION_OPEN_FULL], _kinds(_moves(entering)))
+        pending = self.logic._executor.plan  # pylint: disable=protected-access
+        self.assertEqual(LATCH_LATCHED, pending.final_latch)
+
+    def test_every_refused_tilt_request_says_why(self):
+        entries = []
+        logic = GradhermeticCoverLogic(_config(), log=lambda m, level="INFO": entries.append(m))
+        logic.seed_state(80.0)
+        self.assertEqual([], logic.on_set_tilt_mode(False))  # nothing to leave
+        run_plan(logic, logic.on_set_tilt_mode(True))
+        self.assertEqual([], logic.on_set_tilt_mode(True))  # already there
+        logic.on_set_tilt_mode(False)
+        self.assertEqual([], logic.on_set_tilt_mode(False))  # an exit is already running
+        self.assertTrue(any("no latch belief to leave" in m for m in entries))
+        self.assertTrue(any("already in tilt mode" in m for m in entries))
+        self.assertTrue(any("an exit is already in flight" in m for m in entries))
+
 
 class TestStopIsOnlySentWhenSomethingMoves(unittest.TestCase):
     """
@@ -1120,6 +1178,41 @@ class TestStopIsOnlySentWhenSomethingMoves(unittest.TestCase):
     def test_stop_while_moving_externally_sends_it(self):
         self.logic.on_real_position(70.0, True)
         self.assertIn(ACTION_STOP, _kinds(self.logic.on_stop()))
+
+    def test_no_stop_once_the_controller_has_reported_the_blind_at_rest(self):
+        # The settled-short recheck keeps the plan open for a few seconds after the blind has
+        # already stopped. A stop sent in that window lands on a stationary blind, which is the
+        # nudge this whole rule exists to prevent.
+        self.logic.on_close()
+        self.logic.on_real_position(70.0, True, DIRECTION_DOWN)
+        self.logic.on_real_position(65.0, False)  # settled well short of the target
+        self.assertTrue(self.logic.has_pending_plan)
+        self.assertNotIn(ACTION_STOP, _kinds(self.logic.on_stop()))
+
+    def test_a_stop_before_any_feedback_is_sent(self):
+        # The command has gone out and nothing has come back, so whether the blind is travelling is
+        # genuinely unknown -- and a stop is the safe answer to not knowing.
+        self.logic.on_close()
+        self.assertIn(ACTION_STOP, _kinds(self.logic.on_stop()))
+
+    def test_a_controller_that_never_reports_motion_still_gets_its_stop(self):
+        # Such a controller reports is_moving false for the whole of a move, so reading a settled
+        # report as "stopped" would lose the stop on a blind that is still travelling. Until it has
+        # reported motion even once, an outstanding plan is the only signal there is.
+        self.logic.on_close()
+        self.logic.on_real_position(70.0, False)
+        self.logic.on_real_position(60.0, False)
+        self.assertIn(ACTION_STOP, _kinds(self.logic.on_stop()))
+
+    def test_a_step_press_in_the_recheck_window_does_not_nudge_the_blind(self):
+        # The step press routes through on_stop, so it inherits the same rule.
+        self.logic.on_close()
+        self.logic.on_real_position(70.0, True, DIRECTION_DOWN)
+        self.logic.on_real_position(65.0, False)
+        actions = self.logic.on_step(DIRECTION_UP)
+        self.assertNotIn(ACTION_STOP, _kinds(actions))
+        self.assertEqual([], _moves(actions))
+        self.assertFalse(self.logic.has_pending_plan)
 
 
 if __name__ == "__main__":

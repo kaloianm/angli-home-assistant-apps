@@ -364,6 +364,51 @@ class TestSettleTimer(unittest.TestCase):
         self.assertEqual(STATUS_STALLED, executor.on_timer(45.0, False).status)
 
 
+class TestMayBeTravelling(unittest.TestCase):
+    """
+    Whether a stop has anything to stop. A pending plan alone is not enough: the settled-short
+    recheck keeps one open for seconds after the blind has reported coming to rest.
+    """
+
+    def setUp(self):
+        self.executor = Executor(ZONE)
+
+    def test_idle_with_no_plan(self):
+        self.assertFalse(self.executor.may_be_travelling)
+
+    def test_true_from_the_moment_a_command_goes_out(self):
+        self.executor.start(_move_plan(30.0), 80.0, False)
+        self.assertTrue(self.executor.may_be_travelling)
+
+    def test_motion_reports_leave_it_true(self):
+        self.executor.start(_move_plan(30.0), 80.0, False)
+        self.executor.on_feedback(60.0, True)
+        self.assertTrue(self.executor.may_be_travelling)
+
+    def test_a_settled_report_short_of_the_target_answers_the_command(self):
+        self.executor.start(_move_plan(30.0), 80.0, False)
+        self.executor.on_feedback(60.0, True)
+        self.executor.on_feedback(41.0, False)
+        self.assertTrue(self.executor.has_plan)
+        self.assertFalse(self.executor.may_be_travelling)
+
+    def test_the_next_command_makes_it_true_again(self):
+        self.executor.start(_enter_plan(), 80.0, False)
+        self.executor.on_feedback(100.0, False)  # step one arrives, the dip is commanded
+        self.assertTrue(self.executor.may_be_travelling)
+
+    def test_a_finished_plan_has_nothing_to_stop(self):
+        self.executor.start(_move_plan(30.0), 80.0, False)
+        self.executor.on_feedback(30.0, False)
+        self.assertFalse(self.executor.has_plan)
+        self.assertFalse(self.executor.may_be_travelling)
+
+    def test_abandoning_clears_it(self):
+        self.executor.start(_move_plan(30.0), 80.0, False)
+        self.executor.abandon()
+        self.assertFalse(self.executor.may_be_travelling)
+
+
 class TestAbandon(unittest.TestCase):
 
     def test_abandon_cancels_the_timer_and_reports_the_plan(self):

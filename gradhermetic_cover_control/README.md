@@ -70,7 +70,9 @@ Entering tilt mode is therefore a single sequence, run from wherever the blind h
 
 Step 4 exists because the latching rise necessarily ends with the slats fully closed, and on a real blind the slats often do not visibly open until a couple of percent below `tilt_zone_upper_pct` — so an entry that lands exactly on the closed edge looks like it did nothing. Set `tilt_enter_landing_pct` to the height at which the slats are as open as you want tilt mode to start; on a zone of `[29, 34]`, for instance, `32` is a slightly-open landing. Every entry goes through this same sequence: the tilt helper, the KNX slat-mode address, the event and the service.
 
-Asking to enter while an entry is already running, or to leave while an exit is, is a no-op rather than a restart; asking to leave while an entry is running stops it. The tilt helper and the KNX slat-mode address toggle, and a toggle during either sequence cancels it.
+Asking to enter while an entry is already running, or to leave while an exit is, is a no-op rather than a restart. Asking to leave while an entry is running stops the entry, and asking to enter while an exit is running stops the exit: in both cases the blind halts where you can see it, rather than letting a sequence you have just contradicted run to completion behind you. Every one of these no-op or redirected requests is logged with its reason. The tilt helper and the KNX slat-mode address toggle, and a toggle during either sequence cancels it.
+
+Both also read the mode the cover is *displaying* rather than the application's internal latch belief, so the tilt control always does what its label says. The two differ while a whole-blind move runs from slat mode — a long press up, for instance — because such a move may release the latch, so the cover switches to Height Mode at once while the belief only settles when the move finishes.
 
 To leave tilt mode:
 
@@ -126,7 +128,9 @@ A short press is evaluated in this priority order:
 
 A short press never enters tilt mode; the slat-mode address does that. The dashboard step helpers follow the same rule except for rule 2's upward exit: they never leave tilt, since the dashboard has a tilt control of its own.
 
-Because every command reaches the actuator through this application, the application never relies on the actuator's own stop/step object either: a stop is sent only while something is moving. On a KNX actuator without a dedicated stop object, Home Assistant carries `stop_cover` on the step object, which would *nudge* an idle blind instead of stopping it.
+Because every command reaches the actuator through this application, the application never relies on the actuator's own stop/step object either: a stop reaches the actuator only while the blind may actually be travelling — the controller reports it moving, or a command has gone out and no settled report for it has come back yet. Once the controller has reported the blind at rest, no stop is sent, including through the ten-second recheck after it settles short of a target: the blind has already stopped by itself. On a KNX actuator without a dedicated stop object, Home Assistant carries `stop_cover` on the step object, which would *nudge* an idle blind instead of stopping it.
+
+That reasoning needs the controller to report motion in the first place. An integration that publishes positions but never an `opening`/`closing` state reports the blind as not moving throughout a move, so treating its reports as "stopped" would throw the stop away while the blind was still travelling. The application therefore remembers whether the controller has ever reported motion, and until it has, it falls back to sending the stop whenever a movement is outstanding.
 
 ## Position And Restart Behavior
 

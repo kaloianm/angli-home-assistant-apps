@@ -98,6 +98,12 @@ class GradhermeticCoverControl(hass.Hass):
         # arriving before that would run against unseeded state, and the guards that keep the
         # mechanism safe are all derived from the belief.
         self._ready = False
+        # The tilt-mode sensor's last written state ("on"/"off"), so a publish that only moves the
+        # position does not rewrite it too; see _publish_virtual. None on a fresh instance, which is
+        # what makes the very first publish always write it -- AppDaemon builds a fresh instance on
+        # every reload, including a Home Assistant restart, which is what re-creates the entity if
+        # Home Assistant has forgotten it.
+        self._last_tilt_state: Optional[str] = None
 
         logic = GradhermeticCoverLogic(config.zone, log=self.log)
         self._runtime = CoverRuntime(config=config, logic=logic)
@@ -216,8 +222,9 @@ class GradhermeticCoverControl(hass.Hass):
         """
         try:
             self._runtime.settle_timer_handle = None
-            position, is_moving, _direction = self._read_real_position()
-            self._apply_actions(self._runtime.logic.on_settle_timer(position, is_moving))
+            position, is_moving, direction = self._read_real_position()
+            self._apply_actions(
+                self._runtime.logic.on_settle_timer(position, is_moving, direction))
         except Exception as exc:
             self._report_error("_on_settle", exc)
 
@@ -414,8 +421,17 @@ class GradhermeticCoverControl(hass.Hass):
 
         The app owns both entities directly via ``set_state`` -- no user-declared helpers are
         required -- creating ``sensor.gradhermetic_<id>_position`` and
-        ``binary_sensor.gradhermetic_<id>_tilt_mode`` in Home Assistant. They are written together
-        from one action so a dashboard can never read a slat angle as though it were a height. The
+        ``binary_sensor.gradhermetic_<id>_tilt_mode`` in Home Assistant. Both come from one action
+        so a dashboard can never read a slat angle as though it were a height, but they are not
+        rewritten at the same rate: the logic now publishes on every feedback event, which is what
+        makes the position sensor track travel percent by percent, while the mode changes only a
+        few times per plan. Rewriting the binary sensor with the value it already holds on every one
+        of those position updates is pure churn -- it is also mirrored onto the KNX bus by an
+        expose -- so it is skipped whenever the mode has not actually changed since the last write.
+        ``self._last_tilt_state`` is instance state, not Home Assistant state: AppDaemon builds a
+        fresh instance of this app whenever it reloads it (including every Home Assistant restart),
+        and a fresh instance starts with nothing to compare against, so its first publish always
+        writes the sensor -- which is what re-creates it if Home Assistant has forgotten it. The
         motion rides on the position sensor as an attribute, which the template cover's state
         template reads to report ``opening`` / ``closing``. An unknown position publishes the sensor
         as ``unavailable`` rather than leaving a stale number in it.
@@ -429,9 +445,13 @@ class GradhermeticCoverControl(hass.Hass):
                 "motion": motion or MOTION_IDLE,
             },
         )
+        tilt_state = "on" if in_tilt else "off"
+        if tilt_state == self._last_tilt_state:
+            return
+        self._last_tilt_state = tilt_state
         self.set_state(
             self._tilt_mode_entity,
-            state="on" if in_tilt else "off",
+            state=tilt_state,
             attributes={
                 "friendly_name": f"{self._config.virtual_name} Slat Mode",
                 "icon": "mdi:blinds-horizontal",

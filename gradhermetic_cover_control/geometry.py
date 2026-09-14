@@ -251,9 +251,8 @@ class Zone:
         The same landing on the virtual slat scale (0 = closed edge, 100 = open edge).
 
         The setting is configured as a real position, like everything else in ``apps.yaml``, but the
-        planner's enter intent carries a virtual slat position -- that is also what the wall
-        button's near-edge rule produces. Converting here keeps the virtual<->real mapping in this
-        module alone.
+        planner's enter intent carries a virtual slat position. Converting here keeps the
+        virtual<->real mapping in this module alone.
         """
         return self.real_to_virtual(self.enter_landing_real)
 

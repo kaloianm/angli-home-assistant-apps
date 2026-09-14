@@ -144,13 +144,12 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
   are only reliable from there) and makes the dip a pure descent, which cannot latch.
 
   The latching rise can only end at the upper edge, so any other landing is one more in-zone slat
-  move. Who chooses it depends on the caller: a deliberate `set_tilt_mode` enter passes the
-  configured `tilt_enter_landing_pct` — a real position inside the zone, which
-  `Zone.enter_landing_virtual` converts to the virtual scale the intent carries — while a
-  wall-button or step-button entry passes the directional near-edge rule instead (from above →
-  closed edge / virtual 0, from below → open edge / virtual 100) — the press already says which end
-  the user was reaching for. The fourth step is dropped when its landing rounds to the same integer
-  command as the upper edge, because a command that repeats the current setpoint moves nothing.
+  move. That landing is unconditionally the configured `tilt_enter_landing_pct` — a real position
+  inside the zone, which `Zone.enter_landing_virtual` converts to the virtual scale the intent
+  carries — however the entry was triggered: the tilt helper, the KNX slat-mode address, the
+  `set_tilt_mode` event and the AppDaemon service all resolve to the same enter intent with the same
+  configured landing. The fourth step is dropped when its landing rounds to the same integer command
+  as the upper edge, because a command that repeats the current setpoint moves nothing.
 - **Leave tilt** — `RiseToAtLeast(release_target)` carried by `open_full`, available only from a
   confident `LATCHED` belief. `release_target` is `tilt_zone_release_pct`, or `upper + epsilon` when
   that is not configured.
@@ -324,12 +323,21 @@ makes that impossible by construction. The flag is also the only honest source f
 position inside the tilt zone is neither necessary nor sufficient for being latched, which is why the
 app event-sources a latch belief in the first place, so nothing on the HA side can derive it.
 
+The two `set_state` calls the action drives are not equally frequent, though: the position sensor is
+written on every publish, since a publish means position or motion moved, while the tilt-mode sensor
+is written only when `in_tilt` itself has changed — repeating the same `on` or `off` has nothing new
+to report, and skipping it costs nothing, since the entity's last written value is still current.
+
 The action carries a third value, `motion` (`opening` / `closing` / `idle`), published as an
 attribute of the position sensor; the template cover's `state:` template turns it into the
 `opening` / `closing` state a tile animates. It is stated on the *virtual* scale: while latched a
 real descent opens the slats, so it is `opening`. The real direction comes from the cover's own
-`opening` / `closing` state when it reports one, else from the trend of reported positions, else
-from the step being driven toward (a command has gone out, so the blind is about to move that way).
+`opening` / `closing` state when it reports one, else from the trend of reported positions, else —
+before any report on the outstanding command has arrived at all — from the step being driven toward,
+on the theory that a command just went out and the blind is about to move that way. Once the
+controller has reported the blind at rest, motion reads `idle` even while a plan is still pending: a
+settled report short of a target means the blind has already stopped, not that it is still headed
+there, and that holds through the settled-short recheck exactly as it does at genuine completion.
 
 `logic._publish_current` runs after every event — feedback, timer, command, stop — and emits the
 action only when one of the three values changed since the last publish, so a duplicate report costs
@@ -352,9 +360,21 @@ limit, at a slat edge, with no position — is logged with the reason.
 
 `on_toggle_tilt_mode` cancels an entry or exit that is still in flight rather than reading the
 mode off a belief that is mid-transition; read that way, a toggle would restart the very sequence
-the user is tapping at, one real-cover command per tap, straight into the rate limit. Likewise
-`on_set_tilt_mode` treats a request for the mode already being entered or left as a no-op, and a
-request to leave during an entry as a stop.
+the user is tapping at, one real-cover command per tap, straight into the rate limit. Otherwise it
+toggles away from the mode the cover is *displaying* — `_displayed_in_tilt`, the belief
+`_publish_current` shows — and not from the raw latch. The two disagree through any `PLAN_NORMAL`
+started from a latched belief, which a KNX long press up begins: such a plan may release the latch,
+so the displayed belief drops to height mode at its first command while the raw latch stays
+`LATCHED` until the plan finishes. Toggling off the raw latch there would ask to leave a mode the
+chip already shows as left, which plans nothing at all — a chip that visibly does nothing when
+tapped.
+
+`on_set_tilt_mode` decides "already in the requested mode" the same way, and treats a request for
+the mode already being entered or left as a no-op. A request to leave during an entry, and a request
+to enter during an exit, both stop the plan that is running: that is the nearest thing to what was
+asked, and it leaves the blind where the user can see it rather than letting a sequence they just
+contradicted run to completion behind them. Every one of these, like a step press that plans
+nothing, is logged with its reason.
 
 Tilt mode is also toggled from Home Assistant with a `gradhermetic_command` event carrying
 `command: set_tilt_mode` and `enabled: true|false` — this is the HA-facing entry point. A call whose
@@ -414,11 +434,22 @@ unavailable) is treated as a genuine stall rather than being left to hang silent
 never rely on the timer at all — the model tests assert every nominal flow completes without it
 firing.
 
-A stop command goes to the real cover only while something is moving: a plan in flight, or a blind
-the controller reports travelling. A settled stall sends none, and `cover.stop_cover` on an idle
-blind sends none. Every command reaches the actuator through this app, and on a KNX actuator with no
-dedicated stop object Home Assistant carries a stop on the step object — which nudges an idle blind
-one notch instead of stopping it.
+A stop command goes to the real cover only when the blind may actually be travelling: the controller
+reports it moving, or a command has gone out and no settled report for it has come back yet. Once the
+controller has reported the blind at rest, no stop is sent — not even while a plan is still pending,
+which is exactly what keeps the `SETTLED_RECHECK_SECONDS` wait after a settled-short report from
+sending one: the blind has already stopped by itself. A settled stall sends none either, and neither
+does `cover.stop_cover` on a blind already at rest. Every command reaches the actuator through this
+app, and on a KNX actuator with no dedicated stop object Home Assistant carries a stop on the step
+object — which nudges an idle blind one notch instead of stopping it.
+
+Reading a settled report as "stopped" is only sound on a controller that reports motion at all. Some
+integrations publish positions and never an `opening` / `closing` state, and those report `is_moving`
+false for the whole of a move, so the same inference would throw the stop away on a blind that is
+still travelling. `logic` therefore remembers whether this controller has *ever* reported motion, and
+until it has, an outstanding plan is the only signal there is and a stop is sent on it. Both covers
+this repo drives do report the state, so the fallback is insurance rather than everyday behaviour —
+but the app is integration-agnostic and the model tests exercise a controller that withholds it.
 
 A plan that fails `check_plan` disables the blind and notifies. That is defence in depth against a
 planner bug: the invariants are meant to be unreachable, so reaching one means the safe response is
@@ -499,21 +530,61 @@ template:
 
 ### 3. Dedicated KNX wall-button addresses
 
-The move/step group addresses driving this app must be **input-only** — programmed in ETS so they do
-not directly command the blind actuator. The app mediates every press and issues the actuator's
-`position` commands itself; if the buttons also drove the actuator, tilt latching would be bypassed.
+The move/step/tilt group addresses driving this app must be **input-only** — programmed in ETS so
+they do not directly command the blind actuator. The app mediates every press and issues the
+actuator's `position` commands itself; if the buttons also drove the actuator, tilt latching would
+be bypassed.
 
-Expose those addresses as `knx_event`s by adding an `event:` block to the KNX config (this block does
-not exist yet):
+Those addresses reach Home Assistant as `knx_event`s through the `event:` block `knx.yaml` includes
+(`knx/knx_events.yaml`): one list entry whose `address:` names every group address that should fire
+one — long press, short press and slat-mode toggle, for every blind wired up, three per blind:
 
 ```yaml
-# knx.yaml
-event:
-  - address: "2/6/0"   # Living Room Blind wall-button move (long press)
-    type: "1.008"      # up/down
-  - address: "2/6/1"   # Living Room Blind wall-button step (short press)
-    type: "1.007"      # step
+# knx/knx_events.yaml
+- address:
+    - "2/6/7"   # Playroom Shutter - long press
+    - "2/7/7"   # Playroom Shutter - short press
+    - "2/8/7"   # Playroom Shutter - toggle slat mode
+    - "2/6/21"  # Jocelyn's Office Shutter - long press
+    - "2/7/21"  # Jocelyn's Office Shutter - short press
+    - "2/8/21"  # Jocelyn's Office Shutter - toggle slat mode
 ```
+
+No `type:` is declared. A KNX DPT type exists to decode the raw bit into a friendlier value, but
+every one of these addresses carries a plain one-bit telegram and the adapter decodes it itself:
+`_knx_direction` reads a `0`/`1` as up/down for the long- and short-press addresses, and
+`_knx_trigger` reads a lone `1` as "act" and a `0` as "ignore" for the slat-mode address. Declaring a
+type here would only make KNX decode the bit into a form the adapter would have to undo.
+
+### 4. KNX status expose (`knx_expose.yaml`)
+
+Everything above only goes one way: the bus drives the app, and nothing on it can see what the app
+believes. `knx/knx_expose.yaml`, included as the `expose:` block in `knx.yaml`, mirrors both of the
+app's own entities back onto their own group addresses, the same pattern the Room 1 moon light uses
+for its KNX presence — the bus drives Home Assistant on one address, Home Assistant reports back on
+another:
+
+```yaml
+# knx/knx_expose.yaml
+- entity_id: "binary_sensor.gradhermetic_playroom_shutter_tilt_mode"
+  address: "9/3/0"
+  type: "binary"
+- entity_id: "sensor.gradhermetic_playroom_shutter_position"
+  address: "9/3/1"
+  type: "percent"
+```
+
+Both entities are exposed, never only one, because neither means anything alone: the position is the
+app's *virtual* one, a slat angle while `..._tilt_mode` reads `on` and a real height otherwise (see
+"Virtual Cover Wiring"), so a bus-side reader — a panel, a scene, a logic block elsewhere on KNX —
+has to read the tilt-mode bit before the position beside it means anything, exactly as a dashboard
+does. Nothing writes to these addresses from the bus, so there is no way back in through them;
+`knx/knx_events.yaml` is the only inbound path.
+
+KNX's expose only has something to send when the entity it watches holds a value. While the app
+publishes the position sensor as `unavailable` — before the first startup reading, or whenever the
+real cover itself goes unavailable — expose sends nothing at all, so the bus simply keeps holding
+whatever position it last received rather than being told anything false.
 
 ## Installation
 
@@ -596,7 +667,16 @@ interrupted-entry sweeps on the geometries the two optional settings produce —
 above the zone (so the ambiguity band is much wider than the zone) and an entry landing that is
 neither zone edge — and asserts that each entry lands on the configured slat angle and each exit
 both physically clears the release height and finishes at the top limit. The drift tests demonstrate
-why every latch sequence starts from the top limit, pin the bound the tilt exit's acceptance
-threshold depends on, and show a *position*-commanded release failing on a drifted actuator — the
-failure the exit avoids by driving against the limit switch instead, and the one R1 keeps a slider
-target from walking into.
+why every latch sequence starts from the top limit, and show a *position*-commanded release failing
+on a drifted actuator — the failure the exit avoids by driving against the limit switch instead, and
+the one R1 keeps a slider target from walking into.
+
+The bound they pin is tighter than `tilt_zone_epsilon_pct` on its own suggests. Calibration error
+only clears at a travel limit, and the enter sequence spends up to three position commands — the
+dip, the latching rise, the configured landing — before any slat move begins, none of which touches
+a limit, so whatever error the actuator adds per move gets three chances to compound first: the
+tolerable per-move error is roughly a third of the margin, not all of it. A slat move to the
+fully-open edge has no margin of its own either way, since it targets `lower` exactly rather than a
+clearance-padded number; on an actuator that drifts more than the zone tolerates, `tilt_zone_lower_pct`
+should be configured a little above the true mechanical open edge, so accumulated drift stops short
+of it instead of past it.

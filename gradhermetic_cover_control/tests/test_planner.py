@@ -18,8 +18,6 @@ from gradhermetic_cover_control.planner import (
     LATCH_LATCHED,
     LATCH_UNKNOWN,
     LATCH_UNLATCHED,
-    NEAR_EDGE_CLOSED,
-    NEAR_EDGE_OPEN,
     PLAN_ENTER,
     PLAN_LEAVE,
     PLAN_NORMAL,
@@ -90,7 +88,7 @@ class TestEnterTilt(unittest.TestCase):
             for latch in (LATCH_UNLATCHED, LATCH_UNKNOWN):
                 with self.subTest(start=start, latch=latch):
                     movement = plan(ZONE, _belief(start, latch),
-                                    Intent(INTENT_ENTER_TILT, near_edge=NEAR_EDGE_CLOSED))
+                                    Intent(INTENT_ENTER_TILT))
                     self.assertEqual(PLAN_ENTER, movement.kind)
                     self.assertEqual([100.0, DIP, UPPER], _targets(movement))
                     self.assertEqual([COMMAND_OPEN, COMMAND_POSITION, COMMAND_POSITION],
@@ -98,7 +96,7 @@ class TestEnterTilt(unittest.TestCase):
                     self.assertEqual(LATCH_LATCHED, movement.final_latch)
 
     def test_near_open_edge_continues_to_the_lower_edge(self):
-        movement = plan(ZONE, _belief(30.0), Intent(INTENT_ENTER_TILT, near_edge=NEAR_EDGE_OPEN))
+        movement = plan(ZONE, _belief(30.0), Intent(INTENT_ENTER_TILT, landing_virtual=100.0))
         self.assertEqual([100.0, DIP, UPPER, LOWER], _targets(movement))
 
     def test_a_landing_of_zero_is_the_bare_three_step_sequence(self):
@@ -125,11 +123,6 @@ class TestEnterTilt(unittest.TestCase):
     def test_a_landing_of_a_hundred_is_the_open_edge(self):
         movement = plan(ZONE, _belief(80.0), Intent(INTENT_ENTER_TILT, landing_virtual=100.0))
         self.assertEqual([100.0, DIP, UPPER, LOWER], _targets(movement))
-
-    def test_an_explicit_landing_overrides_the_near_edge_rule(self):
-        movement = plan(ZONE, _belief(80.0),
-                        Intent(INTENT_ENTER_TILT, near_edge=NEAR_EDGE_OPEN, landing_virtual=50.0))
-        self.assertEqual([100.0, DIP, UPPER, 41.0], _targets(movement))
 
     def test_the_dip_is_a_pure_descent_from_fully_open(self):
         # Nothing in the sequence rises into the zone before the dip, so the dip cannot be made
@@ -436,8 +429,7 @@ class TestInvariantsHoldForEveryPlan(unittest.TestCase):
         intents = [
             Intent(INTENT_OPEN),
             Intent(INTENT_CLOSE),
-            Intent(INTENT_ENTER_TILT, near_edge=NEAR_EDGE_CLOSED),
-            Intent(INTENT_ENTER_TILT, near_edge=NEAR_EDGE_OPEN),
+            Intent(INTENT_ENTER_TILT),
             Intent(INTENT_ENTER_TILT, landing_virtual=zone.enter_landing_virtual),
             Intent(INTENT_LEAVE_TILT),
         ]

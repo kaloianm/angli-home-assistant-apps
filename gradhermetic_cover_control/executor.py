@@ -147,6 +147,12 @@ class Executor:
         # report short of the target after that is a blind that stopped, not one that has yet to
         # start, and is rechecked quickly rather than after the whole inactivity timeout.
         self._saw_motion = False
+        # Whether a command has gone out for the current step and no settled report -- satisfied or
+        # not -- has come back for it yet. This is what :attr:`may_be_travelling` is built from: a
+        # pending plan alone does not mean the blind is moving, since the settled-short recheck (see
+        # :meth:`on_feedback`) keeps a plan open for a few seconds after the blind has already
+        # reported coming to rest.
+        self._awaiting_arrival = False
 
     @property
     def plan(self) -> Optional[Plan]:
@@ -171,6 +177,20 @@ class Executor:
             return None
         return self._step()
 
+    @property
+    def may_be_travelling(self) -> bool:
+        """
+        Whether the blind might actually be moving right now.
+
+        A pending plan is not enough on its own: the settled-short recheck (see
+        :meth:`on_feedback`) keeps a plan open for a few seconds after the blind has already
+        reported coming to rest, so a stop sent during that window would land on a stationary
+        blind -- on a KNX actuator with no dedicated stop object, that is a step telegram that
+        nudges it. This is true only from the moment a command goes out for the current step until
+        a settled report, satisfied or not, comes back for it.
+        """
+        return self.has_plan and self._awaiting_arrival
+
     # -- Events ------------------------------------------------------------------------------------
 
     def start(self, movement: Plan, position: Optional[float], is_moving: bool) -> Outcome:
@@ -193,6 +213,9 @@ class Executor:
         if is_moving:
             self._saw_motion = True
             return Outcome()
+        # A settled report, satisfied or not, answers the command that was outstanding: from here
+        # there is nothing left to stop until the next command goes out.
+        self._awaiting_arrival = False
         if self._step().satisfied_by(position):
             self._index += 1
             return self._advance(position, is_moving)
@@ -275,6 +298,7 @@ class Executor:
         self._plan = None
         self._index = 0
         self._saw_motion = False
+        self._awaiting_arrival = False
 
     def _advance(self, position: Optional[float], is_moving: bool) -> Outcome:
         """
@@ -290,6 +314,7 @@ class Executor:
             self._log(f"commanding {step.kind} {step.command_position} (satisfied at "
                       f"{step.target}) from {position}", level="DEBUG")
             self._saw_motion = False
+            self._awaiting_arrival = True
             return Outcome([_command(step), _arm()], STATUS_RUNNING, self._plan)
         return self._complete(position)
 

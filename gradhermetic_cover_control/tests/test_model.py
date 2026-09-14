@@ -412,6 +412,56 @@ class TestInterruptions(ModelTestCase):
         if harness.logic.has_pending_plan:
             harness.fire_timer()
 
+    # The sweep above runs on a controller that reports everything, and the quirk sets are only
+    # ever driven from rest. Crossing them is where a replacement plan meets a controller that
+    # reports oddly -- which is exactly what the settled-short recheck has to reason about, since
+    # it decides whether a stop has anything left to stop.
+    QUIRK_SEQUENCES = [
+        ("enter_from_above", lambda **kw: fresh(80.0, stride=8.0, **kw),
+         lambda l: l.on_set_tilt_mode(True)),
+        ("guarded_close", lambda **kw: fresh(41.0, stride=8.0, **kw), lambda l: l.on_close()),
+        ("height_step_through_the_band", lambda **kw: fresh(47.0, stride=2.0, **kw),
+         lambda l: l.on_step(DIRECTION_DOWN)),
+    ]
+
+    QUIRK_INTERRUPTIONS = [
+        ("stop", lambda h: h.run(h.logic.on_stop())),
+        ("step_up", lambda h: h.run(h.logic.on_step(DIRECTION_UP))),
+        ("close", lambda h: h.run(h.logic.on_close())),
+        ("tilt_toggle", lambda h: h.run(h.logic.on_toggle_tilt_mode())),
+    ]
+
+    def test_interrupting_under_every_feedback_quirk(self):
+        for quirk_label, quirks in TestFeedbackQuirks.QUIRK_SETS:
+            for name, make, start in self.QUIRK_SEQUENCES:
+                for label, interrupt in self.QUIRK_INTERRUPTIONS:
+                    with self.subTest(quirks=quirk_label, sequence=name, interruption=label):
+                        harness = make(quirks=quirks)
+                        harness.run_partial(start(harness.logic), 1)
+                        harness.published = []
+                        interrupt(harness)
+                        harness.run()
+                        self._settle_fully(harness)
+                        self.assert_no_violation(harness)
+                        self.assert_belief_is_sound(harness)
+                        self.assert_at_rest(harness)
+
+    @staticmethod
+    def _settle_fully(harness):
+        """
+        Fire the fallback timer until the plan comes to rest.
+
+        A quirky controller can need more than one firing: a replacement commanded while the blind
+        was passing through its target reports nothing at all, and on a controller that also
+        withholds intermediate positions the step after it has nothing to advance on either. The
+        design's answer to both is the same fallback timer, so the only question a test can ask is
+        whether it does converge -- and how many firings it takes is bounded.
+        """
+        for _ in range(4):
+            if not harness.logic.has_pending_plan:
+                return
+            harness.fire_timer()
+
     def test_an_interrupted_sequence_recovers_to_a_known_state(self):
         # After a restart the app must end up believing exactly what the blind is doing.
         for name, make, start in self.SEQUENCES:
@@ -531,6 +581,27 @@ class TestAlternateGeometries(ModelTestCase):
                 self.assertEqual(100.0, harness.sim.physical)
                 self.assertEqual(LATCH_UNLATCHED, harness.logic.latch)
                 self.assert_nominal(harness)
+
+    def test_a_slat_move_to_the_fully_open_edge_lands_exactly(self):
+        # The deployed playroom geometry, whose entry lands mid-zone rather than on the closed
+        # edge, so reaching the fully-open slat angle is a further in-zone move. That angle is the
+        # zone's lower edge exactly, the one landmark in the design with no clearance margin of its
+        # own -- so on a truthful actuator it has to land on the edge and not past it. What a
+        # *drifting* actuator does to the same move is a calibration question, documented under the
+        # drift bound in IMPLEMENTATION.md and deliberately not fixed by widening the slat scale.
+        zone = Zone(tilt_zone_upper_pct=45.0, tilt_zone_lower_pct=38.0, tilt_zone_epsilon_pct=1.0,
+                    tilt_step_pct=1.0, tilt_zone_release_pct=57.0, tilt_enter_landing_pct=40.0)
+        harness = fresh(80.0, zone=zone)
+        harness.run(harness.logic.on_set_tilt_mode(True))
+        self.assertTrue(harness.sim.latched)
+        harness.published = []
+        harness.commands = 0
+        harness.run(harness.logic.on_open())
+        self.assertEqual(to_command(zone.lower), harness.sim.reported)
+        self.assertGreaterEqual(harness.sim.physical, zone.lower)
+        self.assertTrue(harness.logic.in_tilt)
+        self.assertAlmostEqual(100.0, harness.logic.current_virtual_position())
+        self.assert_nominal(harness)
 
     def test_every_intent_from_every_latched_slat_position(self):
         for label, zone in self.ZONES:

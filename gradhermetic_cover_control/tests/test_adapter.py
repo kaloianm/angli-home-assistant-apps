@@ -512,6 +512,18 @@ class TestActionTranslation(unittest.TestCase):
         published = self.app.published[POSITION_ENTITY]
         self.assertEqual(MOTION_CLOSING, published["attributes"]["motion"])
 
+    def test_the_tilt_sensor_is_written_only_when_the_mode_changes(self):
+        # The position sensor tracks travel percent by percent; rewriting the mode beside it with
+        # the value it already holds on every one of those reports is pure churn, and it is
+        # mirrored onto the KNX bus by an expose.
+        self._apply(Action(ACTION_PUBLISH_STATE, position=40.0, in_tilt=False))
+        self.app.published.pop(TILT_MODE_ENTITY)
+        self._apply(Action(ACTION_PUBLISH_STATE, position=41.0, in_tilt=False))
+        self.assertNotIn(TILT_MODE_ENTITY, self.app.published)
+        # A real change is written.
+        self._apply(Action(ACTION_PUBLISH_STATE, position=42.0, in_tilt=True))
+        self.assertEqual("on", self.app.published[TILT_MODE_ENTITY]["state"])
+
     def test_an_unknown_position_publishes_the_sensor_as_unavailable(self):
         self._apply(Action(ACTION_PUBLISH_STATE, position=None, in_tilt=False, motion=MOTION_IDLE))
         self.assertEqual("unavailable", self.app.published[POSITION_ENTITY]["state"])
@@ -606,6 +618,16 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
         self.assertEqual("opening", self.app.published[POSITION_ENTITY]["attributes"]["motion"])
         self.assertEqual(85, self.app.published[POSITION_ENTITY]["state"])
 
+    def test_the_settle_timer_carries_the_direction_it_read(self):
+        # The timer reads the controller itself, so it sees the travel direction too; dropping it
+        # would leave the belief's direction stale for the whole of a long move.
+        self.app.command_event(command="close")
+        self.app.cover_state = cover_state(55.0, state="closing")
+        self.app.fire_timers()
+        logic = self.app._runtime.logic  # pylint: disable=protected-access
+        self.assertTrue(logic.is_moving)
+        self.assertEqual("closing", self.app.published[POSITION_ENTITY]["attributes"]["motion"])
+
     def test_the_settle_timer_completes_a_silent_move(self):
         self.app.command_event(command="set_position", position=30)
         self.app.cover_state = cover_state(30.0)  # arrived, but never told us
@@ -619,8 +641,11 @@ class TestSafetyBoundaries(unittest.TestCase):
     def test_the_rate_limit_disables_and_notifies(self):
         app = FakeApp(state=cover_state(80.0)).start()
         runtime = app._runtime  # pylint: disable=protected-access
+        # A runaway replan loop is synchronous, so its commands land milliseconds apart; that is
+        # the shape the limit exists to catch, and the only one that can gather COMMAND_RATE_LIMIT
+        # commands inside a COMMAND_RATE_WINDOW_SECONDS window at all.
         for index in range(COMMAND_RATE_LIMIT + 1):
-            app.now += timedelta(seconds=1)
+            app.now += timedelta(milliseconds=1)
             app._command(runtime, "cover/stop_cover")  # pylint: disable=protected-access
         self.assertTrue(runtime.disabled)
         self.assertIn("GradhermeticCoverControl disabled", app.notify_titles())

@@ -45,9 +45,6 @@ LATCH_UNKNOWN = "unknown"
 DIRECTION_UP = "up"
 DIRECTION_DOWN = "down"
 
-NEAR_EDGE_OPEN = "open"
-NEAR_EDGE_CLOSED = "closed"
-
 # -- Steps -----------------------------------------------------------------------------------------
 
 # Reach exactly this reported position.
@@ -167,19 +164,18 @@ class Intent:
     """
     What the user asked for.
 
-    An enter intent says where in the zone the sequence should finish, in one of two ways.
-    ``near_edge`` is the wall-button rule: entry lands on whichever end of the zone the press came
-    toward, which is a property of the press and not of the installation. ``landing_virtual`` is an
-    explicit virtual slat position and, when given, wins -- that is how the deliberate "enter tilt"
-    control applies the configured ``tilt_enter_landing_pct``. That setting is a real travel
-    position; ``Zone.enter_landing_virtual`` converts it to the virtual scale used here, which is
-    the only scale the planner ever speaks.
+    An enter intent's ``landing_virtual`` names the virtual slat position the sequence should
+    finish on -- that is how the deliberate "enter tilt" control applies the configured
+    ``tilt_enter_landing_pct``. That setting is a real travel position;
+    ``Zone.enter_landing_virtual`` converts it to the virtual scale used here, which is the only
+    scale the planner ever speaks.
+    When it is omitted the sequence finishes at the closed edge, which is where the latching rise
+    already ends.
     """
 
     kind: str
     virtual_pct: Optional[float] = None
     direction: Optional[str] = None
-    near_edge: str = NEAR_EDGE_CLOSED
     cross_open_edge: bool = False
     landing_virtual: Optional[float] = None
 
@@ -195,7 +191,7 @@ def plan(zone: Zone, belief: Belief, intent: Intent) -> Optional[Plan]:
     if intent.kind == INTENT_SET_POSITION:
         return _plan_set_position(zone, belief, intent.virtual_pct)
     if intent.kind == INTENT_ENTER_TILT:
-        return _plan_enter_tilt(zone, intent.near_edge, intent.landing_virtual)
+        return _plan_enter_tilt(zone, intent.landing_virtual)
     if intent.kind == INTENT_LEAVE_TILT:
         return _plan_leave_tilt(zone, belief)
     if intent.kind == INTENT_SLAT_STEP:
@@ -306,7 +302,7 @@ def _height_move(zone: Zone, belief: Belief, target: float) -> Plan:
     return Plan(PLAN_NORMAL, steps, LATCH_UNLATCHED)
 
 
-def _plan_enter_tilt(zone: Zone, near_edge: str, landing_virtual: Optional[float] = None) -> Plan:
+def _plan_enter_tilt(zone: Zone, landing_virtual: Optional[float] = None) -> Plan:
     """
     The canonical latch sequence, correct from any starting position.
 
@@ -316,15 +312,15 @@ def _plan_enter_tilt(zone: Zone, near_edge: str, landing_virtual: Optional[float
     with the slats parallel.
 
     The latching rise necessarily ends at the closed edge, so landing anywhere else costs one more
-    in-zone slat move. ``landing_virtual`` names that landing explicitly (the configured
-    ``tilt_enter_landing_pct``, converted to the virtual scale by the zone); without it the
-    wall-button ``near_edge`` rule decides. The extra
+    in-zone slat move. ``landing_virtual`` names that landing (the configured
+    ``tilt_enter_landing_pct``, converted to the virtual scale by the zone); when it is omitted the
+    sequence finishes at the closed edge, where the rise already ends. The extra
     step is omitted when it would command the position the rise already reached -- compared in the
     integer domain the actuator speaks, since a command that rounds to the current setpoint moves
     nothing and would only be skipped again by the executor.
     """
     if landing_virtual is None:
-        landing_virtual = 100.0 if near_edge == NEAR_EDGE_OPEN else 0.0
+        landing_virtual = 0.0
     steps = [
         Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),
         Step(STEP_MOVE_TO, zone.dip_target),
