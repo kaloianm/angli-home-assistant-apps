@@ -2,28 +2,29 @@ import unittest
 
 from gradhermetic_cover_control.geometry import (
     DEFAULT_HEIGHT_STEP_PCT,
-    MIN_EPSILON_PCT,
     MIN_STEP_PCT,
     Zone,
     clamp_pct,
     to_command,
 )
 
-# Geometry used throughout the suite: zone [38, 44], epsilon 2, step 1.2 real travel percent. Span
-# = 6, so one step is 20 on the virtual scale, and the ambiguity band is [36, 46]. Every configured
+# Geometry used throughout the suite: zone [38, 44], release 46, step 1.2 real travel percent. Span
+# = 6, so one step is 20 on the virtual scale, and the ambiguity band is [37, 46]. Every configured
 # number here -- STEP included -- is real blind travel.
 UPPER = 44.0
 LOWER = 38.0
-EPSILON = 2.0
+RELEASE = 46.0
 STEP = 1.2
 VIRTUAL_STEP = 20.0
+# The band reaches one whole percent below the latching edge.
+BAND_LOW = LOWER - 1.0
 
 
 def _zone(**overrides):
     args = {
         "tilt_zone_upper_pct": UPPER,
         "tilt_zone_lower_pct": LOWER,
-        "tilt_zone_epsilon_pct": EPSILON,
+        "tilt_zone_release_pct": RELEASE,
         "tilt_step_pct": STEP,
     }
     args.update(overrides)
@@ -37,14 +38,11 @@ class TestLandmarks(unittest.TestCase):
 
     def test_named_targets(self):
         self.assertAlmostEqual(6.0, self.zone.span)
-        self.assertAlmostEqual(LOWER - EPSILON, self.zone.dip_target)
-        self.assertAlmostEqual(UPPER + EPSILON, self.zone.release_target)
-        self.assertAlmostEqual(self.zone.dip_target, self.zone.band_low)
+        self.assertAlmostEqual(RELEASE, self.zone.release_target)
+        # The entry stops on the lower edge; the band reaches one percent further down, so a
+        # whole-height move snapped to its bottom does not park on the latching edge.
+        self.assertAlmostEqual(BAND_LOW, self.zone.band_low)
         self.assertAlmostEqual(self.zone.release_target, self.zone.band_high)
-
-    def test_release_defaults_to_the_bare_clearance(self):
-        self.assertIsNone(self.zone.tilt_zone_release_pct)
-        self.assertAlmostEqual(UPPER + EPSILON, self.zone.release_target)
 
     def test_landing_defaults_to_the_closed_edge(self):
         self.assertIsNone(self.zone.tilt_enter_landing_pct)
@@ -82,7 +80,7 @@ class TestConfiguredReleaseHeight(unittest.TestCase):
         # A latched-but-not-yet-released mechanism can rest anywhere up to the true release height,
         # so the ambiguity band has to reach exactly that far.
         self.assertAlmostEqual(self.zone.release_target, self.zone.band_high)
-        self.assertAlmostEqual(self.zone.dip_target, self.zone.band_low)
+        self.assertAlmostEqual(BAND_LOW, self.zone.band_low)
 
     def test_the_band_widens_with_it(self):
         self.assertTrue(self.zone.in_band(50.0))
@@ -93,7 +91,7 @@ class TestConfiguredReleaseHeight(unittest.TestCase):
 
     def test_snapping_follows_the_widened_band(self):
         self.assertAlmostEqual(55.0, self.zone.snap_normal_target(50.0))
-        self.assertAlmostEqual(36.0, self.zone.snap_normal_target(37.0))
+        self.assertAlmostEqual(BAND_LOW, self.zone.snap_normal_target(38.0))
         self.assertAlmostEqual(55.0, self.zone.snap_normal_target(55.0))
         self.assertAlmostEqual(56.0, self.zone.snap_normal_target(56.0))
 
@@ -104,12 +102,12 @@ class TestPredicates(unittest.TestCase):
         self.zone = _zone()
 
     def test_band_is_inclusive_at_both_edges(self):
-        self.assertTrue(self.zone.in_band(36.0))
+        self.assertTrue(self.zone.in_band(BAND_LOW))
         self.assertTrue(self.zone.in_band(46.0))
         self.assertTrue(self.zone.in_band(41.0))
 
     def test_outside_band(self):
-        self.assertFalse(self.zone.in_band(35.9))
+        self.assertFalse(self.zone.in_band(36.9))
         self.assertFalse(self.zone.in_band(46.1))
         self.assertFalse(self.zone.in_band(0.0))
         self.assertFalse(self.zone.in_band(100.0))
@@ -160,20 +158,20 @@ class TestSnapping(unittest.TestCase):
         self.zone = _zone()
 
     def test_targets_outside_band_are_untouched(self):
-        for target in (0.0, 10.0, 35.0, 36.0, 46.0, 47.0, 100.0):
+        for target in (0.0, 10.0, 35.0, BAND_LOW, 46.0, 47.0, 100.0):
             self.assertAlmostEqual(target, self.zone.snap_normal_target(target))
 
     def test_target_near_lower_edge_snaps_down(self):
-        self.assertAlmostEqual(36.0, self.zone.snap_normal_target(37.0))
-        self.assertAlmostEqual(36.0, self.zone.snap_normal_target(40.9))
+        self.assertAlmostEqual(BAND_LOW, self.zone.snap_normal_target(38.0))
+        self.assertAlmostEqual(BAND_LOW, self.zone.snap_normal_target(41.4))
 
     def test_target_near_upper_edge_snaps_up(self):
         self.assertAlmostEqual(46.0, self.zone.snap_normal_target(45.0))
-        self.assertAlmostEqual(46.0, self.zone.snap_normal_target(41.1))
+        self.assertAlmostEqual(46.0, self.zone.snap_normal_target(41.6))
 
     def test_tie_rises(self):
         # Exactly midway: rising never needs a latch release first, so ties go up.
-        self.assertAlmostEqual(46.0, self.zone.snap_normal_target(41.0))
+        self.assertAlmostEqual(46.0, self.zone.snap_normal_target(41.5))
 
     def test_snapping_clamps(self):
         self.assertAlmostEqual(100.0, self.zone.snap_normal_target(120.0))
@@ -181,17 +179,17 @@ class TestSnapping(unittest.TestCase):
 
     def test_the_nearest_edge_is_skipped_when_the_blind_already_rests_on_it(self):
         # A slider dragged into the band from an edge asked for a move, so the far edge wins.
-        self.assertAlmostEqual(46.0, self.zone.snap_normal_target(37.0, current=36.0))
-        self.assertAlmostEqual(36.0, self.zone.snap_normal_target(45.0, current=46.0))
+        self.assertAlmostEqual(46.0, self.zone.snap_normal_target(38.0, current=BAND_LOW))
+        self.assertAlmostEqual(BAND_LOW, self.zone.snap_normal_target(45.0, current=46.0))
         # Resting anywhere else, the nearest edge is still the nearest edge.
-        self.assertAlmostEqual(36.0, self.zone.snap_normal_target(37.0, current=80.0))
+        self.assertAlmostEqual(BAND_LOW, self.zone.snap_normal_target(38.0, current=80.0))
         self.assertAlmostEqual(46.0, self.zone.snap_normal_target(45.0, current=10.0))
 
     def test_a_step_target_snaps_in_the_direction_of_travel(self):
         # A step down into the band continues to the bottom of it, a step up to the top.
-        self.assertAlmostEqual(36.0, self.zone.snap_step_target(45.0, rising=False))
-        self.assertAlmostEqual(46.0, self.zone.snap_step_target(37.0, rising=True))
-        for target in (0.0, 36.0, 46.0, 100.0):
+        self.assertAlmostEqual(BAND_LOW, self.zone.snap_step_target(45.0, rising=False))
+        self.assertAlmostEqual(46.0, self.zone.snap_step_target(38.0, rising=True))
+        for target in (0.0, BAND_LOW, 46.0, 100.0):
             self.assertAlmostEqual(target, self.zone.snap_step_target(target, rising=True))
             self.assertAlmostEqual(target, self.zone.snap_step_target(target, rising=False))
 
@@ -214,20 +212,6 @@ class TestValidation(unittest.TestCase):
 
     def test_valid_geometry_passes(self):
         _zone().validate()
-
-    def test_epsilon_below_minimum_raises(self):
-        with self.assertRaisesRegex(ValueError, "tilt_zone_epsilon_pct must be >="):
-            _zone(tilt_zone_epsilon_pct=MIN_EPSILON_PCT / 2.0)
-
-    def test_minimum_epsilon_is_accepted(self):
-        # One whole percent is enough to carry the rounded command clear of the edge.
-        zone = _zone(tilt_zone_epsilon_pct=MIN_EPSILON_PCT)
-        self.assertNotEqual(to_command(zone.lower), to_command(zone.dip_target))
-        self.assertNotEqual(to_command(zone.upper), to_command(zone.release_target))
-
-    def test_epsilon_must_be_positive(self):
-        with self.assertRaisesRegex(ValueError, "tilt_zone_epsilon_pct must be > 0"):
-            _zone(tilt_zone_epsilon_pct=0.0)
 
     def test_lower_not_below_upper_raises(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_lower_pct must be smaller"):
@@ -268,37 +252,30 @@ class TestValidation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "height_step_pct must be <= 100"):
             _zone(height_step_pct=101.0)
 
-    def test_dip_target_at_or_below_zero_raises(self):
+    def test_band_reaching_the_bottom_limit_raises(self):
         # The band must stop short of the bottom limit: a blind resting fully closed is one the app
-        # has to be able to trust as unlatched, so lower - epsilon may not reach 0.
-        for lower in (EPSILON, 1.0):
+        # has to be able to trust as unlatched.
+        for lower in (0.0, 1.0):
             with self.subTest(lower=lower):
-                with self.assertRaisesRegex(ValueError,
-                                            "tilt_zone_lower_pct - tilt_zone_epsilon_pct"):
+                with self.assertRaisesRegex(ValueError, "tilt_zone_lower_pct must be > 1.0"):
                     _zone(tilt_zone_lower_pct=lower, tilt_zone_upper_pct=10.0)
 
-    def test_dip_target_just_above_zero_is_accepted(self):
-        zone = _zone(tilt_zone_lower_pct=EPSILON + 1.0, tilt_zone_upper_pct=10.0)
-        self.assertAlmostEqual(1.0, zone.dip_target)
+    def test_a_band_bottom_just_above_zero_is_accepted(self):
+        zone = _zone(tilt_zone_lower_pct=2.0, tilt_zone_upper_pct=10.0)
+        self.assertAlmostEqual(1.0, zone.band_low)
 
-    def test_release_target_at_or_above_hundred_raises(self):
-        for upper in (100.0 - EPSILON, 99.0):
-            with self.subTest(upper=upper):
-                with self.assertRaisesRegex(ValueError,
-                                            "tilt_zone_upper_pct \\+ tilt_zone_epsilon_pct"):
-                    _zone(tilt_zone_upper_pct=upper)
-
-    def test_release_below_the_bare_clearance_raises(self):
-        # Anything below upper + epsilon does not even carry the reported position clear of the
-        # upper edge, so it cannot be the height the mechanism releases at.
-        for release in (UPPER + EPSILON - 0.1, UPPER, 0.0):
+    def test_release_not_clear_of_the_upper_edge_raises(self):
+        # A release that rounds to the upper edge does not carry the reported position clear of it,
+        # so it cannot be the height the mechanism releases at.
+        for release in (UPPER + 0.4, UPPER, UPPER - 1.0, 0.0):
             with self.subTest(release=release):
-                with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be >="):
+                with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must round"):
                     _zone(tilt_zone_release_pct=release)
 
-    def test_release_exactly_at_the_bare_clearance_is_accepted(self):
-        zone = _zone(tilt_zone_release_pct=UPPER + EPSILON)
-        self.assertAlmostEqual(UPPER + EPSILON, zone.release_target)
+    def test_release_one_whole_percent_clear_is_accepted(self):
+        zone = _zone(tilt_zone_release_pct=UPPER + 1.0)
+        self.assertAlmostEqual(UPPER + 1.0, zone.release_target)
+        self.assertNotEqual(to_command(zone.upper), to_command(zone.release_target))
 
     def test_release_at_or_above_a_hundred_raises(self):
         # The band must stop short of the top limit: a blind resting fully open is one the app has

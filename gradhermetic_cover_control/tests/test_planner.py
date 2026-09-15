@@ -33,29 +33,29 @@ from gradhermetic_cover_control.planner import (
     plan,
 )
 
-# Zone [38, 44], epsilon 2, step 1.2 real travel percent -> band [36, 46]. Every configured number
+# Zone [38, 44], release 46, step 1.2 real travel percent -> band [38, 46]. Every configured number
 # is real blind travel; span 6 makes the 1.2% step 20 on the virtual scale the planner works in.
 UPPER = 44.0
 LOWER = 38.0
-EPSILON = 2.0
 STEP = 1.2
-DIP = LOWER - EPSILON
-RELEASE = UPPER + EPSILON
+RELEASE = UPPER + 2.0
+# The band reaches one whole percent below the latching edge.
+BAND_LOW = LOWER - 1.0
 
-ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-            tilt_step_pct=STEP)
+ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
+            tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP)
 
 # The same zone with a measured release height well above the bare clearance, and an entry that
 # finishes at a slightly-open slat angle (real 41.6, i.e. virtual 40) instead of the closed edge.
-# Band = [36, 55].
+# Band = [38, 55].
 CUSTOM_RELEASE = 55.0
 CUSTOM_LANDING = 41.6
 CUSTOM_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
-                   tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
+                   tilt_step_pct=STEP,
                    tilt_zone_release_pct=CUSTOM_RELEASE, tilt_enter_landing_pct=CUSTOM_LANDING)
 
 # Representative starts: above, at the band edges, inside the zone, below, and unknown.
-STARTS = (100.0, 80.0, 47.0, RELEASE, 45.0, UPPER, 41.0, LOWER, DIP, 30.0, 0.0, None)
+STARTS = (100.0, 80.0, 47.0, RELEASE, 45.0, UPPER, 41.0, LOWER, 37.0, 30.0, 0.0, None)
 
 
 def _belief(position, latch=LATCH_UNLATCHED, is_moving=False):
@@ -90,24 +90,24 @@ class TestEnterTilt(unittest.TestCase):
                     movement = plan(ZONE, _belief(start, latch),
                                     Intent(INTENT_ENTER_TILT))
                     self.assertEqual(PLAN_ENTER, movement.kind)
-                    self.assertEqual([100.0, DIP, UPPER], _targets(movement))
+                    self.assertEqual([100.0, LOWER, UPPER], _targets(movement))
                     self.assertEqual([COMMAND_OPEN, COMMAND_POSITION, COMMAND_POSITION],
                                      _commands(movement))
                     self.assertEqual(LATCH_LATCHED, movement.final_latch)
 
     def test_near_open_edge_continues_to_the_lower_edge(self):
         movement = plan(ZONE, _belief(30.0), Intent(INTENT_ENTER_TILT, landing_virtual=100.0))
-        self.assertEqual([100.0, DIP, UPPER, LOWER], _targets(movement))
+        self.assertEqual([100.0, LOWER, UPPER, LOWER], _targets(movement))
 
     def test_a_landing_of_zero_is_the_bare_three_step_sequence(self):
         # Virtual 0 is the closed edge, which is exactly where the latching rise ends.
         movement = plan(ZONE, _belief(80.0),
                         Intent(INTENT_ENTER_TILT, landing_virtual=0.0))
-        self.assertEqual([100.0, DIP, UPPER], _targets(movement))
+        self.assertEqual([100.0, LOWER, UPPER], _targets(movement))
 
     def test_a_mid_zone_landing_adds_one_in_zone_step(self):
         movement = plan(ZONE, _belief(80.0), Intent(INTENT_ENTER_TILT, landing_virtual=50.0))
-        self.assertEqual([100.0, DIP, UPPER, 41.0], _targets(movement))
+        self.assertEqual([100.0, LOWER, UPPER, 41.0], _targets(movement))
         self.assertEqual(
             [COMMAND_OPEN, COMMAND_POSITION, COMMAND_POSITION, COMMAND_POSITION],
             _commands(movement))
@@ -118,18 +118,19 @@ class TestEnterTilt(unittest.TestCase):
         # 6% of travel per 100 virtual percent, so virtual 5 is 0.3 real percent -- it rounds to the
         # setpoint the rise already reached, and a command that moves nothing is not worth sending.
         movement = plan(ZONE, _belief(80.0), Intent(INTENT_ENTER_TILT, landing_virtual=5.0))
-        self.assertEqual([100.0, DIP, UPPER], _targets(movement))
+        self.assertEqual([100.0, LOWER, UPPER], _targets(movement))
 
     def test_a_landing_of_a_hundred_is_the_open_edge(self):
         movement = plan(ZONE, _belief(80.0), Intent(INTENT_ENTER_TILT, landing_virtual=100.0))
-        self.assertEqual([100.0, DIP, UPPER, LOWER], _targets(movement))
+        self.assertEqual([100.0, LOWER, UPPER, LOWER], _targets(movement))
 
-    def test_the_dip_is_a_pure_descent_from_fully_open(self):
-        # Nothing in the sequence rises into the zone before the dip, so the dip cannot be made
-        # while latched no matter where the blind started.
+    def test_the_descent_onto_the_lower_edge_comes_from_fully_open(self):
+        # Nothing in the sequence rises into the zone beforehand, so the descent onto the edge
+        # cannot be made while latched no matter where the blind started -- and it stops on the
+        # edge rather than below it, since travel past it buys the rise nothing.
         movement = plan(ZONE, _belief(None, LATCH_UNKNOWN), Intent(INTENT_ENTER_TILT))
         self.assertEqual(COMMAND_OPEN, movement.steps[0].command)
-        self.assertLess(movement.steps[1].target, LOWER)
+        self.assertEqual(LOWER, movement.steps[1].target)
 
 
 class TestLeaveTilt(unittest.TestCase):
@@ -208,8 +209,8 @@ class TestWholeHeight(unittest.TestCase):
 
     def test_set_position_inside_the_band_snaps_to_an_edge(self):
         movement = plan(ZONE, _belief(80.0, LATCH_UNLATCHED), Intent(INTENT_SET_POSITION,
-                                                                     virtual_pct=37.0))
-        self.assertEqual([DIP], _targets(movement))
+                                                                     virtual_pct=38.0))
+        self.assertEqual([BAND_LOW], _targets(movement))
         movement = plan(ZONE, _belief(80.0, LATCH_UNLATCHED), Intent(INTENT_SET_POSITION,
                                                                      virtual_pct=45.0))
         self.assertEqual([RELEASE], _targets(movement))
@@ -222,18 +223,18 @@ class TestWholeHeight(unittest.TestCase):
 
     def test_set_position_from_a_band_edge_into_the_band_goes_to_the_far_edge(self):
         # Snapping back to the edge the blind already rests on would move nothing.
-        movement = plan(ZONE, _belief(DIP, LATCH_UNLATCHED),
-                        Intent(INTENT_SET_POSITION, virtual_pct=37.0))
+        movement = plan(ZONE, _belief(BAND_LOW, LATCH_UNLATCHED),
+                        Intent(INTENT_SET_POSITION, virtual_pct=38.0))
         self.assertEqual([RELEASE], _targets(movement))
         movement = plan(ZONE, _belief(RELEASE, LATCH_UNLATCHED),
                         Intent(INTENT_SET_POSITION, virtual_pct=45.0))
-        self.assertEqual([DIP], _targets(movement))
+        self.assertEqual([BAND_LOW], _targets(movement))
 
     def test_a_rise_ending_on_the_release_height_does_not_claim_a_release(self):
         # From below the lower edge the rise latches on the way up and reaches the release height
         # with no margin at all; a position command cannot vouch for the release, so the belief it
         # commits is unknown and the next descent buys the full-open release.
-        for start, latch in ((20.0, LATCH_UNLATCHED), (DIP, LATCH_UNLATCHED),
+        for start, latch in ((20.0, LATCH_UNLATCHED), (37.0, LATCH_UNLATCHED),
                              (41.0, LATCH_UNKNOWN), (None, LATCH_UNKNOWN)):
             with self.subTest(start=start, latch=latch):
                 movement = plan(ZONE, _belief(start, latch),
@@ -339,7 +340,7 @@ class TestHeightStep(unittest.TestCase):
         self.assertEqual([12.0], _targets(self._step(10.0, DIRECTION_UP)))
         self.assertEqual([8.0], _targets(self._step(10.0, DIRECTION_DOWN)))
         wide = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
-                    tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP, height_step_pct=5.0)
+                    tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, height_step_pct=5.0)
         self.assertEqual([75.0], _targets(self._step(80.0, DIRECTION_DOWN, zone=wide)))
 
     def test_a_step_is_a_normal_plan_that_commits_a_release(self):
@@ -355,25 +356,27 @@ class TestHeightStep(unittest.TestCase):
 
     def test_a_step_into_the_band_continues_to_the_edge_ahead(self):
         # Down from just above the band: 47 - 2 = 45 is inside, so the step lands on the bottom.
-        self.assertEqual([DIP], _targets(self._step(47.0, DIRECTION_DOWN)))
-        # Up from just below: 35 + 2 = 37 is inside, so the step lands on the top.
-        self.assertEqual([RELEASE], _targets(self._step(35.0, DIRECTION_UP)))
+        self.assertEqual([BAND_LOW], _targets(self._step(47.0, DIRECTION_DOWN)))
+        # Up from just below: 36 + 2 = 38 is inside, so the step lands on the top.
+        self.assertEqual([RELEASE], _targets(self._step(36.0, DIRECTION_UP)))
         # From the band edges themselves, the next step crosses the whole band.
-        self.assertEqual([RELEASE], _targets(self._step(DIP, DIRECTION_UP)))
-        self.assertEqual([DIP], _targets(self._step(RELEASE, DIRECTION_DOWN)))
+        self.assertEqual([RELEASE], _targets(self._step(BAND_LOW, DIRECTION_UP)))
+        self.assertEqual([BAND_LOW], _targets(self._step(RELEASE, DIRECTION_DOWN)))
 
     def test_a_step_up_that_crosses_the_lower_edge_commits_no_release(self):
         # Rising from below the lower edge to exactly the release height may leave the mechanism
-        # latched; only a step that provably stayed above the lower edge keeps a known release.
-        self.assertEqual(LATCH_UNKNOWN, self._step(35.0, DIRECTION_UP).final_latch)
-        self.assertEqual(LATCH_UNKNOWN, self._step(DIP, DIRECTION_UP).final_latch)
+        # latched; only a step that provably stayed at or above the lower edge from a known
+        # release keeps one.
+        self.assertEqual(LATCH_UNKNOWN, self._step(37.0, DIRECTION_UP).final_latch)
         self.assertEqual(LATCH_UNKNOWN,
                          self._step(41.0, DIRECTION_UP, latch=LATCH_UNKNOWN).final_latch)
+        # The lower edge itself is high enough: a rise from there never crossed it.
+        self.assertEqual(LATCH_UNLATCHED, self._step(LOWER, DIRECTION_UP).final_latch)
         self.assertEqual(LATCH_UNLATCHED, self._step(RELEASE, DIRECTION_UP).final_latch)
 
     def test_a_step_down_while_possibly_latched_is_guarded(self):
         movement = self._step(41.0, DIRECTION_DOWN, latch=LATCH_UNKNOWN)
-        self.assertEqual([100.0, DIP], _targets(movement))
+        self.assertEqual([100.0, BAND_LOW], _targets(movement))
         self.assertEqual(COMMAND_OPEN, movement.steps[0].command)
         self.assertEqual(LATCH_UNLATCHED, movement.final_latch)
 
@@ -420,7 +423,7 @@ class TestInvariantsHoldForEveryPlan(unittest.TestCase):
         ("default", ZONE),
         ("custom_release_and_landing", CUSTOM_ZONE),
         ("release_just_below_full_travel",
-         Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
+         Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
               tilt_step_pct=STEP, tilt_zone_release_pct=99.0, tilt_enter_landing_pct=LOWER)),
     ]
 
@@ -474,7 +477,7 @@ class TestInvariantRejections(unittest.TestCase):
         self.assertIn("N1", check_plan(ZONE, _belief(80.0), movement))
 
     def test_n1_allows_the_band_edges(self):
-        for target in (DIP, RELEASE):
+        for target in (BAND_LOW, RELEASE):
             movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, target),), LATCH_UNLATCHED)
             self.assertIsNone(check_plan(ZONE, _belief(80.0, LATCH_UNLATCHED), movement))
 
@@ -486,7 +489,7 @@ class TestInvariantRejections(unittest.TestCase):
         movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, RELEASE),), LATCH_UNLATCHED)
         # From below the lower edge the rise latches; from an uncertain belief it may already be.
         self.assertIn("R1", check_plan(ZONE, _belief(20.0, LATCH_UNLATCHED), movement))
-        self.assertIn("R1", check_plan(ZONE, _belief(DIP, LATCH_UNLATCHED), movement))
+        self.assertIn("R1", check_plan(ZONE, _belief(37.0, LATCH_UNLATCHED), movement))
         self.assertIn("R1", check_plan(ZONE, _belief(41.0, LATCH_UNKNOWN), movement))
         self.assertIn("R1", check_plan(ZONE, _belief(None, LATCH_UNKNOWN), movement))
 
@@ -529,25 +532,29 @@ class TestInvariantRejections(unittest.TestCase):
         # README's old from-above entry: dip straight down without re-referencing at the top.
         movement = Plan(PLAN_ENTER, (
             Step(STEP_MOVE_TO, RELEASE),
-            Step(STEP_MOVE_TO, DIP),
-            Step(STEP_MOVE_TO, UPPER),
-        ), LATCH_LATCHED)
-        self.assertIn("E1", check_plan(ZONE, _belief(80.0, LATCH_UNLATCHED), movement))
-
-    def test_e1_rejects_a_dip_that_does_not_clear_the_lower_edge(self):
-        movement = Plan(PLAN_ENTER, (
-            Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),
             Step(STEP_MOVE_TO, LOWER),
             Step(STEP_MOVE_TO, UPPER),
         ), LATCH_LATCHED)
         self.assertIn("E1", check_plan(ZONE, _belief(80.0, LATCH_UNLATCHED), movement))
 
+    def test_e1_rejects_a_rise_that_does_not_start_on_the_lower_edge(self):
+        # Short of the edge the rise never crosses the height the mechanism latches at; past it
+        # the blind is descending under its own weight for nothing.
+        for start in (LOWER - 1.0, LOWER + 1.0):
+            with self.subTest(start=start):
+                movement = Plan(PLAN_ENTER, (
+                    Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),
+                    Step(STEP_MOVE_TO, start),
+                    Step(STEP_MOVE_TO, UPPER),
+                ), LATCH_LATCHED)
+                self.assertIn("E1", check_plan(ZONE, _belief(80.0, LATCH_UNLATCHED), movement))
+
     def test_e1_rejects_a_fourth_step_outside_the_zone(self):
-        for target in (DIP, RELEASE, LOWER - 0.1, UPPER + 0.1):
+        for target in (LOWER - 1.0, RELEASE, LOWER - 0.1, UPPER + 0.1):
             with self.subTest(target=target):
                 movement = Plan(PLAN_ENTER, (
                     Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),
-                    Step(STEP_MOVE_TO, DIP),
+                    Step(STEP_MOVE_TO, LOWER),
                     Step(STEP_MOVE_TO, UPPER),
                     Step(STEP_MOVE_TO, target),
                 ), LATCH_LATCHED)
@@ -559,7 +566,7 @@ class TestInvariantRejections(unittest.TestCase):
             with self.subTest(target=target):
                 movement = Plan(PLAN_ENTER, (
                     Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),
-                    Step(STEP_MOVE_TO, DIP),
+                    Step(STEP_MOVE_TO, LOWER),
                     Step(STEP_MOVE_TO, UPPER),
                     Step(STEP_MOVE_TO, target),
                 ), LATCH_LATCHED)
@@ -568,7 +575,7 @@ class TestInvariantRejections(unittest.TestCase):
     def test_e1_rejects_a_fifth_step(self):
         movement = Plan(PLAN_ENTER, (
             Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),
-            Step(STEP_MOVE_TO, DIP),
+            Step(STEP_MOVE_TO, LOWER),
             Step(STEP_MOVE_TO, UPPER),
             Step(STEP_MOVE_TO, 41.0),
             Step(STEP_MOVE_TO, 42.0),
@@ -613,7 +620,7 @@ class TestInvariantRejections(unittest.TestCase):
     def test_n1_rejects_a_commanded_position_inside_the_band(self):
         # The hazard is where the blind physically stops, so the commanded position counts too.
         movement = Plan(PLAN_NORMAL,
-                        (Step(STEP_MOVE_TO, DIP, COMMAND_POSITION, command_pct=41.0),),
+                        (Step(STEP_MOVE_TO, LOWER, COMMAND_POSITION, command_pct=41.0),),
                         LATCH_UNLATCHED)
         self.assertIn("N1", check_plan(ZONE, _belief(80.0), movement))
 

@@ -307,9 +307,14 @@ def _plan_enter_tilt(zone: Zone, landing_virtual: Optional[float] = None) -> Pla
     The canonical latch sequence, correct from any starting position.
 
     Drive fully open with the open command first: the latch percentages are only reliable when the
-    sequence is referenced from the top limit, and it also guarantees the dip is a pure descent from
-    above, which cannot latch. Then dip below the lower edge and rise back across it, which latches
-    with the slats parallel.
+    sequence is referenced from the top limit, and it also guarantees the descent onto the lower
+    edge comes from above, which cannot latch. Then rise from that edge to the upper one, which
+    latches with the slats parallel.
+
+    The descent stops *on* the lower edge rather than below it. That edge is the height the
+    mechanism latches at, so it is both the far end of the slat range and the only place the rise
+    has to start from; travel past it is the blind descending under its own weight, which buys
+    nothing the rise needs.
 
     The latching rise necessarily ends at the closed edge, so landing anywhere else costs one more
     in-zone slat move. ``landing_virtual`` names that landing (the configured
@@ -323,7 +328,7 @@ def _plan_enter_tilt(zone: Zone, landing_virtual: Optional[float] = None) -> Pla
         landing_virtual = 0.0
     steps = [
         Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),
-        Step(STEP_MOVE_TO, zone.dip_target),
+        Step(STEP_MOVE_TO, zone.lower),
         Step(STEP_MOVE_TO, zone.upper),
     ]
     landing = zone.virtual_to_real(clamp_pct(landing_virtual))
@@ -506,8 +511,8 @@ def _check_latching(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
         return "E1: the enter sequence must be three or four move steps"
     if steps[0].command != COMMAND_OPEN or to_command(steps[0].target) != 100:
         return "E1: the enter sequence must begin by driving fully open"
-    if steps[1].target >= zone.lower:
-        return f"E1: the enter dip to {steps[1].target} does not clear the lower edge"
+    if to_command(steps[1].target) != to_command(zone.lower):
+        return (f"E1: the latching rise must start from the lower edge, not {steps[1].target}")
     if to_command(steps[2].target) != to_command(zone.upper):
         return f"E1: the latching rise must end at the upper edge, not {steps[2].target}"
     # The optional fourth step is the configured landing: any slat angle inside the zone. It starts

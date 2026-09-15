@@ -40,8 +40,8 @@ from gradhermetic_cover_control.planner import (
 UPPER = 44.0
 LOWER = 38.0
 RELEASE = 46.0
-ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=2.0,
-            tilt_step_pct=1.2)
+ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
+            tilt_zone_release_pct=RELEASE, tilt_step_pct=1.2)
 
 
 def _kinds(outcome):
@@ -335,13 +335,13 @@ class TestSettleTimer(unittest.TestCase):
 
     def test_deviation_tolerance_does_not_apply_to_a_target_in_the_band(self):
         # A percent short of the release height leaves the mechanism latched; a percent short of
-        # the enter dip never clears the lower edge. Those must land or stall.
+        # the lower edge is a latching rise that never starts from it. Those must land or stall.
         executor = Executor(ZONE)
         executor.start(_move_plan(RELEASE), 20.0, False)
         self.assertEqual(STATUS_STALLED, executor.on_timer(RELEASE - 1.0, False).status)
         executor = Executor(ZONE)
-        executor.start(_enter_plan(), 100.0, False)  # commanded the dip to 36
-        self.assertEqual(STATUS_STALLED, executor.on_timer(38.0, False).status)
+        executor.start(_enter_plan(), 100.0, False)  # commanded the descent onto the lower edge
+        self.assertEqual(STATUS_STALLED, executor.on_timer(LOWER + 1.0, False).status)
 
     def test_deviation_tolerance_does_not_apply_to_slat_steps(self):
         # A slat step is smaller than the tolerance: accepting the pre-step position would silently

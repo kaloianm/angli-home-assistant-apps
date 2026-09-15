@@ -50,13 +50,13 @@ from gradhermetic_cover_control.tests.simulator import BlindSimulator, Quirks
 # 6%-wide zone.
 UPPER = 44.0
 LOWER = 38.0
-EPSILON = 2.0
 STEP = 1.2
-DIP = LOWER - EPSILON
-RELEASE = UPPER + EPSILON
+RELEASE = UPPER + 2.0
+# The band reaches one whole percent below the latching edge.
+BAND_LOW = LOWER - 1.0
 
-ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-            tilt_step_pct=STEP)
+ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
+            tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP)
 
 # The same mechanism on a blind whose latch only genuinely lets go well above the bare clearance,
 # and whose slats are not visible until a little way open (real 41.6, i.e. virtual 40). Band =
@@ -64,7 +64,7 @@ ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsi
 CUSTOM_RELEASE = 55.0
 CUSTOM_LANDING = 41.6
 CUSTOM_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
-                   tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
+                   tilt_step_pct=STEP,
                    tilt_zone_release_pct=CUSTOM_RELEASE, tilt_enter_landing_pct=CUSTOM_LANDING)
 
 # Enough ticks for the longest sequence (a full open plus a dip plus a rise) with room to spare.
@@ -215,9 +215,9 @@ def interrupted_enter(stop_at, **kwargs):
     """
     harness = Harness(position=100.0, **kwargs)
     harness.logic.seed_state(100.0)
-    # Already fully open, so the first command is the dip.
+    # Already fully open, so the first command is the descent onto the lower edge.
     harness.apply(harness.logic.on_set_tilt_mode(True))
-    _drive_until(harness, lambda: harness.sim.physical <= harness.zone.dip_target + 1e-9)
+    _drive_until(harness, lambda: harness.sim.physical <= harness.zone.lower + 1e-9)
     _drive_until(harness, lambda: harness.sim.physical >= float(stop_at) - 1e-9)
     harness.run(harness.logic.on_stop())
     return harness
@@ -330,8 +330,9 @@ class TestSingleIntents(ModelTestCase):
                 self._exercise(lambda p=position: latched_at(p), name, intent, latched_at=position)
 
     def test_from_every_interrupted_latch_sequence(self):
-        for stop_at in range(int(DIP) + 1, int(UPPER)):
-            # Above the lower edge the conservative model says the rise has already latched.
+        for stop_at in range(int(LOWER) + 1, int(UPPER)):
+            # The rise starts on the lower edge, so the model says it has latched from the moment
+            # it moves at all.
             self.assertEqual(stop_at >= LOWER, interrupted_enter(stop_at).sim.latched)
             for name, intent in INTENTS:
                 self._exercise(lambda s=stop_at: interrupted_enter(s), name, intent,
@@ -542,16 +543,17 @@ class TestAlternateGeometries(ModelTestCase):
     """
 
     ZONES = [
-        # Releases high up, entry lands slightly open. Band [36, 55].
+        # Releases high up, entry lands slightly open. Band [38, 55].
         ("custom_release_and_landing", CUSTOM_ZONE),
         # Releases at the bare clearance, but the slats have to end wide open (the lower edge).
         ("landing_only",
-         Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_step_pct=STEP, tilt_enter_landing_pct=LOWER)),
-        # A low zone that needs almost the whole remaining travel to release. Band [18, 95]. The
+         Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
+              tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP,
+              tilt_enter_landing_pct=LOWER)),
+        # A low zone that needs almost the whole remaining travel to release. Band [20, 95]. The
         # 2.5% step is a quarter of this 10%-wide zone, and the landing is its mid-point.
         ("release_far_above_the_zone",
-         Zone(tilt_zone_upper_pct=30.0, tilt_zone_lower_pct=20.0, tilt_zone_epsilon_pct=2.0,
+         Zone(tilt_zone_upper_pct=30.0, tilt_zone_lower_pct=20.0,
               tilt_step_pct=2.5, tilt_zone_release_pct=95.0, tilt_enter_landing_pct=27.5)),
     ]
 
@@ -657,7 +659,7 @@ class TestHeightSteps(ModelTestCase):
         self.assertEqual([], harness.logic.on_step(DIRECTION_UP))
 
     def test_a_step_up_through_the_band_stays_honest_about_the_latch(self):
-        harness = fresh(35.0)
+        harness = fresh(36.0)
         harness.run(harness.logic.on_step(DIRECTION_UP))
         self.assertEqual(to_command(RELEASE), harness.sim.reported)
         self.assertEqual(LATCH_UNKNOWN, harness.logic.latch)
@@ -666,7 +668,7 @@ class TestHeightSteps(ModelTestCase):
         harness.published = []
         harness.commands = 0
         harness.run(harness.logic.on_step(DIRECTION_DOWN))
-        self.assertEqual(to_command(DIP), harness.sim.reported)
+        self.assertEqual(to_command(BAND_LOW), harness.sim.reported)
         self.assertEqual(2, harness.commands)
         self.assert_nominal(harness)
 
@@ -869,11 +871,11 @@ class TestCalibrationDrift(ModelTestCase):
 
     def test_a_short_rise_from_an_uncalibrated_state_would_not_release(self):
         # The cheap release the descent guard deliberately does not use, and the bound the tilt exit
-        # does depend on: once the reported position has drifted by the epsilon margin, rising to a
-        # *reported* upper + epsilon leaves the blind physically at the upper edge, still latched,
-        # while looking like it worked.
+        # does depend on: once the reported position has drifted by the whole release margin, rising
+        # to a *reported* release height leaves the blind physically at the upper edge, still
+        # latched, while looking like it worked.
         sim = BlindSimulator(ZONE, position=41.0, latched=True)
-        sim.drift = EPSILON
+        sim.drift = RELEASE - UPPER
         sim.set_position(to_command(RELEASE))
         _run_out(sim)
         self.assertTrue(sim.latched)
