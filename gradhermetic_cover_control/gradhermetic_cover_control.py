@@ -394,10 +394,17 @@ class GradhermeticCoverControl(hass.Hass):
         motion rides on the position sensor as an attribute, which the template cover's state
         template reads to report ``opening`` / ``closing``. An unknown position publishes the sensor
         as ``unavailable`` rather than leaving a stale number in it.
+
+        The position goes out as a *string*. Home Assistant stores every state as one anyway and
+        the template cover reads it back through ``| int(0)``, but the integer 0 -- what the closed
+        slat edge publishes -- does not survive the trip: the write comes back ``400 Bad Request``
+        carrying the attributes and no state at all, and the sensor keeps the number it last held.
+        Sending text puts every value on the same path.
         """
         self.set_state(
             self._position_entity,
-            state="unavailable" if virtual_position is None else to_command(virtual_position),
+            state=("unavailable"
+                   if virtual_position is None else str(to_command(virtual_position))),
             attributes={
                 "friendly_name": f"{self._config.virtual_name} Position",
                 "unit_of_measurement": "%",

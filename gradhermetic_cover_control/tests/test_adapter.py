@@ -230,7 +230,7 @@ class TestStartupSeed(unittest.TestCase):
     def test_outside_the_band_resumes_and_publishes(self):
         app = FakeApp(state=cover_state(80.0)).start()
         self.assertEqual([], app.calls_to("cover/open_cover"))
-        self.assertEqual(80, app.published[POSITION_ENTITY]["state"])
+        self.assertEqual("80", app.published[POSITION_ENTITY]["state"])
 
     def test_inside_the_band_does_not_move_the_blind(self):
         app = FakeApp(state=cover_state(41.0)).start()
@@ -460,7 +460,7 @@ class TestActionTranslation(unittest.TestCase):
     def test_publish_writes_the_position_sensor(self):
         self._apply(Action(ACTION_PUBLISH_STATE, position=66.6))
         published = self.app.published[POSITION_ENTITY]
-        self.assertEqual(67, published["state"])
+        self.assertEqual("67", published["state"])
         self.assertEqual("%", published["attributes"]["unit_of_measurement"])
         self.assertEqual("Living Room Blind Position", published["attributes"]["friendly_name"])
         self.assertEqual(MOTION_IDLE, published["attributes"]["motion"])
@@ -534,7 +534,7 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
     def test_feedback_advances_a_plan(self):
         self.app.command_event(command="set_position", position=30)
         self.app.report(30.0)
-        self.assertEqual(30, self.app.published[POSITION_ENTITY]["state"])
+        self.assertEqual("30", self.app.published[POSITION_ENTITY]["state"])
         # pylint: disable-next=protected-access
         self.assertFalse(self.app._runtime.logic.has_pending_plan)
 
@@ -559,24 +559,24 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
         # The blind is at rest, so no stop goes out: on KNX that would be a step telegram.
         self.assertEqual([], self.app.calls_to("cover/stop_cover"))
         self.assertIn("GradhermeticCoverControl stalled", self.app.notify_titles())
-        self.assertEqual(55, self.app.published[POSITION_ENTITY]["state"])
+        self.assertEqual("55", self.app.published[POSITION_ENTITY]["state"])
 
     def test_feedback_shows_travel_as_it_happens(self):
         self.app.command_event(command="close")
         self.app.report(60.0, state="closing")
         published = self.app.published[POSITION_ENTITY]
-        self.assertEqual(60, published["state"])
+        self.assertEqual("60", published["state"])
         self.assertEqual("closing", published["attributes"]["motion"])
         self.app.report(0.0, state="closed")
         published = self.app.published[POSITION_ENTITY]
-        self.assertEqual(0, published["state"])
+        self.assertEqual("0", published["state"])
         self.assertEqual("idle", published["attributes"]["motion"])
 
     def test_the_direction_comes_from_the_cover_state(self):
         # An external move: no plan of the app's own, so the cover's own state is the only source.
         self.app.report(85.0, state="opening")
         self.assertEqual("opening", self.app.published[POSITION_ENTITY]["attributes"]["motion"])
-        self.assertEqual(85, self.app.published[POSITION_ENTITY]["state"])
+        self.assertEqual("85", self.app.published[POSITION_ENTITY]["state"])
 
     def test_the_settle_timer_carries_the_direction_it_read(self):
         # The timer reads the controller itself, so it sees the travel direction too; dropping it
@@ -592,7 +592,7 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
         self.app.command_event(command="set_position", position=30)
         self.app.cover_state = cover_state(30.0)  # arrived, but never told us
         self.app.fire_timers()
-        self.assertEqual(30, self.app.published[POSITION_ENTITY]["state"])
+        self.assertEqual("30", self.app.published[POSITION_ENTITY]["state"])
         self.assertEqual({}, self.app.timers)
 
 
