@@ -37,9 +37,9 @@ The standard cover services target the full blind travel range:
 
 - `cover.open_cover` opens the blind fully (`100%`).
 - `cover.close_cover` closes the blind fully (`0%`).
-- `cover.set_cover_position` moves to the requested absolute position, except that a target landing *inside* the tilt zone's ambiguity band (between one percent below `tilt_zone_lower_pct` and `tilt_zone_release_pct`) is snapped outward to the nearer edge of that band — or to the far edge when the nearer one is where the blind already rests, so a slider dragged into the band always moves the blind. Rising into the band would silently engage the latch while the application believed it was still doing height control, so whole-blind moves stay clear of it. The reported position is the snapped value.
+- `cover.set_cover_position` moves to the requested absolute position, except that a target landing *inside* the tilt zone's ambiguity band (between `tilt_zone_lower_pct - tilt_zone_epsilon_pct` and `tilt_zone_release_pct`) is snapped outward to the nearer edge of that band — or to the far edge when the nearer one is where the blind already rests, so a slider dragged into the band always moves the blind. Rising into the band would silently engage the latch while the application believed it was still doing height control, so whole-blind moves stay clear of it. The reported position is the snapped value.
 
-  The band's upper end is the height at which the latch genuinely releases, because a latched-but-not-yet-released mechanism can be resting anywhere below it. Configuring a `tilt_zone_release_pct` well above the zone therefore widens the range of heights the blind refuses to stop at: a release just above the upper edge costs a couple of percent of travel, while a blind that only releases much higher up will skip past more than that.
+  The band's upper end is the height at which the latch genuinely releases, because a latched-but-not-yet-released mechanism can be resting anywhere below it. Configuring a `tilt_zone_release_pct` well above the zone therefore widens the range of heights the blind refuses to stop at — with the default (`tilt_zone_upper_pct + tilt_zone_epsilon_pct`) the adjustment is a couple of percent of travel, but a blind that only releases much higher up will skip past more than that.
 
   A rise that ends *exactly* on that upper end — from below the zone, or from a latch belief that is not a known release — leaves the latch belief **unknown** rather than released. The rise may have latched the mechanism on its way across the lower edge and reached the release height with no margin at all; an actuator settling a percent short, or a percent of calibration error, leaves it latched while the feedback says it arrived, and only the top limit switch can tell. The next downward command therefore drives fully open first, and the belief clears itself as soon as the blind rests clear of the band.
 
@@ -59,13 +59,13 @@ That inverted **virtual slat scale is only what the cover entity's position slid
 
 ## Entering And Leaving Tilt Mode
 
-The mechanism latches when the blind comes down to the lower edge of the zone and goes back up: that edge is the height it catches at. A second hardware fact shapes the sequence just as much: **the percentages are only reliable when the sequence starts from the fully open position.** The actuator's reported position cannot be trusted to match the blind's true physical position unless the move is referenced from the top limit, and the tilt zone is only a few percent wide — so a descent aimed from an unreferenced height may miss the lower edge entirely.
+The mechanism only latches when a full down-then-up motion is performed across the lower edge of the zone. A second hardware fact shapes the sequence just as much: **the percentages are only reliable when the sequence starts from the fully open position.** The actuator's reported position cannot be trusted to match the blind's true physical position unless the move is referenced from the top limit, and the tilt zone is only a few percent wide — so a dip aimed from an unreferenced height may not clear the lower edge at all.
 
 Entering tilt mode is therefore a single sequence, run from wherever the blind happens to be:
 
 1. Drive fully open with `cover.open_cover`. Sending the command rather than a target position makes the actuator run against its own limit switch, which re-references it. This step is skipped only when the blind already reports being fully open.
-2. Move down to `tilt_zone_lower_pct` exactly. Starting from fully open this is a pure descent, so it cannot engage the latch on the way down — and it stops on the edge rather than below it, because travel past the edge is the blind descending under its own weight and buys the rise nothing.
-3. Move up to `tilt_zone_upper_pct`. Rising off the lower edge latches the mechanism in tilt mode, with the slats parallel (closed).
+2. Move down to `tilt_zone_lower_pct - tilt_zone_epsilon_pct` (dip below the lower edge). Starting from fully open this is a pure descent, so it cannot engage the latch on the way down.
+3. Move up to `tilt_zone_upper_pct`. The upward crossing of the lower edge latches the mechanism in tilt mode, with the slats parallel (closed).
 4. Move to the slat angle given by `tilt_enter_landing_pct` — an absolute real position that must lie inside the zone (`tilt_zone_lower_pct` = slats fully open, `tilt_zone_upper_pct` = slats closed). This is one more small in-zone move and is omitted when the landing rounds to the position step 3 already reached. It defaults to `tilt_zone_upper_pct`, the closed edge the latching rise ends on anyway — i.e. no fourth step at all.
 
 Step 4 exists because the latching rise necessarily ends with the slats fully closed, and on a real blind the slats often do not visibly open until a couple of percent below `tilt_zone_upper_pct` — so an entry that lands exactly on the closed edge looks like it did nothing. Set `tilt_enter_landing_pct` to the height at which the slats are as open as you want tilt mode to start; on a zone of `[29, 34]`, for instance, `32` is a slightly-open landing. Every entry goes through this same sequence: the tilt helper, the KNX slat-mode address, the event and the service.
@@ -80,16 +80,17 @@ To leave tilt mode:
 
   Two heights are in play, and they are deliberately different. Where the blind **stops** is the top limit: leaving slat mode is a request to go back to controlling the blind as a whole, and stopping a few percent above the zone would instead park it in the ambiguity band with the slats still shut — a resting place nobody asks for. Running against the limit switch also re-references the actuator on the way, and no settling error can leave a limit switch short.
 
-  What the move has to **reach** to have done its job is still `tilt_zone_release_pct` — the height at which the mechanism genuinely lets go. The exit is considered complete the moment the blind reports that height or above, because from there the latch has provably released. Accepting there rather than at `100` also means a blind that settles a percent below its own top limit still completes the exit honestly.
+  What the move has to **reach** to have done its job is still `tilt_zone_release_pct` — the height at which the mechanism genuinely lets go, defaulting to `tilt_zone_upper_pct + tilt_zone_epsilon_pct`. The exit is considered complete the moment the blind reports that height or above, because from there the latch has provably released. Accepting there rather than at `100` also means a blind that settles a percent below its own top limit still completes the exit honestly.
 
 Whenever the latch state is instead **uncertain** — after an interrupted sequence, a restart, or a move the application did not command — a release cannot rely on a reported percentage either, so it is a full `cover.open_cover` as well. This is also how the application re-references itself after a restart, lazily, when a move first needs it (see "Position And Restart Behavior").
 
+`tilt_zone_epsilon_pct` is the clearance margin used to cleanly cross the lower edge when engaging and the upper edge when disengaging. It must be at least one whole percent, so the rounded command the actuator receives is distinct from the edge it has to clear.
 
 ### Calibrating `tilt_zone_release_pct`
 
-Carrying the *reported* position clear of the upper edge is not the same as releasing; the latch itself may need considerably more real travel before it disengages. To measure the difference: latch the blind into tilt mode, then raise it in small increments (a percent or two at a time) and watch it. While the mechanism is still latched the movement only changes the slat angle; the height at which the blind starts lifting *as a whole* is the release height. Set `tilt_zone_release_pct` to that value (rounded up).
+`tilt_zone_epsilon_pct` only has to carry the *reported* position clear of the upper edge; the latch itself may need considerably more real travel before it disengages. To measure the difference: latch the blind into tilt mode, then raise it in small increments (a percent or two at a time) and watch it. While the mechanism is still latched the movement only changes the slat angle; the height at which the blind starts lifting *as a whole* is the release height. Set `tilt_zone_release_pct` to that value (rounded up).
 
-It is required — there is nothing honest to default it to. Until you have measured it, set it conservatively a few percent above the zone. An exit that does not physically release is the one failure the design cannot absorb: the application commits to believing the mechanism is free, so the next downward command descends straight away — on a blind that is still latched. Setting the value too *high* costs nothing: the exit travels to the top limit regardless, so the only effect is a slightly wider band of heights that `cover.set_cover_position` refuses to stop at.
+Until you have measured it, set it conservatively a few percent above the zone rather than leaving it at the default. An exit that does not physically release is the one failure the design cannot absorb: the application commits to believing the mechanism is free, so the next downward command descends straight away — on a blind that is still latched. Setting the value too *high* costs nothing: the exit travels to the top limit regardless, so the only effect is a slightly wider band of heights that `cover.set_cover_position` refuses to stop at.
 
 Note that this height is no longer where leaving tilt mode *stops* — the exit runs to the top limit either way. It is what tells the application the latch has let go, and how far up the ambiguity band reaches.
 
@@ -99,7 +100,7 @@ Entering tilt mode costs an upward trip to fully open first. That is deliberate:
 
 Set it to the height at which the slats are fully open, and no higher. Virtual `100%` targets this edge exactly, so it is what makes the slider's "fully open" mean the angle the slats are actually built to reach.
 
-It is the one landmark in the design with no clearance margin of its own, which looks like an oversight next to the release height. It is not. The rule a margin here would pad is "never travel below the lower edge while latched", and what that rule exists to prevent is the application *aiming* a descent through the slat range — a close, a long press down — on an engaged mechanism. It never does; that is invariant L1, and the planner sweep proves it over every plan the planner can emit.
+It is the one landmark in the design with no clearance margin of its own, which looks like an oversight next to the dip and the release height. It is not. The rule a margin here would pad is "never travel below the lower edge while latched", and what that rule exists to prevent is the application *aiming* a descent through the slat range — a close, a long press down — on an engaged mechanism. It never does; that is invariant L1, and the planner sweep proves it over every plan the planner can emit.
 
 What a margin would actually buy is padding against the actuator overshooting its own setpoint by a fraction of a percent, and the only way to buy it is to raise this number, which makes fully open stop short of fully open. That trade is not worth making. The cost is visible every time you open the slats, while the overshoot is a few tens of milliseconds of travel against a stop the slats have already reached. And an actuator drifting far enough for it to matter has already put every slat angle, the entry landing included, somewhere other than where the application believes — so this edge is not a weak point, it is simply where a strict check notices the drift first.
 
@@ -150,7 +151,7 @@ Deferring the reference this way costs nothing in safety: every move that could 
 
 One consequence is worth knowing. While the blind rests inside the band with the latch belief unknown, the step controls still work, but asymmetrically: a step up rises out of the band directly (rising is always safe), while a step down — like every descent from an uncertain belief — drives fully open first and then descends.
 
-The latch belief works the same way during normal operation, not just at restart. The application tracks the latch as one of three states — **latched**, **released**, or **unknown** — and only a completed entry sequence establishes "latched". It falls back to "unknown" whenever a sequence is interrupted part-way, the underlying cover becomes unavailable, the blind moves without being told to, or a height move rises by position command to exactly the release height; and it clears to "released" whenever the blind comes to rest clearly outside the band running from one percent below `tilt_zone_lower_pct` up to `tilt_zone_release_pct`, where a latched mechanism cannot be.
+The latch belief works the same way during normal operation, not just at restart. The application tracks the latch as one of three states — **latched**, **released**, or **unknown** — and only a completed entry sequence establishes "latched". It falls back to "unknown" whenever a sequence is interrupted part-way, the underlying cover becomes unavailable, the blind moves without being told to, or a height move rises by position command to exactly the release height; and it clears to "released" whenever the blind comes to rest clearly outside the `[tilt_zone_lower_pct - tilt_zone_epsilon_pct, tilt_zone_release_pct]` band, where a latched mechanism cannot be.
 
 Any command that would drive the blind downward while the latch is not known to be released first drives fully open to release it, then descends. A blind that is *known* released descends straight away — closing right after leaving tilt mode, for instance, costs no detour.
 
@@ -176,12 +177,17 @@ gradhermetic_living_room:
   tilt_zone_upper_pct: 44.0
   tilt_zone_lower_pct: 38.0
 
-  # Real travel percent the blind must reach for the latch to genuinely release, measured by
-  # raising the latched blind in small increments until it starts lifting as a whole instead of
-  # only rotating the slats. Must round to a whole percent above tilt_zone_upper_pct, and stay
-  # below 100. It also sets the top of the ambiguity band, so set_cover_position will not stop
-  # anywhere between one percent below tilt_zone_lower_pct and this value. The band must stay
-  # strictly inside 0..100: a blind resting on either end stop has to count as clearly unlatched.
+  # Clearance margin for crossing a zone edge cleanly. Must be at least 1.0, so the rounded command
+  # the actuator receives differs from the edge it has to clear. The band it defines around the zone
+  # (tilt_zone_lower_pct - tilt_zone_epsilon_pct up to tilt_zone_release_pct) must stay strictly
+  # inside 0..100: a blind resting on either end stop has to count as clearly unlatched.
+  tilt_zone_epsilon_pct: 2.0
+
+  # Optional. Real travel percent the blind must reach for the latch to genuinely release, measured
+  # by raising the latched blind in small increments until it starts lifting as a whole instead of
+  # only rotating the slats. Must be >= tilt_zone_upper_pct + tilt_zone_epsilon_pct (its default)
+  # and < 100. It also sets the top of the ambiguity band, so set_cover_position will not stop
+  # anywhere between tilt_zone_lower_pct - tilt_zone_epsilon_pct and this value.
   tilt_zone_release_pct: 50.0
 
   # Optional. Real travel position the entry sequence finishes on, which being a slat position must

@@ -46,7 +46,7 @@ ARGS = {
     "virtual_name": "Living Room Blind",
     "tilt_zone_upper_pct": 44.0,
     "tilt_zone_lower_pct": 38.0,
-    "tilt_zone_release_pct": 46.0,
+    "tilt_zone_epsilon_pct": 2.0,
     "tilt_step_pct": 1.2,
     "knx_move_address": MOVE_ADDRESS,
     "knx_step_address": STEP_ADDRESS,

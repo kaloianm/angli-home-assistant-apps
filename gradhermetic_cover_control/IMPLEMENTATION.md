@@ -6,7 +6,7 @@ it, so all of it is testable without an AppDaemon installation.
 
 | Module | Responsibility | Purity |
 |---|---|---|
-| `geometry.py` | `Zone`: the virtual↔real mapping, band and zone predicates, the named edge/release targets, band snapping, and all validation of the configured numbers | pure |
+| `geometry.py` | `Zone`: the virtual↔real mapping, band and zone predicates, the named dip/release targets, band snapping, and all validation of the configured numbers | pure |
 | `planner.py` | `plan(zone, belief, intent) -> Plan`: every movement sequence and every latch guard, plus `check_plan`, which restates the safety argument as executable invariants | pure |
 | `executor.py` | Drives one `Plan`: step activation and arrival, settle-timer decisions, stall detection. Consumes feedback and timer events, emits `Action`s | pure |
 | `logic.py` | `GradhermeticCoverLogic`: holds the belief and routes events to intents, composing planner and executor. The adapter talks only to this | pure |
@@ -65,7 +65,7 @@ The latch transitions, in full:
 
 - → `LATCHED`: a completed enter sequence, and nothing else.
 - → `UNLATCHED`: a completed plan that ends released, or feedback placing the blind clearly outside
-  the `[band_low, release_target]` band, where a latched mechanism cannot rest.
+  the `[lower - epsilon, release_target]` band, where a latched mechanism cannot rest.
 - → `UNKNOWN`: startup with the position unknown or inside the band; a plan interrupted (stopped,
   replaced or stalled) part-way; externally-caused motion ending inside the band; the cover becoming
   unavailable; a completed height move that rose by position command to exactly `release_target`
@@ -123,8 +123,7 @@ The step lifecycle is where the timing correctness lives:
    accept with a logged warning, because real actuators occasionally stop a percent off — but only
    for an ordinary height move whose target is clear of the band. A slat step is smaller than the
    tolerance (accepting would complete a move that never happened), and a target on a band edge or
-   inside the band — the descent onto the lower edge, the latching rise, the release height — is
-   where a percent
+   inside the band — the enter dip, the latching rise, the release height — is where a percent
    decides whether the mechanism latched or released. Those land exactly or stall. Otherwise → drop
    the plan and notify; the blind is at rest, so no stop is sent (see "Safety Behavior"). A position
    that has become unreadable is the one stall that does send a stop, since the blind may still be
@@ -139,11 +138,10 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
 
 ## Canonical Sequences
 
-- **Enter tilt** — `open_full`, then `MoveTo(lower)`, then `MoveTo(upper)`, then
+- **Enter tilt** — `open_full`, then `MoveTo(lower - epsilon)`, then `MoveTo(upper)`, then
   optionally `MoveTo(virtual_to_real(landing))`. One sequence, correct from any start. The leading
   full open re-references the actuator at its limit switch (see the README on why the percentages
-  are only reliable from there) and makes the descent onto the edge a pure descent, which cannot
-  latch.
+  are only reliable from there) and makes the dip a pure descent, which cannot latch.
 
   The latching rise can only end at the upper edge, so any other landing is one more in-zone slat
   move. That landing is unconditionally the configured `tilt_enter_landing_pct` — a real position
@@ -153,8 +151,7 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
   fourth step is dropped when its landing rounds to the same integer command as the upper edge,
   because a command that repeats the current setpoint moves nothing.
 - **Leave tilt** — `RiseToAtLeast(release_target)` carried by `open_full`, available only from a
-  confident `LATCHED` belief. `release_target` is `tilt_zone_release_pct`, a required setting; there is nothing honest to
-  default it to when
+  confident `LATCHED` belief. `release_target` is `tilt_zone_release_pct`, or `upper + epsilon` when
   that is not configured.
 
   This is the step that most needs its command distinct from its target, and now they are as far
@@ -163,7 +160,7 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
   Going all the way up is both what the user means and what is safest. Leaving slat mode is a
   request to control the blind as a whole again, and stopping a few percent above the zone parks it
   in the ambiguity band with the slats still shut. It also removes the failure a short rise had:
-  Merely clearing the *reported* upper edge says nothing
+  `epsilon` is sized to carry the *reported* position clear of the upper edge, which says nothing
   about how far the mechanism must travel to disengage, and an actuator settling a percent low can
   satisfy `>=` on a rise that physically fell short — leaving the app confidently, and wrongly,
   believing it is released. A limit switch cannot be settled short of.
@@ -192,7 +189,7 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
 - **In-tilt moves** — a single `MoveTo` inside `[lower, upper]`.
 
 ```text
-        enter: open fully, down to lower, up to upper, then to the landing
+        enter: open fully, down to (lower - epsilon), up to upper, then to the landing
    NORMAL  ───────────────────────────────────────────────────────────►  TILT
  (height control)                                                  (slat control, latched)
       ▲            leave: open fully (satisfied once past release_target)     │
@@ -205,11 +202,10 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
 `planner.check_plan` runs on every plan before it executes. A violation disables the blind and
 notifies; it should be unreachable, and the tests exist to prove it:
 
-- **N1** — in normal mode nothing lands strictly inside the band `(band_low, release_target)`.
+- **N1** — in normal mode nothing lands strictly inside the band `(lower - epsilon, release_target)`.
 - **T1** — slat targets lie within `[lower, upper]` and are only planned from a `LATCHED` belief.
 - **L1** — a descent below `lower` is preceded by a full open unless the latch is known released.
-- **E1** — the latch belief is only established by the canonical enter sequence: full open, a
-  descent onto the lower edge
+- **E1** — the latch belief is only established by the canonical enter sequence: full open, a dip
   clear of the lower edge, the latching rise to the upper edge, and an optional fourth step to any
   target *inside the zone* (the landing). It starts from the upper edge, so it can only descend to
   another slat angle — never across an edge.
@@ -244,34 +240,35 @@ real   = upper - (virtual / 100) * (upper - lower)
 virtual = (upper - real) / (upper - lower) * 100
 ```
 
-With `upper = 44`, `lower = 38`, `release = 46`:
+With `upper = 44`, `lower = 38`, `epsilon = 2`:
 
 - virtual `100` → real `38` (slats open / perpendicular / most light).
 - virtual `0` → real `44` (slats closed / parallel / least light).
 - virtual `50` → real `41`.
-- entering descends to `lower = 38`, then rises to `44` to latch, then moves to
+- entering dips to `lower - epsilon = 36`, then rises to `44` to latch, then moves to
   `tilt_enter_landing_pct` if that is not `44` as well (it is already a real position, so no
   conversion is involved in the move itself).
 - leaving drives fully open, and is satisfied on the way once the blind reports `release_target` —
-  the configured `tilt_zone_release_pct`, `46` here.
+  `upper + epsilon = 46` unless `tilt_zone_release_pct` says otherwise.
 
 Because the zone is narrow (6% here) and KNX actuators report integer positions, the zone holds only
 about `span + 1` distinct slat positions (~7 for a 6% zone). A slat step must therefore be at least
 one whole reported percent of real travel, otherwise the rounded position command repeats the
 current position and the blind never moves. Config validation enforces `tilt_step_pct >= 1.0` so
 every step advances the actuator, and `tilt_step_pct <= upper - lower` because a step wider than the
-whole zone is not a step. The band must also stop short of both travel limits:
-`lower - BAND_CLEARANCE_PCT > 0` and `release_target < 100`. A blind resting on either end stop is
-one the app has to be able to trust as unlatched — that trust is what lets a restart at 0 or 100
-resume whole-height control without re-referencing — so a band that reached a limit would be
-rejected. `tilt_zone_release_pct` must round to a whole percent above `upper` (below that it would
-not even carry the reported position out of the zone) and stay below `100`, and the optional
-`tilt_enter_landing_pct` must be a real position in `[lower, upper]`, since it is a slat position. All of it lives in `geometry.Zone`,
+whole zone is not a step; `tilt_zone_epsilon_pct >= 1` likewise, so the dip and release targets round
+to integers distinct from the edges they must clear. The band must also stop short of both travel
+limits: `lower - epsilon > 0` and `release_target < 100`. A blind resting on either end stop is one
+the app has to be able to trust as unlatched — that trust is what lets a restart at 0 or 100 resume
+whole-height control without re-referencing — so a band that reached a limit would be rejected. The
+two optional settings are validated here too: `tilt_zone_release_pct` must be at least
+`upper + epsilon` (below the clearance it would not even carry the reported position out of the zone)
+and below `100`, and `tilt_enter_landing_pct` must be a real position in `[lower, upper]`, since it
+is a slat position. All of it lives in `geometry.Zone`,
 which validates on construction — `config.py` only checks that each number is present (or, for the
 optional two, absent), numeric and in range.
 
-The ambiguity band runs `[lower - BAND_CLEARANCE_PCT, release_target]`, and `band_high` is
-*defined* as
+The ambiguity band runs `[lower - epsilon, release_target]`, and `band_high` is *defined* as
 `release_target` rather than merely coinciding with it: a mechanism that is latched but has not yet
 been released can physically be resting anywhere up to the height at which it lets go, so that is
 exactly how far "latched cannot be ruled out" reaches. Everything derived from the band inherits a
@@ -389,7 +386,7 @@ State is **not** persisted across restarts. `STARTUP_DELAY_SECONDS` after startu
 the real cover's position and hands it to `logic.on_startup`, which seeds the belief — and emits no
 movement at all:
 
-- position clearly **outside** the band (beyond `band_low` … `release_target`): the blind
+- position clearly **outside** the band (beyond `lower - epsilon` … `release_target`): the blind
   cannot be latched, so the belief starts `UNLATCHED` and whole-height control resumes from that
   position.
 - position **inside** the band, or unknown: the latch state is ambiguous, so the belief starts
@@ -599,7 +596,7 @@ GradhermeticLivingRoom:
   # is the real travel one slat step moves the blind (>= 1.0, <= the zone's width).
   tilt_zone_upper_pct: 44.0
   tilt_zone_lower_pct: 38.0
-  tilt_zone_release_pct: 46.0
+  tilt_zone_epsilon_pct: 2.0
   tilt_step_pct: 1.2
 
   # Optional; one step button press outside slat mode moves the blind this much. Defaults to 2.0.
@@ -665,10 +662,9 @@ why every latch sequence starts from the top limit, and show a *position*-comman
 on a drifted actuator — the failure the exit avoids by driving against the limit switch instead, and
 the one R1 keeps a slider target from walking into.
 
-The bound they pin is tighter than the zone's own width suggests. Calibration error
+The bound they pin is tighter than `tilt_zone_epsilon_pct` on its own suggests. Calibration error
 only clears at a travel limit, and the enter sequence spends up to three position commands — the
-descent onto the edge, the latching rise, the configured landing — before any slat move begins,
-none of which touches
+dip, the latching rise, the configured landing — before any slat move begins, none of which touches
 a limit, so whatever error the actuator adds per move gets three chances to compound first: the
 tolerable per-move error is roughly a third of the margin, not all of it.
 

@@ -26,15 +26,15 @@ from gradhermetic_cover_control.planner import (
     PLAN_LEAVE,
 )
 
-# Geometry used throughout: zone [38, 44], release 46, step 1.2 real travel percent. Every
+# Geometry used throughout: zone [38, 44], epsilon 2, step 1.2 real travel percent. Every
 # configured number is real blind travel; span 6 makes the 1.2% step 20 on the virtual slat scale.
-# Band = [38, 46].
+# Band = [36, 46].
 UPPER = 44.0
 LOWER = 38.0
+EPSILON = 2.0
 STEP = 1.2
-RELEASE = 46.0
-# The band reaches one whole percent below the latching edge.
-BAND_LOW = LOWER - 1.0
+DIP = LOWER - EPSILON
+RELEASE = UPPER + EPSILON
 
 _MOVE_KINDS = (ACTION_MOVE_TO, ACTION_OPEN_FULL, ACTION_CLOSE_FULL)
 
@@ -43,7 +43,7 @@ def _config(**overrides):
     args = {
         "tilt_zone_upper_pct": UPPER,
         "tilt_zone_lower_pct": LOWER,
-        "tilt_zone_release_pct": RELEASE,
+        "tilt_zone_epsilon_pct": EPSILON,
         "tilt_step_pct": STEP,
     }
     args.update(overrides)
@@ -119,7 +119,7 @@ class TestOutsideTilt(unittest.TestCase):
     def test_set_position_inside_the_band_snaps_clear_of_it(self):
         # Q2: normal mode never targets the band interior, where a rise would silently latch.
         self.logic.seed_state(80.0)
-        actions = run_plan(self.logic, self.logic.on_set_position(42.0))
+        actions = run_plan(self.logic, self.logic.on_set_position(41.0))
         self.assertAlmostEqual(RELEASE, _moves(actions)[0].position)
         self.assertAlmostEqual(RELEASE, _published(actions)[-1].position)
 
@@ -139,20 +139,19 @@ class TestEnterLeaveTilt(unittest.TestCase):
         self.logic.seed_state(100.0)
         actions = run_plan(self.logic, self.logic.on_set_tilt_mode(True))
         self.assertEqual(ACTION_MOVE_TO, _moves(actions)[0].kind)
-        self.assertAlmostEqual(LOWER, _moves(actions)[0].position)
+        self.assertAlmostEqual(DIP, _moves(actions)[0].position)
         self.assertTrue(self.logic.in_tilt)
         self.assertAlmostEqual(UPPER, self.logic.last_position)
         self.assertAlmostEqual(0.0, self.logic.current_virtual_position())
 
     def test_enter_from_below_opens_fully_first(self):
         # Q1: the latch percentages are only reliable when referenced from the top limit, so entry
-        # always drives fully open before descending onto the lower
-        # edge -- there is no hop from below any more.
+        # always drives fully open before dipping -- there is no hop from below any more.
         self.logic.seed_state(20.0)
         actions = run_plan(self.logic, self.logic.on_set_tilt_mode(True))
         self.assertEqual([ACTION_OPEN_FULL, ACTION_MOVE_TO, ACTION_MOVE_TO],
                          _kinds(_moves(actions)))
-        self.assertAlmostEqual(LOWER, _moves(actions)[1].position)
+        self.assertAlmostEqual(DIP, _moves(actions)[1].position)
         self.assertAlmostEqual(UPPER, _moves(actions)[2].position)
         self.assertTrue(self.logic.in_tilt)
         self.assertAlmostEqual(0.0, self.logic.current_virtual_position())
@@ -258,7 +257,7 @@ class TestEnterLanding(unittest.TestCase):
         logic.seed_state(100.0)
         actions = run_plan(logic, logic.on_set_tilt_mode(True))
         # Already fully open, so: dip, latching rise to the closed edge, then the landing.
-        self.assertEqual([LOWER, UPPER, 41.0], [move.position for move in _moves(actions)])
+        self.assertEqual([DIP, UPPER, 41.0], [move.position for move in _moves(actions)])
         self.assertTrue(logic.in_tilt)
         self.assertAlmostEqual(50.0, logic.current_virtual_position())
 
@@ -274,7 +273,7 @@ class TestEnterLanding(unittest.TestCase):
         logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=UPPER - 0.3))
         logic.seed_state(100.0)
         actions = run_plan(logic, logic.on_set_tilt_mode(True))
-        self.assertEqual([LOWER, UPPER], [move.position for move in _moves(actions)])
+        self.assertEqual([DIP, UPPER], [move.position for move in _moves(actions)])
         self.assertTrue(logic.in_tilt)
 
     def test_a_landing_outside_the_zone_is_rejected(self):
@@ -427,7 +426,7 @@ class TestStepHelperWhileNotLatched(unittest.TestCase):
     def test_a_step_into_the_band_crosses_to_the_far_edge(self):
         self.logic.seed_state(47.0)
         actions = run_plan(self.logic, self.logic.on_step(DIRECTION_DOWN))
-        self.assertAlmostEqual(BAND_LOW, _moves(actions)[0].position)
+        self.assertAlmostEqual(DIP, _moves(actions)[0].position)
         self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
         actions = run_plan(self.logic, self.logic.on_step(DIRECTION_UP))
         self.assertAlmostEqual(RELEASE, _moves(actions)[0].position)
@@ -443,7 +442,7 @@ class TestStepHelperWhileNotLatched(unittest.TestCase):
         self.logic.seed_state(41.0)
         actions = run_plan(self.logic, self.logic.on_step(DIRECTION_DOWN))
         self.assertEqual([ACTION_OPEN_FULL, ACTION_MOVE_TO], _kinds(_moves(actions)))
-        self.assertAlmostEqual(BAND_LOW, _moves(actions)[1].position)
+        self.assertAlmostEqual(DIP, _moves(actions)[1].position)
         self.assertEqual(LATCH_UNLATCHED, self.logic.latch)
 
     def test_a_step_up_from_the_band_with_no_latch_belief_rises_directly(self):
@@ -694,7 +693,7 @@ class TestBeliefTransitions(unittest.TestCase):
     def test_only_a_completed_enter_sequence_latches(self):
         self.logic.seed_state(100.0)
         self.logic.on_set_tilt_mode(True)  # already fully open, so the dip is commanded first
-        actions = self.logic.on_real_position(LOWER, False)
+        actions = self.logic.on_real_position(DIP, False)
         self.assertFalse(self.logic.in_tilt)  # the latching rise has not finished yet
         run_plan(self.logic, actions)
         self.assertTrue(self.logic.in_tilt)
@@ -729,7 +728,7 @@ class TestBeliefTransitions(unittest.TestCase):
         self.logic.seed_state(80.0)
         self.logic.on_set_tilt_mode(True)
         self.logic.on_real_position(100.0, False)  # the full open completed; the dip is running
-        self.logic.on_real_position(LOWER, False)  # the dip completed; the latching rise is running
+        self.logic.on_real_position(DIP, False)  # the dip completed; the latching rise is running
         self.logic.on_real_position(40.0, True)  # mid-rise, which physically latches
         self.logic.on_stop()
         self.assertEqual(LATCH_UNKNOWN, self.logic.latch)
@@ -752,7 +751,7 @@ class TestCommandReplacesPlan(unittest.TestCase):
         self.logic.seed_state(80.0)
         self.logic.on_set_tilt_mode(True)  # full open, then the dip, then the latching rise
         self.logic.on_real_position(100.0, False)
-        self.logic.on_real_position(LOWER, False)
+        self.logic.on_real_position(DIP, False)
         self.logic.on_real_position(40.0, True)  # mid-rise: physically latched
         # Closing now must not simply descend: the abandoned sequence leaves the latch unknown.
         actions = self.logic.on_close()
@@ -996,7 +995,7 @@ class TestPublishing(unittest.TestCase):
         self.assertAlmostEqual(60.0, _published(actions)[-1].position)
         self.assertEqual(MOTION_CLOSING, _published(actions)[-1].motion)
         self.assertFalse(_published(actions)[-1].in_tilt)
-        self.logic.on_real_position(LOWER, False)  # the dip is done; the latching rise is commanded
+        self.logic.on_real_position(DIP, False)  # the dip is done; the latching rise is commanded
         actions = self.logic.on_real_position(UPPER, False)
         published = _published(actions)[-1]
         self.assertTrue(published.in_tilt)

@@ -13,8 +13,8 @@ from gradhermetic_cover_control.runtime import (
 
 
 def _runtime():
-    zone = Zone(tilt_zone_upper_pct=44.0, tilt_zone_lower_pct=38.0,
-                tilt_zone_release_pct=46.0, tilt_step_pct=1.2)
+    zone = Zone(tilt_zone_upper_pct=44.0, tilt_zone_lower_pct=38.0, tilt_zone_epsilon_pct=2.0,
+                tilt_step_pct=1.2)
     config = GradhermeticConfig(
         real_cover="cover.living_room_blind",
         virtual_id="living_room",

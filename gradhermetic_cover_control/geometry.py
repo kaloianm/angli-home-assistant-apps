@@ -32,13 +32,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-# How far below the latching edge the ambiguity band reaches, in real travel percent. The actuator
-# speaks whole percent, so one is the nearest position it can be commanded to that is not the edge
-# itself -- and normal mode needs such a position to exist. Every whole-height target inside the
-# band snaps to a band edge, and snapping to the latching edge would park the blind exactly where
-# the next rise engages the mechanism, with the app committing "unlatched". It is not a calibration
-# number and not configurable: it is the actuator's resolution.
-BAND_CLEARANCE_PCT = 1.0
+# Smallest usable clearance margin, in real travel percent. The margin only has to carry the
+# actuator's reported integer position clear of a zone edge, so one whole percent suffices.
+MIN_EPSILON_PCT = 1.0
 
 # Smallest usable step, slat or height, in real travel percent. The actuator speaks whole percent,
 # so a step that moves the blind less than one reported percent rounds back to the current setpoint
@@ -80,11 +76,12 @@ class Zone:
       real travel. Same lower bound, for the same reason; it defaults to
       :data:`DEFAULT_HEIGHT_STEP_PCT`.
 
-    The remaining two are what a real installation has to be calibrated for:
+    The two optional fields are the ones a real installation has to be calibrated for:
 
     - ``tilt_zone_release_pct`` -- how far the blind really has to rise before the latch lets go.
-      Clearing the reported upper edge is not enough; the mechanism needs more real travel than
-      that, and how much is a property of the blind, so it is measured rather than derived. Leaving
+      The clearance margin ``tilt_zone_epsilon_pct`` is only large enough to carry the *reported*
+      position clear of the upper edge; the mechanism itself may need several percent more. It
+      defaults to ``upper + epsilon``, which is the behaviour that predates the setting. Leaving
       tilt travels past it to the top limit; what the height decides is when the release has
       provably happened, and how far up the ambiguity band reaches.
     - ``tilt_enter_landing_pct`` -- the absolute real position the entry sequence finishes on, which
@@ -96,8 +93,9 @@ class Zone:
 
     tilt_zone_upper_pct: float
     tilt_zone_lower_pct: float
-    tilt_zone_release_pct: float
+    tilt_zone_epsilon_pct: float
     tilt_step_pct: float
+    tilt_zone_release_pct: Optional[float] = None
     tilt_enter_landing_pct: Optional[float] = None
     height_step_pct: float = DEFAULT_HEIGHT_STEP_PCT
 
@@ -117,22 +115,32 @@ class Zone:
             raise ValueError("tilt_zone_upper_pct must be between 0 and 100")
         if self.tilt_zone_lower_pct >= self.tilt_zone_upper_pct:
             raise ValueError("tilt_zone_lower_pct must be smaller than tilt_zone_upper_pct")
+        if self.tilt_zone_epsilon_pct <= 0.0:
+            raise ValueError("tilt_zone_epsilon_pct must be > 0")
+        if self.tilt_zone_epsilon_pct < MIN_EPSILON_PCT:
+            raise ValueError(
+                f"tilt_zone_epsilon_pct must be >= {MIN_EPSILON_PCT} so the dip and release "
+                "targets round to integers distinct from the zone edges they must clear")
         # The ambiguity band must leave both travel limits outside it. A blind resting fully closed
         # or fully open provably cannot be latched, and the app relies on that: at startup those two
         # positions are the ones it can be surest about, and the latch belief they seed is what
         # decides whether the next move has to re-reference the actuator first. A band reaching
         # either limit would make the app doubt a blind that is sitting on its own end stop.
-        if self.tilt_zone_lower_pct <= BAND_CLEARANCE_PCT:
-            raise ValueError(f"tilt_zone_lower_pct must be > {BAND_CLEARANCE_PCT} so the ambiguity "
-                             "band stops short of the fully closed position")
-        # A release at or below the upper edge would not carry the reported position clear of it,
-        # and one at or above 100 would put the top limit inside the band.
-        if to_command(self.tilt_zone_release_pct) <= to_command(self.tilt_zone_upper_pct):
-            raise ValueError("tilt_zone_release_pct must round to a whole percent above "
-                             "tilt_zone_upper_pct")
-        if self.tilt_zone_release_pct >= 100.0:
-            raise ValueError("tilt_zone_release_pct must be < 100 so the ambiguity band stops "
-                             "short of the fully open position")
+        if self.tilt_zone_lower_pct - self.tilt_zone_epsilon_pct <= 0.0:
+            raise ValueError("tilt_zone_lower_pct - tilt_zone_epsilon_pct must be > 0 so the "
+                             "ambiguity band stops short of the fully closed position")
+        if self.tilt_zone_upper_pct + self.tilt_zone_epsilon_pct >= 100.0:
+            raise ValueError("tilt_zone_upper_pct + tilt_zone_epsilon_pct must be < 100 so the "
+                             "ambiguity band stops short of the fully open position")
+        if self.tilt_zone_release_pct is not None:
+            # A release below upper + epsilon would not even carry the reported position clear of
+            # the upper edge, and one at or above 100 would put the top limit inside the band.
+            if self.tilt_zone_release_pct < self.tilt_zone_upper_pct + self.tilt_zone_epsilon_pct:
+                raise ValueError(
+                    "tilt_zone_release_pct must be >= tilt_zone_upper_pct + tilt_zone_epsilon_pct")
+            if self.tilt_zone_release_pct >= 100.0:
+                raise ValueError("tilt_zone_release_pct must be < 100 so the ambiguity band stops "
+                                 "short of the fully open position")
         landing = self.tilt_enter_landing_pct
         if landing is not None:
             # The landing is a slat position, so it has to be one: a real travel position inside the
@@ -176,6 +184,13 @@ class Zone:
         return self.tilt_zone_lower_pct
 
     @property
+    def epsilon(self) -> float:
+        """
+        Clearance margin used to cleanly cross a zone edge.
+        """
+        return self.tilt_zone_epsilon_pct
+
+    @property
     def step(self) -> float:
         """
         Slat step size on the virtual scale, converted from the configured real travel.
@@ -194,19 +209,29 @@ class Zone:
         return self.tilt_zone_upper_pct - self.tilt_zone_lower_pct
 
     @property
+    def dip_target(self) -> float:
+        """
+        Real position just below the lower edge, dipped to before the latching rise.
+        """
+        return self.lower - self.epsilon
+
+    @property
     def release_target(self) -> float:
         """
         Real position the blind must reach for the latch to have let go.
 
-        Clearing the *reported* upper edge is not the same thing: disengaging the mechanism itself
-        takes more real travel than that, and how much is a property of the blind, so
-        ``tilt_zone_release_pct`` is measured per installation rather than derived.
+        ``tilt_zone_upper_pct + tilt_zone_epsilon_pct`` only clears the *reported* upper edge, which
+        is all the geometry needs; disengaging the mechanism itself can take several percent more of
+        real travel. ``tilt_zone_release_pct`` is that measured height, and defaults to the bare
+        clearance so an unconfigured blind behaves exactly as before.
 
         This is a threshold, not a destination: the tilt exit drives all the way to the top limit
         and merely uses this height to know the mechanism has released. Where it does act as a
         position is :attr:`band_high`, the top of the range a latched blind could be resting in.
         """
-        return self.tilt_zone_release_pct
+        if self.tilt_zone_release_pct is not None:
+            return self.tilt_zone_release_pct
+        return self.upper + self.epsilon
 
     @property
     def enter_landing_real(self) -> float:
@@ -234,16 +259,9 @@ class Zone:
     @property
     def band_low(self) -> float:
         """
-        Lower end of the latch-ambiguity band: :data:`BAND_CLEARANCE_PCT` below :attr:`lower`.
-
-        The entry drives to the lower edge exactly, so that edge is the lowest position a latched
-        mechanism can have been left resting at -- and it is also the height the next rise latches
-        at. The band therefore has to reach one whole percent further down, because its bottom is
-        where :meth:`snap_normal_target` parks a whole-height move that aimed inside it. Stopping
-        such a move on the edge itself would leave the blind exactly where the mechanism catches,
-        with the app about to commit "unlatched".
+        Lower end of the latch-ambiguity band. Coincides with :attr:`dip_target`.
         """
-        return self.lower - BAND_CLEARANCE_PCT
+        return self.dip_target
 
     @property
     def band_high(self) -> float:
@@ -265,11 +283,11 @@ class Zone:
         """
         Whether a real position falls inside the inclusive latch-ambiguity band.
 
-        The band runs from the lower edge up to the release target: below it the blind hangs clear
-        of the edge the mechanism latches at, and above it the mechanism must have let go, since a
-        still-latched one can rest anywhere up to the height at which it releases. A blind resting
-        outside the band provably cannot be latched, which is what makes feedback able to clear a
-        latch belief.
+        The band runs from the dip target up to the release target: below it the blind is clear of
+        the lower edge, and above it the mechanism must have let go, because a still-latched
+        mechanism can rest anywhere up to the height at which it releases. A blind resting outside
+        the band provably cannot be latched, which is what makes feedback able to clear a latch
+        belief.
         """
         return self.band_low <= position <= self.band_high
 
