@@ -238,7 +238,7 @@ class TestEnterLeaveTilt(unittest.TestCase):
 
 class TestEnterLanding(unittest.TestCase):
     """
-    ``tilt_enter_landing_pct``: where a deliberate entry finishes, since the rise ends closed.
+    ``tilt_zone_enter_pct``: where a deliberate entry finishes, since the rise ends closed.
 
     The setting is an absolute real position inside the zone, like every other configured
     percentage; only the *published* position is on the inverted virtual slat scale.
@@ -253,7 +253,7 @@ class TestEnterLanding(unittest.TestCase):
 
     def test_a_configured_landing_adds_a_final_in_zone_move(self):
         # Real 41 is the middle of a [38, 44] zone, i.e. virtual 50.
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=41.0))
+        logic = GradhermeticCoverLogic(_config(tilt_zone_enter_pct=41.0))
         logic.seed_state(100.0)
         actions = run_plan(logic, logic.on_set_tilt_mode(True))
         # Already fully open, so: dip, latching rise to the closed edge, then the landing.
@@ -262,7 +262,7 @@ class TestEnterLanding(unittest.TestCase):
         self.assertAlmostEqual(50.0, logic.current_virtual_position())
 
     def test_a_landing_at_the_lower_edge_lands_the_slats_wide_open(self):
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=LOWER))
+        logic = GradhermeticCoverLogic(_config(tilt_zone_enter_pct=LOWER))
         logic.seed_state(100.0)
         actions = run_plan(logic, logic.on_set_tilt_mode(True))
         self.assertAlmostEqual(LOWER, _moves(actions)[-1].position)
@@ -270,7 +270,7 @@ class TestEnterLanding(unittest.TestCase):
 
     def test_a_landing_that_rounds_to_the_closed_edge_adds_no_step(self):
         # 0.3 real percent below the upper edge: the command would repeat the setpoint.
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=UPPER - 0.3))
+        logic = GradhermeticCoverLogic(_config(tilt_zone_enter_pct=UPPER - 0.3))
         logic.seed_state(100.0)
         actions = run_plan(logic, logic.on_set_tilt_mode(True))
         self.assertEqual([DIP, UPPER], [move.position for move in _moves(actions)])
@@ -280,12 +280,12 @@ class TestEnterLanding(unittest.TestCase):
         # It is a slat position, so it has to be one.
         for landing in (LOWER - 0.1, UPPER + 0.1, 0.0, 100.0):
             with self.subTest(landing=landing):
-                with self.assertRaisesRegex(ValueError, "tilt_enter_landing_pct must be between"):
-                    _config(tilt_enter_landing_pct=landing)
+                with self.assertRaisesRegex(ValueError, "tilt_zone_enter_pct must be between"):
+                    _config(tilt_zone_enter_pct=landing)
 
     def test_the_toggle_lands_on_the_configured_landing_too(self):
         # The tilt helper and the KNX tilt address go through the toggle; it is the same entry.
-        logic = GradhermeticCoverLogic(_config(tilt_enter_landing_pct=41.0))
+        logic = GradhermeticCoverLogic(_config(tilt_zone_enter_pct=41.0))
         logic.seed_state(80.0)
         actions = run_plan(logic, logic.on_toggle_tilt_mode())
         self.assertAlmostEqual(41.0, _moves(actions)[-1].position)

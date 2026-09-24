@@ -283,7 +283,7 @@ class GradhermeticCoverLogic:
         """
         Handle the custom ``set_tilt_mode`` service.
 
-        Entering latches the mechanism and finishes at the configured ``tilt_enter_landing_pct``
+        Entering latches the mechanism and finishes at the configured ``tilt_zone_enter_pct``
         slat angle -- a real travel position inside the zone, which :class:`Zone` converts to the
         virtual scale the enter intent speaks; leaving disengages it upward. Both are no-ops when
         the blind is already in the requested mode.

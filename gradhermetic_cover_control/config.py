@@ -45,7 +45,7 @@ class GradhermeticConfig:
                 f"tilt_zone_lower_pct={self.zone.tilt_zone_lower_pct}, "
                 f"tilt_zone_epsilon_pct={self.zone.tilt_zone_epsilon_pct}, "
                 f"tilt_zone_release_pct={self.zone.release_target}, "
-                f"tilt_enter_landing_pct={self.zone.enter_landing_real}, "
+                f"tilt_zone_enter_pct={self.zone.enter_landing_real}, "
                 f"tilt_step_pct={self.zone.tilt_step_pct}, "
                 f"height_step_pct={self.zone.height_step_pct}, "
                 f"knx_move_address={self.knx_move_address}, "
@@ -71,7 +71,7 @@ def parse_app_config(args: Dict[str, Any]) -> GradhermeticConfig:
         tilt_step_pct=_parse_positive_float(args, "tilt_step_pct"),
         # Both optional: absent means "keep the geometric default", which Zone supplies.
         tilt_zone_release_pct=_optional_percentage(args, "tilt_zone_release_pct"),
-        tilt_enter_landing_pct=_optional_percentage(args, "tilt_enter_landing_pct"),
+        tilt_zone_enter_pct=_optional_percentage(args, "tilt_zone_enter_pct"),
         **_optional_field(args, "height_step_pct", _parse_positive_float),
     )
 

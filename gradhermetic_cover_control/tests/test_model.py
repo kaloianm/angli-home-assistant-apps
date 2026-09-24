@@ -65,7 +65,7 @@ CUSTOM_RELEASE = 55.0
 CUSTOM_LANDING = 41.6
 CUSTOM_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
                    tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
-                   tilt_zone_release_pct=CUSTOM_RELEASE, tilt_enter_landing_pct=CUSTOM_LANDING)
+                   tilt_zone_release_pct=CUSTOM_RELEASE, tilt_zone_enter_pct=CUSTOM_LANDING)
 
 # Enough ticks for the longest sequence (a full open plus a dip plus a rise) with room to spare.
 MAX_TICKS = 1000
@@ -537,7 +537,7 @@ class TestAlternateGeometries(ModelTestCase):
 
     A configured ``tilt_zone_release_pct`` widens the ambiguity band far past the zone (so band
     snapping, the startup latch belief and latch-belief clearing all reach further), and a
-    configured ``tilt_enter_landing_pct`` gives the enter sequence a fourth step that is neither
+    configured ``tilt_zone_enter_pct`` gives the enter sequence a fourth step that is neither
     zone edge. Both change what the planner emits, so both have to survive the same sweep.
     """
 
@@ -547,12 +547,12 @@ class TestAlternateGeometries(ModelTestCase):
         # Releases at the bare clearance, but the slats have to end wide open (the lower edge).
         ("landing_only",
          Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_step_pct=STEP, tilt_enter_landing_pct=LOWER)),
+              tilt_step_pct=STEP, tilt_zone_enter_pct=LOWER)),
         # A low zone that needs almost the whole remaining travel to release. Band [18, 95]. The
         # 2.5% step is a quarter of this 10%-wide zone, and the landing is its mid-point.
         ("release_far_above_the_zone",
          Zone(tilt_zone_upper_pct=30.0, tilt_zone_lower_pct=20.0, tilt_zone_epsilon_pct=2.0,
-              tilt_step_pct=2.5, tilt_zone_release_pct=95.0, tilt_enter_landing_pct=27.5)),
+              tilt_step_pct=2.5, tilt_zone_release_pct=95.0, tilt_zone_enter_pct=27.5)),
     ]
 
     POSITIONS = (0, 10, 19, 20, 25, 30, 36, 38, 41, 44, 46, 50, 55, 56, 80, 95, 96, 100)

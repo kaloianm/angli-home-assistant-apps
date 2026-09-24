@@ -52,7 +52,7 @@ CUSTOM_RELEASE = 55.0
 CUSTOM_LANDING = 41.6
 CUSTOM_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
                    tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
-                   tilt_zone_release_pct=CUSTOM_RELEASE, tilt_enter_landing_pct=CUSTOM_LANDING)
+                   tilt_zone_release_pct=CUSTOM_RELEASE, tilt_zone_enter_pct=CUSTOM_LANDING)
 
 # Representative starts: above, at the band edges, inside the zone, below, and unknown.
 STARTS = (100.0, 80.0, 47.0, RELEASE, 45.0, UPPER, 41.0, LOWER, DIP, 30.0, 0.0, None)
@@ -421,7 +421,7 @@ class TestInvariantsHoldForEveryPlan(unittest.TestCase):
         ("custom_release_and_landing", CUSTOM_ZONE),
         ("release_just_below_full_travel",
          Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_step_pct=STEP, tilt_zone_release_pct=99.0, tilt_enter_landing_pct=LOWER)),
+              tilt_step_pct=STEP, tilt_zone_release_pct=99.0, tilt_zone_enter_pct=LOWER)),
     ]
 
     @staticmethod

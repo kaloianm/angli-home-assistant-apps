@@ -66,9 +66,9 @@ Entering tilt mode is therefore a single sequence, run from wherever the blind h
 1. Drive fully open with `cover.open_cover`. Sending the command rather than a target position makes the actuator run against its own limit switch, which re-references it. This step is skipped only when the blind already reports being fully open.
 2. Move down to `tilt_zone_lower_pct - tilt_zone_epsilon_pct` (dip below the lower edge). Starting from fully open this is a pure descent, so it cannot engage the latch on the way down.
 3. Move up to `tilt_zone_upper_pct`. The upward crossing of the lower edge latches the mechanism in tilt mode, with the slats parallel (closed).
-4. Move to the slat angle given by `tilt_enter_landing_pct` — an absolute real position that must lie inside the zone (`tilt_zone_lower_pct` = slats fully open, `tilt_zone_upper_pct` = slats closed). This is one more small in-zone move and is omitted when the landing rounds to the position step 3 already reached. It defaults to `tilt_zone_upper_pct`, the closed edge the latching rise ends on anyway — i.e. no fourth step at all.
+4. Move to the slat angle given by `tilt_zone_enter_pct` — an absolute real position that must lie inside the zone (`tilt_zone_lower_pct` = slats fully open, `tilt_zone_upper_pct` = slats closed). This is one more small in-zone move and is omitted when the landing rounds to the position step 3 already reached. It defaults to `tilt_zone_upper_pct`, the closed edge the latching rise ends on anyway — i.e. no fourth step at all.
 
-Step 4 exists because the latching rise necessarily ends with the slats fully closed, and on a real blind the slats often do not visibly open until a couple of percent below `tilt_zone_upper_pct` — so an entry that lands exactly on the closed edge looks like it did nothing. Set `tilt_enter_landing_pct` to the height at which the slats are as open as you want tilt mode to start; on a zone of `[29, 34]`, for instance, `32` is a slightly-open landing. Every entry goes through this same sequence: the tilt helper, the KNX slat-mode address, the event and the service.
+Step 4 exists because the latching rise necessarily ends with the slats fully closed, and on a real blind the slats often do not visibly open until a couple of percent below `tilt_zone_upper_pct` — so an entry that lands exactly on the closed edge looks like it did nothing. Set `tilt_zone_enter_pct` to the height at which the slats are as open as you want tilt mode to start; on a zone of `[29, 34]`, for instance, `32` is a slightly-open landing. Every entry goes through this same sequence: the tilt helper, the KNX slat-mode address, the event and the service.
 
 Asking to enter while an entry is already running, or to leave while an exit is, is a no-op rather than a restart. Asking to leave while an entry is running stops the entry, and asking to enter while an exit is running stops the exit: in both cases the blind halts where you can see it, rather than letting a sequence you have just contradicted run to completion behind you. Every one of these no-op or redirected requests is logged with its reason. The tilt helper and the KNX slat-mode address toggle, and a toggle during either sequence cancels it.
 
@@ -194,7 +194,7 @@ gradhermetic_living_room:
   # lie inside the zone: tilt_zone_upper_pct = slats closed (the position the latching rise itself
   # ends at, and the default), tilt_zone_lower_pct = slats fully open. Set it a little below the
   # upper edge on a blind whose slats are not visibly open at the closed edge.
-  tilt_enter_landing_pct: 42.8
+  tilt_zone_enter_pct: 42.8
 
   # Real travel percent one slat step moves the blind, for short presses while inside the tilt zone.
   # Because the actuator reports integer positions, a step below one whole percent would command a

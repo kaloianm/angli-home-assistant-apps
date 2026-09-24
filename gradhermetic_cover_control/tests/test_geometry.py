@@ -47,7 +47,7 @@ class TestLandmarks(unittest.TestCase):
         self.assertAlmostEqual(UPPER + EPSILON, self.zone.release_target)
 
     def test_landing_defaults_to_the_closed_edge(self):
-        self.assertIsNone(self.zone.tilt_enter_landing_pct)
+        self.assertIsNone(self.zone.tilt_zone_enter_pct)
         self.assertAlmostEqual(UPPER, self.zone.enter_landing_real)
         # Virtual 0 is the closed edge, which is where the latching rise already ends.
         self.assertAlmostEqual(0.0, self.zone.enter_landing_virtual)
@@ -60,7 +60,7 @@ class TestLandmarks(unittest.TestCase):
         self.assertAlmostEqual(STEP, self.zone.step / 100.0 * self.zone.span)
 
     def test_a_configured_landing_is_a_real_position(self):
-        zone = _zone(tilt_enter_landing_pct=41.0)
+        zone = _zone(tilt_zone_enter_pct=41.0)
         self.assertAlmostEqual(41.0, zone.enter_landing_real)
         self.assertAlmostEqual(50.0, zone.enter_landing_virtual)
 
@@ -316,14 +316,14 @@ class TestValidation(unittest.TestCase):
         for landing in (LOWER - 0.1, LOWER - 10.0, UPPER + 0.1, UPPER + 10.0, 0.0, 100.0):
             with self.subTest(landing=landing):
                 with self.assertRaisesRegex(
-                        ValueError, "tilt_enter_landing_pct must be between tilt_zone_lower_pct"):
-                    _zone(tilt_enter_landing_pct=landing)
+                        ValueError, "tilt_zone_enter_pct must be between tilt_zone_lower_pct"):
+                    _zone(tilt_zone_enter_pct=landing)
 
     def test_landing_at_either_zone_edge_is_accepted(self):
-        closed = _zone(tilt_enter_landing_pct=UPPER)
+        closed = _zone(tilt_zone_enter_pct=UPPER)
         self.assertAlmostEqual(UPPER, closed.enter_landing_real)
         self.assertAlmostEqual(0.0, closed.enter_landing_virtual)
-        opened = _zone(tilt_enter_landing_pct=LOWER)
+        opened = _zone(tilt_zone_enter_pct=LOWER)
         self.assertAlmostEqual(LOWER, opened.enter_landing_real)
         self.assertAlmostEqual(100.0, opened.enter_landing_virtual)
 

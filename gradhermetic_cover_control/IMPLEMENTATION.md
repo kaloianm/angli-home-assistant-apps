@@ -144,7 +144,7 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
   are only reliable from there) and makes the dip a pure descent, which cannot latch.
 
   The latching rise can only end at the upper edge, so any other landing is one more in-zone slat
-  move. That landing is unconditionally the configured `tilt_enter_landing_pct` — a real position
+  move. That landing is unconditionally the configured `tilt_zone_enter_pct` — a real position
   inside the zone, which `Zone.enter_landing_virtual` converts to the virtual scale the intent
   carries — however the entry was triggered: the tilt helper, the KNX slat-mode address and the
   `set_tilt_mode` event all resolve to the same enter intent with the same configured landing. The
@@ -229,7 +229,7 @@ are allowed to differ. Today only the tilt exit makes them differ, and it does s
 The virtual slat scale below is internal: it is what the cover entity's position slider shows while
 tilt mode is engaged, and the scale the planner's intents are stated in. `geometry.Zone` is the only
 place the two meet, and the two slat settings cross the boundary there —
-`Zone.enter_landing_virtual` converts the configured `tilt_enter_landing_pct`, and `Zone.step`
+`Zone.enter_landing_virtual` converts the configured `tilt_zone_enter_pct`, and `Zone.step`
 converts `tilt_step_pct` (`tilt_step_pct / span * 100`).
 
 Outside the zone the virtual cover maps one-to-one to the real travel position (up = open = 100 =
@@ -246,7 +246,7 @@ With `upper = 44`, `lower = 38`, `epsilon = 2`:
 - virtual `0` → real `44` (slats closed / parallel / least light).
 - virtual `50` → real `41`.
 - entering dips to `lower - epsilon = 36`, then rises to `44` to latch, then moves to
-  `tilt_enter_landing_pct` if that is not `44` as well (it is already a real position, so no
+  `tilt_zone_enter_pct` if that is not `44` as well (it is already a real position, so no
   conversion is involved in the move itself).
 - leaving drives fully open, and is satisfied on the way once the blind reports `release_target` —
   `upper + epsilon = 46` unless `tilt_zone_release_pct` says otherwise.
@@ -263,7 +263,7 @@ the app has to be able to trust as unlatched — that trust is what lets a resta
 whole-height control without re-referencing — so a band that reached a limit would be rejected. The
 two optional settings are validated here too: `tilt_zone_release_pct` must be at least
 `upper + epsilon` (below the clearance it would not even carry the reported position out of the zone)
-and below `100`, and `tilt_enter_landing_pct` must be a real position in `[lower, upper]`, since it
+and below `100`, and `tilt_zone_enter_pct` must be a real position in `[lower, upper]`, since it
 is a slat position. All of it lives in `geometry.Zone`,
 which validates on construction — `config.py` only checks that each number is present (or, for the
 optional two, absent), numeric and in range.
@@ -605,7 +605,7 @@ GradhermeticLivingRoom:
   # Optional; see the README for how to measure the release height and pick a landing. The landing
   # is an absolute position inside the zone (44 = slats closed, 38 = fully open).
   tilt_zone_release_pct: 50.0
-  tilt_enter_landing_pct: 42.8
+  tilt_zone_enter_pct: 42.8
 
   knx_move_address: "2/6/0"
   knx_step_address: "2/6/1"

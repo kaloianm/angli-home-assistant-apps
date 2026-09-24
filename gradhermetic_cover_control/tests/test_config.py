@@ -38,7 +38,7 @@ class TestConfigParsing(unittest.TestCase):
         # Absent means "keep the geometric default": the bare clearance, and the closed edge.
         config = parse_app_config(_valid_args())
         self.assertIsNone(config.zone.tilt_zone_release_pct)
-        self.assertIsNone(config.zone.tilt_enter_landing_pct)
+        self.assertIsNone(config.zone.tilt_zone_enter_pct)
         self.assertEqual(46.0, config.zone.release_target)
         self.assertEqual(44.0, config.zone.enter_landing_real)
         self.assertEqual(0.0, config.zone.enter_landing_virtual)
@@ -46,18 +46,18 @@ class TestConfigParsing(unittest.TestCase):
     def test_release_and_landing_are_parsed(self):
         # Both are real travel positions; the landing has to lie inside the zone.
         config = parse_app_config(
-            _valid_args(tilt_zone_release_pct=52.0, tilt_enter_landing_pct=41.0))
+            _valid_args(tilt_zone_release_pct=52.0, tilt_zone_enter_pct=41.0))
         self.assertEqual(52.0, config.zone.tilt_zone_release_pct)
         self.assertEqual(52.0, config.zone.release_target)
         self.assertEqual(41.0, config.zone.enter_landing_real)
         self.assertEqual(50.0, config.zone.enter_landing_virtual)
         # The band follows the release height, so it must be visible in the summary log line.
         self.assertIn("tilt_zone_release_pct=52.0", str(config))
-        self.assertIn("tilt_enter_landing_pct=41.0", str(config))
+        self.assertIn("tilt_zone_enter_pct=41.0", str(config))
 
     def test_release_and_landing_accept_strings(self):
         config = parse_app_config(
-            _valid_args(tilt_zone_release_pct="52", tilt_enter_landing_pct="41"))
+            _valid_args(tilt_zone_release_pct="52", tilt_zone_enter_pct="41"))
         self.assertEqual(52.0, config.zone.release_target)
         self.assertEqual(41.0, config.zone.enter_landing_real)
 
@@ -82,7 +82,7 @@ class TestConfigParsing(unittest.TestCase):
 
     def test_an_explicitly_null_key_falls_back_to_the_default(self):
         config = parse_app_config(
-            _valid_args(tilt_zone_release_pct=None, tilt_enter_landing_pct=None))
+            _valid_args(tilt_zone_release_pct=None, tilt_zone_enter_pct=None))
         self.assertEqual(46.0, config.zone.release_target)
         self.assertEqual(44.0, config.zone.enter_landing_real)
 
@@ -106,26 +106,26 @@ class TestConfigParsing(unittest.TestCase):
 
     def test_landing_out_of_range_raises(self):
         # Not even a percentage: rejected by this module before the geometry sees it.
-        with self.assertRaisesRegex(ValueError, "tilt_enter_landing_pct must be between 0 and 100"):
-            parse_app_config(_valid_args(tilt_enter_landing_pct=101.0))
+        with self.assertRaisesRegex(ValueError, "tilt_zone_enter_pct must be between 0 and 100"):
+            parse_app_config(_valid_args(tilt_zone_enter_pct=101.0))
 
     def test_landing_outside_the_zone_raises(self):
         # Delegated to geometry: a landing is a slat position, so it must lie inside the zone.
         for landing in (37.9, 44.1, 0.0, 100.0):
             with self.subTest(landing=landing):
                 with self.assertRaisesRegex(
-                        ValueError, "tilt_enter_landing_pct must be between tilt_zone_lower_pct"):
-                    parse_app_config(_valid_args(tilt_enter_landing_pct=landing))
+                        ValueError, "tilt_zone_enter_pct must be between tilt_zone_lower_pct"):
+                    parse_app_config(_valid_args(tilt_zone_enter_pct=landing))
 
     def test_landing_at_either_zone_edge_is_accepted(self):
         for landing in (38.0, 44.0):
             with self.subTest(landing=landing):
-                config = parse_app_config(_valid_args(tilt_enter_landing_pct=landing))
+                config = parse_app_config(_valid_args(tilt_zone_enter_pct=landing))
                 self.assertEqual(landing, config.zone.enter_landing_real)
 
     def test_non_numeric_landing_raises(self):
-        with self.assertRaisesRegex(ValueError, "tilt_enter_landing_pct must be a number"):
-            parse_app_config(_valid_args(tilt_enter_landing_pct="ajar"))
+        with self.assertRaisesRegex(ValueError, "tilt_zone_enter_pct must be a number"):
+            parse_app_config(_valid_args(tilt_zone_enter_pct="ajar"))
 
     def test_knx_addresses_are_optional(self):
         config = parse_app_config(_valid_args())

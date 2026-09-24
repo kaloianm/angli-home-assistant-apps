@@ -84,7 +84,7 @@ class Zone:
       defaults to ``upper + epsilon``, which is the behaviour that predates the setting. Leaving
       tilt travels past it to the top limit; what the height decides is when the release has
       provably happened, and how far up the ambiguity band reaches.
-    - ``tilt_enter_landing_pct`` -- the absolute real position the entry sequence finishes on, which
+    - ``tilt_zone_enter_pct`` -- the absolute real position the entry sequence finishes on, which
       being a slat position must lie inside ``[lower, upper]``. The latching rise necessarily ends
       at the upper (closed) edge, where on some blinds the slats are not visibly open yet, so entry
       can be told to continue to a slightly-open angle. It defaults to ``upper``: the closed edge
@@ -96,7 +96,7 @@ class Zone:
     tilt_zone_epsilon_pct: float
     tilt_step_pct: float
     tilt_zone_release_pct: Optional[float] = None
-    tilt_enter_landing_pct: Optional[float] = None
+    tilt_zone_enter_pct: Optional[float] = None
     height_step_pct: float = DEFAULT_HEIGHT_STEP_PCT
 
     def __post_init__(self) -> None:
@@ -141,12 +141,12 @@ class Zone:
             if self.tilt_zone_release_pct >= 100.0:
                 raise ValueError("tilt_zone_release_pct must be < 100 so the ambiguity band stops "
                                  "short of the fully open position")
-        landing = self.tilt_enter_landing_pct
+        landing = self.tilt_zone_enter_pct
         if landing is not None:
             # The landing is a slat position, so it has to be one: a real travel position inside the
             # zone. Anything outside is either not a slat angle at all, or would cross an edge.
             if not self.tilt_zone_lower_pct <= landing <= self.tilt_zone_upper_pct:
-                raise ValueError("tilt_enter_landing_pct must be between tilt_zone_lower_pct and "
+                raise ValueError("tilt_zone_enter_pct must be between tilt_zone_lower_pct and "
                                  "tilt_zone_upper_pct")
         if self.tilt_step_pct <= 0.0:
             raise ValueError("tilt_step_pct must be > 0")
@@ -241,8 +241,8 @@ class Zone:
         Defaults to the upper (closed) edge, which is where the latching rise itself ends -- so an
         unconfigured blind gets no extra entry step, exactly as before the setting existed.
         """
-        if self.tilt_enter_landing_pct is not None:
-            return self.tilt_enter_landing_pct
+        if self.tilt_zone_enter_pct is not None:
+            return self.tilt_zone_enter_pct
         return self.upper
 
     @property

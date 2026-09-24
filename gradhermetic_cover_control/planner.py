@@ -166,7 +166,7 @@ class Intent:
 
     An enter intent's ``landing_virtual`` names the virtual slat position the sequence should
     finish on -- that is how the deliberate "enter tilt" control applies the configured
-    ``tilt_enter_landing_pct``. That setting is a real travel position;
+    ``tilt_zone_enter_pct``. That setting is a real travel position;
     ``Zone.enter_landing_virtual`` converts it to the virtual scale used here, which is the only
     scale the planner ever speaks.
     When it is omitted the sequence finishes at the closed edge, which is where the latching rise
@@ -313,7 +313,7 @@ def _plan_enter_tilt(zone: Zone, landing_virtual: Optional[float] = None) -> Pla
 
     The latching rise necessarily ends at the closed edge, so landing anywhere else costs one more
     in-zone slat move. ``landing_virtual`` names that landing (the configured
-    ``tilt_enter_landing_pct``, converted to the virtual scale by the zone); when it is omitted the
+    ``tilt_zone_enter_pct``, converted to the virtual scale by the zone); when it is omitted the
     sequence finishes at the closed edge, where the rise already ends. The extra
     step is omitted when it would command the position the rise already reached -- compared in the
     integer domain the actuator speaks, since a command that rounds to the current setpoint moves
