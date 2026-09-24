@@ -393,11 +393,14 @@ class GradhermeticCoverControl(hass.Hass):
         writes the sensor -- which is what re-creates it if Home Assistant has forgotten it. The
         motion rides on the position sensor as an attribute, which the template cover's state
         template reads to report ``opening`` / ``closing``. An unknown position publishes the sensor
-        as ``unavailable`` rather than leaving a stale number in it.
+        as ``unavailable`` rather than leaving a stale number in it.  The position is sent as a string
+        because AppDaemon drops ``None`` and ``False`` from the request body before posting it, and
+        since ``0 == False`` it drops an integer ``0`` too -- Home Assistant then rejects the update
+        for having no state, and a fully closed blind never reads 0.
         """
         self.set_state(
             self._position_entity,
-            state="unavailable" if virtual_position is None else to_command(virtual_position),
+            state="unavailable" if virtual_position is None else str(to_command(virtual_position)),
             attributes={
                 "friendly_name": f"{self._config.virtual_name} Position",
                 "unit_of_measurement": "%",
