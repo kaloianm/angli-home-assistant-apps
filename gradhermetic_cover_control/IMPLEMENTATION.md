@@ -64,8 +64,9 @@ The app persists nothing across restarts, so everything it does follows from thr
 The latch transitions, in full:
 
 - → `LATCHED`: a completed enter sequence, and nothing else.
-- → `UNLATCHED`: a completed plan that ends released, or feedback placing the blind clearly outside
-  the `[lower - epsilon, release_target]` band, where a latched mechanism cannot rest.
+- → `UNLATCHED`: a completed plan that ends released, or feedback placing the blind outside
+  the `[lower - epsilon, release_target]` band by even a single percent, where a latched mechanism
+  cannot rest.
 - → `UNKNOWN`: startup with the position unknown or inside the band; a plan interrupted (stopped,
   replaced or stalled) part-way; externally-caused motion ending inside the band; the cover becoming
   unavailable; a completed height move that rose by position command to exactly `release_target`
