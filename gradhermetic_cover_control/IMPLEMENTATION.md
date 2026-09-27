@@ -438,9 +438,10 @@ Reading a settled report as "stopped" is only sound on a controller that reports
 integrations publish positions and never an `opening` / `closing` state, and those report `is_moving`
 false for the whole of a move, so the same inference would throw the stop away on a blind that is
 still travelling. `logic` therefore remembers whether this controller has *ever* reported motion, and
-until it has, an outstanding plan is the only signal there is and a stop is sent on it. Both covers
-this repo drives do report the state, so the fallback is insurance rather than everyday behaviour —
-but the app is integration-agnostic and the model tests exercise a controller that withholds it.
+until it has, an outstanding plan is the only signal there is and a stop is sent on it. Both cover
+integrations this repo drives — KNX and Shelly — do report the state, so the fallback is insurance
+rather than everyday behaviour — but the app is integration-agnostic and the model tests exercise a
+controller that withholds it.
 
 A plan that fails `check_plan` disables the blind and notifies. That is defence in depth against a
 planner bug: the invariants are meant to be unreachable, so reaching one means the safe response is
@@ -517,7 +518,9 @@ template:
 ```
 
 `default_entity_id` pins the entity id to `cover.gradhermetic_<virtual_id>` independent of `name` —
-`_service_targets_me` in the adapter and the dashboard tile both expect that exact id.
+the dashboard tiles expect that exact id. The app itself does not care what the cover entity is
+named: it matches a `gradhermetic_command` event to this blind by the `virtual_id` field in the
+event payload, not by inspecting any entity id.
 
 ### 3. Dedicated KNX wall-button addresses
 
