@@ -155,7 +155,7 @@ The latch belief works the same way during normal operation, not just at restart
 
 Any command that would drive the blind downward while the latch is not known to be released first drives fully open to release it, then descends. A blind that is *known* released descends straight away — closing right after leaving tilt mode, for instance, costs no detour.
 
-This keeps the mechanism safe even if the application's belief was disturbed by an interrupted tilt sequence or by a command sent directly to the underlying cover.
+This keeps the mechanism safe against an interrupted tilt sequence and against external motion the application itself observes ending inside the ambiguity band, where the belief simply degrades to unknown; it does not extend to driving the underlying cover directly — its own entity, wall objects wired straight to the actuator, or the device's own app or buttons — since a direct downward move can end with the blind resting outside the band, which the application trusts as "released" exactly like any other observed rest even though the mechanism may still be latched, so the next descent then goes straight down. That gap is why direct controls of the underlying cover are kept off the everyday dashboards. A later change is planned to make any externally caused movement degrade the belief outright, so a subsequent command must re-establish the position before it acts.
 
 ## YAML Configuration
 
