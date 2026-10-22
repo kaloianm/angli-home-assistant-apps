@@ -53,12 +53,12 @@ LOWER = 38.0
 EPSILON = 2.0
 STEP = 1.2
 DIP = LOWER - EPSILON
-RELEASE = UPPER + EPSILON
+RELEASE = 46.0
 
 ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-            tilt_step_pct=STEP)
+            tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP)
 
-# The same mechanism on a blind whose latch only genuinely lets go well above the bare clearance,
+# The same mechanism on a blind whose latch only genuinely lets go well above the zone,
 # and whose slats are not visible until a little way open (real 41.6, i.e. virtual 40). Band =
 # [36, 55].
 CUSTOM_RELEASE = 55.0
@@ -364,7 +364,7 @@ class TestInterruptions(ModelTestCase):
          lambda l: l.on_step(DIRECTION_UP)),
         ("height_step_through_the_band", lambda: fresh(47.0, stride=2.0),
          lambda l: l.on_step(DIRECTION_DOWN)),
-        # The same two sequences on the geometry the optional settings produce: a four-step entry
+        # The same two sequences on a measured release and a landing mid-zone: a four-step entry
         # that finishes mid-zone, and a much longer exit through a much wider ambiguity band.
         ("enter_custom_zone", lambda: fresh(10.0, stride=8.0, zone=CUSTOM_ZONE),
          lambda l: l.on_set_tilt_mode(True)),
@@ -533,7 +533,7 @@ class TestFeedbackQuirks(ModelTestCase):
 
 class TestAlternateGeometries(ModelTestCase):
     """
-    The same proofs on the geometries the two optional settings produce.
+    The same proofs on the geometries the release and landing settings produce.
 
     A configured ``tilt_zone_release_pct`` widens the ambiguity band far past the zone (so band
     snapping, the startup latch belief and latch-belief clearing all reach further), and a
@@ -544,10 +544,10 @@ class TestAlternateGeometries(ModelTestCase):
     ZONES = [
         # Releases high up, entry lands slightly open. Band [36, 55].
         ("custom_release_and_landing", CUSTOM_ZONE),
-        # Releases at the bare clearance, but the slats have to end wide open (the lower edge).
+        # Releases just above the zone, but the slats have to end wide open (the lower edge).
         ("landing_only",
          Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_step_pct=STEP, tilt_zone_enter_pct=LOWER)),
+              tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=LOWER)),
         # A low zone that needs almost the whole remaining travel to release. Band [18, 95]. The
         # 2.5% step is a quarter of this 10%-wide zone, and the landing is its mid-point.
         ("release_far_above_the_zone",
@@ -869,11 +869,11 @@ class TestCalibrationDrift(ModelTestCase):
 
     def test_a_short_rise_from_an_uncalibrated_state_would_not_release(self):
         # The cheap release the descent guard deliberately does not use, and the bound the tilt exit
-        # does depend on: once the reported position has drifted by the epsilon margin, rising to a
-        # *reported* upper + epsilon leaves the blind physically at the upper edge, still latched,
-        # while looking like it worked.
+        # does depend on: once the reported position has drifted by as much as the release height
+        # sits above the upper edge, rising to the *reported* release height leaves the blind
+        # physically at the upper edge, still latched, while looking like it worked.
         sim = BlindSimulator(ZONE, position=41.0, latched=True)
-        sim.drift = EPSILON
+        sim.drift = RELEASE - UPPER
         sim.set_position(to_command(RELEASE))
         _run_out(sim)
         self.assertTrue(sim.latched)

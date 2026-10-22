@@ -26,15 +26,16 @@ from gradhermetic_cover_control.planner import (
     PLAN_LEAVE,
 )
 
-# Geometry used throughout: zone [38, 44], epsilon 2, step 1.2 real travel percent. Every
-# configured number is real blind travel; span 6 makes the 1.2% step 20 on the virtual slat scale.
+# Geometry used throughout: zone [38, 44], epsilon 2, release 46, step 1.2 real travel percent.
+# Every configured number is real blind travel; span 6 makes the 1.2% step 20 on the virtual slat
+# scale.
 # Band = [36, 46].
 UPPER = 44.0
 LOWER = 38.0
 EPSILON = 2.0
 STEP = 1.2
 DIP = LOWER - EPSILON
-RELEASE = UPPER + EPSILON
+RELEASE = 46.0
 
 _MOVE_KINDS = (ACTION_MOVE_TO, ACTION_OPEN_FULL, ACTION_CLOSE_FULL)
 
@@ -44,6 +45,7 @@ def _config(**overrides):
         "tilt_zone_upper_pct": UPPER,
         "tilt_zone_lower_pct": LOWER,
         "tilt_zone_epsilon_pct": EPSILON,
+        "tilt_zone_release_pct": RELEASE,
         "tilt_step_pct": STEP,
     }
     args.update(overrides)
@@ -198,7 +200,7 @@ class TestEnterLeaveTilt(unittest.TestCase):
         run_plan(logic, logic.on_set_tilt_mode(True))
         actions = logic.on_set_tilt_mode(False)
         self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
-        # A blind passing the bare clearance has not yet cleared the measured release height.
+        # A blind passing the base fixture's release height has not yet cleared this one.
         logic.on_real_position(46.0, False)
         self.assertTrue(logic.has_pending_plan)
         run_plan(logic, actions)
@@ -639,7 +641,7 @@ class TestLatchSafetyGuard(unittest.TestCase):
     """
     Any downward move while the blind might be latched must first release the latch, and the release
     is a full open: an uncertain latch belief also means an uncertain calibration, so a rise to a
-    merely reported ``upper + epsilon`` cannot be trusted.
+    merely reported release height cannot be trusted.
     """
 
     def setUp(self):

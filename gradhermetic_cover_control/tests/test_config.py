@@ -13,6 +13,7 @@ def _valid_args(**overrides):
         "tilt_zone_upper_pct": 44.0,
         "tilt_zone_lower_pct": 38.0,
         "tilt_zone_epsilon_pct": 2.0,
+        "tilt_zone_release_pct": 46.0,
         "tilt_step_pct": 1.2,
     }
     args.update(overrides)
@@ -34,12 +35,10 @@ class TestConfigParsing(unittest.TestCase):
         self.assertEqual("1/2/4", config.knx_step_address)
         self.assertEqual("1/2/5", config.knx_tilt_address)
 
-    def test_the_release_and_landing_keys_are_optional(self):
-        # Absent means "keep the geometric default": the bare clearance, and the closed edge.
+    def test_the_landing_key_is_optional(self):
+        # Absent means "keep the geometric default": the closed edge.
         config = parse_app_config(_valid_args())
-        self.assertIsNone(config.zone.tilt_zone_release_pct)
         self.assertIsNone(config.zone.tilt_zone_enter_pct)
-        self.assertEqual(46.0, config.zone.release_target)
         self.assertEqual(44.0, config.zone.enter_landing_real)
         self.assertEqual(0.0, config.zone.enter_landing_virtual)
 
@@ -80,16 +79,34 @@ class TestConfigParsing(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "height_step_pct must be > 0"):
             parse_app_config(_valid_args(height_step_pct=0))
 
-    def test_an_explicitly_null_key_falls_back_to_the_default(self):
-        config = parse_app_config(
-            _valid_args(tilt_zone_release_pct=None, tilt_zone_enter_pct=None))
-        self.assertEqual(46.0, config.zone.release_target)
+    def test_an_explicitly_null_landing_falls_back_to_the_default(self):
+        config = parse_app_config(_valid_args(tilt_zone_enter_pct=None))
         self.assertEqual(44.0, config.zone.enter_landing_real)
 
-    def test_release_below_the_bare_clearance_raises(self):
-        # Delegated to geometry: it must clear upper + epsilon, which is what a release means.
-        with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be >="):
-            parse_app_config(_valid_args(tilt_zone_release_pct=45.0))
+    def test_the_release_height_is_required(self):
+        # It can only be measured on the blind, so there is no geometric default to fall back to.
+        args = _valid_args()
+        del args["tilt_zone_release_pct"]
+        with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct is required"):
+            parse_app_config(args)
+        with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct is required"):
+            parse_app_config(_valid_args(tilt_zone_release_pct=None))
+
+    def test_the_summary_shows_the_configured_release_height(self):
+        self.assertIn("tilt_zone_release_pct=46.0", str(parse_app_config(_valid_args())))
+
+    def test_release_not_above_the_upper_edge_raises(self):
+        # Delegated to geometry: a release has to carry the reported position out of the zone.
+        for release in (44.0, 44.4, 40.0):
+            with self.subTest(release=release):
+                with self.assertRaisesRegex(ValueError,
+                                            "tilt_zone_release_pct must be > tilt_zone_upper_pct"):
+                    parse_app_config(_valid_args(tilt_zone_release_pct=release))
+
+    def test_release_one_percent_above_the_upper_edge_is_accepted(self):
+        # Epsilon no longer constrains the upper side: only the lower edge is padded by it.
+        config = parse_app_config(_valid_args(tilt_zone_release_pct=45.0))
+        self.assertEqual(45.0, config.zone.release_target)
 
     def test_release_out_of_range_raises(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be between 0 and 100"):
@@ -161,10 +178,6 @@ class TestConfigParsing(unittest.TestCase):
     def test_predip_below_zero_raises(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_lower_pct - tilt_zone_epsilon_pct"):
             parse_app_config(_valid_args(tilt_zone_lower_pct=1.0, tilt_zone_epsilon_pct=2.0))
-
-    def test_leave_target_above_hundred_raises(self):
-        with self.assertRaisesRegex(ValueError, "tilt_zone_upper_pct \\+ tilt_zone_epsilon_pct"):
-            parse_app_config(_valid_args(tilt_zone_upper_pct=99.0, tilt_zone_epsilon_pct=2.0))
 
     def test_percentage_out_of_range_raises(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_upper_pct must be between 0 and 100"):

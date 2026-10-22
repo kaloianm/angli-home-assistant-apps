@@ -152,8 +152,7 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
   fourth step is dropped when its landing rounds to the same integer command as the upper edge,
   because a command that repeats the current setpoint moves nothing.
 - **Leave tilt** — `RiseToAtLeast(release_target)` carried by `open_full`, available only from a
-  confident `LATCHED` belief. `release_target` is `tilt_zone_release_pct`, or `upper + epsilon` when
-  that is not configured.
+  confident `LATCHED` belief. `release_target` is `tilt_zone_release_pct`, which is required.
 
   This is the step that most needs its command distinct from its target, and now they are as far
   apart as they can be: it *travels* to the top limit and is *satisfied* at the release height.
@@ -161,8 +160,8 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
   Going all the way up is both what the user means and what is safest. Leaving slat mode is a
   request to control the blind as a whole again, and stopping a few percent above the zone parks it
   in the ambiguity band with the slats still shut. It also removes the failure a short rise had:
-  `epsilon` is sized to carry the *reported* position clear of the upper edge, which says nothing
-  about how far the mechanism must travel to disengage, and an actuator settling a percent low can
+  carrying the *reported* position clear of the upper edge says nothing about how far the
+  mechanism must travel to disengage, and an actuator settling a percent low can
   satisfy `>=` on a rise that physically fell short — leaving the app confidently, and wrongly,
   believing it is released. A limit switch cannot be settled short of.
 
@@ -241,7 +240,7 @@ real   = upper - (virtual / 100) * (upper - lower)
 virtual = (upper - real) / (upper - lower) * 100
 ```
 
-With `upper = 44`, `lower = 38`, `epsilon = 2`:
+With `upper = 44`, `lower = 38`, `epsilon = 2`, `release = 46`:
 
 - virtual `100` → real `38` (slats open / perpendicular / most light).
 - virtual `0` → real `44` (slats closed / parallel / least light).
@@ -249,25 +248,26 @@ With `upper = 44`, `lower = 38`, `epsilon = 2`:
 - entering dips to `lower - epsilon = 36`, then rises to `44` to latch, then moves to
   `tilt_zone_enter_pct` if that is not `44` as well (it is already a real position, so no
   conversion is involved in the move itself).
-- leaving drives fully open, and is satisfied on the way once the blind reports `release_target` —
-  `upper + epsilon = 46` unless `tilt_zone_release_pct` says otherwise.
+- leaving drives fully open, and is satisfied on the way once the blind reports `release_target`,
+  which is `tilt_zone_release_pct = 46`.
 
 Because the zone is narrow (6% here) and KNX actuators report integer positions, the zone holds only
 about `span + 1` distinct slat positions (~7 for a 6% zone). A slat step must therefore be at least
 one whole reported percent of real travel, otherwise the rounded position command repeats the
 current position and the blind never moves. Config validation enforces `tilt_step_pct >= 1.0` so
 every step advances the actuator, and `tilt_step_pct <= upper - lower` because a step wider than the
-whole zone is not a step; `tilt_zone_epsilon_pct >= 1` likewise, so the dip and release targets round
-to integers distinct from the edges they must clear. The band must also stop short of both travel
+whole zone is not a step; `tilt_zone_epsilon_pct >= 1` likewise, so the dip target rounds to an
+integer distinct from the lower edge it must clear. Epsilon pads the lower edge only: the upper side
+of the band is `tilt_zone_release_pct`, which must round to a whole percent strictly above `upper`
+(at or below it, the release would not even carry the reported position out of the zone). The band
+must also stop short of both travel
 limits: `lower - epsilon > 0` and `release_target < 100`. A blind resting on either end stop is one
 the app has to be able to trust as unlatched — that trust is what lets a restart at 0 or 100 resume
 whole-height control without re-referencing — so a band that reached a limit would be rejected. The
-two optional settings are validated here too: `tilt_zone_release_pct` must be at least
-`upper + epsilon` (below the clearance it would not even carry the reported position out of the zone)
-and below `100`, and `tilt_zone_enter_pct` must be a real position in `[lower, upper]`, since it
-is a slat position. All of it lives in `geometry.Zone`,
-which validates on construction — `config.py` only checks that each number is present (or, for the
-optional two, absent), numeric and in range.
+optional `tilt_zone_enter_pct` is validated here too: it must be a real position in
+`[lower, upper]`, since it is a slat position. All of it lives in `geometry.Zone`, which validates
+on construction — `config.py` only checks that each number is present (or, for the optional ones,
+absent), numeric and in range.
 
 The ambiguity band runs `[lower - epsilon, release_target]`, and `band_high` is *defined* as
 `release_target` rather than merely coinciding with it: a mechanism that is latched but has not yet
@@ -606,9 +606,12 @@ GradhermeticLivingRoom:
   # Optional; one step button press outside slat mode moves the blind this much. Defaults to 2.0.
   height_step_pct: 2.0
 
-  # Optional; see the README for how to measure the release height and pick a landing. The landing
-  # is an absolute position inside the zone (44 = slats closed, 38 = fully open).
+  # Required; see the README for how to measure the release height. Must round to a whole percent
+  # above tilt_zone_upper_pct, and stay below 100.
   tilt_zone_release_pct: 50.0
+
+  # Optional; see the README for how to pick a landing. The landing is an absolute position inside
+  # the zone (44 = slats closed, 38 = fully open).
   tilt_zone_enter_pct: 42.8
 
   knx_move_address: "2/6/0"
@@ -658,9 +661,9 @@ state after leaving tilt; walks the blind from top to bottom and back with step 
 interrupts every multi-step sequence at every feedback point with every other intent, a stop, and a
 restart with and without the cover going unavailable first; and repeats the intent sweep under each
 feedback quirk. It then repeats the position, slat-position, quirk and
-interrupted-entry sweeps on the geometries the two optional settings produce — a release height far
-above the zone (so the ambiguity band is much wider than the zone) and an entry landing that is
-neither zone edge — and asserts that each entry lands on the configured slat angle and each exit
+interrupted-entry sweeps on the geometries the release and landing settings produce — a release
+height far above the zone (so the ambiguity band is much wider than the zone) and an entry landing
+that is neither zone edge — and asserts that each entry lands on the configured slat angle and each exit
 both physically clears the release height and finishes at the top limit. The drift tests demonstrate
 why every latch sequence starts from the top limit, and show a *position*-commanded release failing
 on a drifted actuator — the failure the exit avoids by driving against the limit switch instead, and

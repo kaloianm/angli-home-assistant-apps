@@ -9,12 +9,13 @@ from gradhermetic_cover_control.geometry import (
     to_command,
 )
 
-# Geometry used throughout the suite: zone [38, 44], epsilon 2, step 1.2 real travel percent. Span
-# = 6, so one step is 20 on the virtual scale, and the ambiguity band is [36, 46]. Every configured
-# number here -- STEP included -- is real blind travel.
+# Geometry used throughout the suite: zone [38, 44], epsilon 2, release 46, step 1.2 real travel
+# percent. Span = 6, so one step is 20 on the virtual scale, and the ambiguity band is [36, 46].
+# Every configured number here -- STEP included -- is real blind travel.
 UPPER = 44.0
 LOWER = 38.0
 EPSILON = 2.0
+RELEASE = 46.0
 STEP = 1.2
 VIRTUAL_STEP = 20.0
 
@@ -24,6 +25,7 @@ def _zone(**overrides):
         "tilt_zone_upper_pct": UPPER,
         "tilt_zone_lower_pct": LOWER,
         "tilt_zone_epsilon_pct": EPSILON,
+        "tilt_zone_release_pct": RELEASE,
         "tilt_step_pct": STEP,
     }
     args.update(overrides)
@@ -38,13 +40,20 @@ class TestLandmarks(unittest.TestCase):
     def test_named_targets(self):
         self.assertAlmostEqual(6.0, self.zone.span)
         self.assertAlmostEqual(LOWER - EPSILON, self.zone.dip_target)
-        self.assertAlmostEqual(UPPER + EPSILON, self.zone.release_target)
+        self.assertAlmostEqual(RELEASE, self.zone.release_target)
         self.assertAlmostEqual(self.zone.dip_target, self.zone.band_low)
         self.assertAlmostEqual(self.zone.release_target, self.zone.band_high)
 
-    def test_release_defaults_to_the_bare_clearance(self):
-        self.assertIsNone(self.zone.tilt_zone_release_pct)
-        self.assertAlmostEqual(UPPER + EPSILON, self.zone.release_target)
+    def test_release_target_is_the_configured_height(self):
+        self.assertAlmostEqual(RELEASE, self.zone.tilt_zone_release_pct)
+        self.assertAlmostEqual(RELEASE, self.zone.release_target)
+
+    def test_epsilon_only_pads_the_lower_edge(self):
+        # Changing the clearance moves the dip and the bottom of the band, never the release.
+        zone = _zone(tilt_zone_epsilon_pct=EPSILON + 1.0)
+        self.assertAlmostEqual(LOWER - EPSILON - 1.0, zone.band_low)
+        self.assertAlmostEqual(RELEASE, zone.release_target)
+        self.assertAlmostEqual(RELEASE, zone.band_high)
 
     def test_landing_defaults_to_the_closed_edge(self):
         self.assertIsNone(self.zone.tilt_zone_enter_pct)
@@ -70,7 +79,7 @@ class TestLandmarks(unittest.TestCase):
 
 
 class TestConfiguredReleaseHeight(unittest.TestCase):
-    """A measured release height replaces the bare clearance and drags the band up with it."""
+    """A release height well above the zone drags the band up with it."""
 
     def setUp(self):
         self.zone = _zone(tilt_zone_release_pct=55.0)
@@ -223,7 +232,6 @@ class TestValidation(unittest.TestCase):
         # One whole percent is enough to carry the rounded command clear of the edge.
         zone = _zone(tilt_zone_epsilon_pct=MIN_EPSILON_PCT)
         self.assertNotEqual(to_command(zone.lower), to_command(zone.dip_target))
-        self.assertNotEqual(to_command(zone.upper), to_command(zone.release_target))
 
     def test_epsilon_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_epsilon_pct must be > 0"):
@@ -281,24 +289,27 @@ class TestValidation(unittest.TestCase):
         zone = _zone(tilt_zone_lower_pct=EPSILON + 1.0, tilt_zone_upper_pct=10.0)
         self.assertAlmostEqual(1.0, zone.dip_target)
 
-    def test_release_target_at_or_above_hundred_raises(self):
-        for upper in (100.0 - EPSILON, 99.0):
-            with self.subTest(upper=upper):
-                with self.assertRaisesRegex(ValueError,
-                                            "tilt_zone_upper_pct \\+ tilt_zone_epsilon_pct"):
-                    _zone(tilt_zone_upper_pct=upper)
-
-    def test_release_below_the_bare_clearance_raises(self):
-        # Anything below upper + epsilon does not even carry the reported position clear of the
-        # upper edge, so it cannot be the height the mechanism releases at.
-        for release in (UPPER + EPSILON - 0.1, UPPER, 0.0):
+    def test_release_not_above_the_upper_edge_raises(self):
+        # A release at or below the upper edge does not even carry the reported position out of
+        # the zone. The actuator reports whole percent, so a release a fraction above the edge
+        # reads back as the edge itself and is rejected too.
+        for release in (UPPER + 0.4, UPPER, UPPER - 1.0, 0.0):
             with self.subTest(release=release):
-                with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct must be >="):
+                with self.assertRaisesRegex(ValueError,
+                                            "tilt_zone_release_pct must be > tilt_zone_upper_pct"):
                     _zone(tilt_zone_release_pct=release)
 
-    def test_release_exactly_at_the_bare_clearance_is_accepted(self):
-        zone = _zone(tilt_zone_release_pct=UPPER + EPSILON)
-        self.assertAlmostEqual(UPPER + EPSILON, zone.release_target)
+    def test_release_one_whole_percent_above_the_upper_edge_is_accepted(self):
+        # The smallest release the actuator can tell apart from the edge; epsilon plays no part.
+        zone = _zone(tilt_zone_release_pct=UPPER + 1.0)
+        self.assertAlmostEqual(UPPER + 1.0, zone.release_target)
+        self.assertNotEqual(to_command(zone.upper), to_command(zone.release_target))
+
+    def test_a_zone_near_the_top_limit_only_needs_room_for_the_release(self):
+        # Epsilon no longer pads the upper edge, so it does not limit how high the zone may sit.
+        zone = _zone(tilt_zone_upper_pct=98.0, tilt_zone_lower_pct=92.0,
+                     tilt_zone_release_pct=99.0)
+        self.assertAlmostEqual(99.0, zone.band_high)
 
     def test_release_at_or_above_a_hundred_raises(self):
         # The band must stop short of the top limit: a blind resting fully open is one the app has

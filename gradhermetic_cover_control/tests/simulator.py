@@ -10,9 +10,8 @@ The latch model is deliberately the most pessimistic one consistent with the har
 
 - *any* upward crossing of the lower edge that starts below it engages the latch;
 - only a rise reaching the zone's **release target** releases it -- not merely clearing the upper
-  edge. On the real mechanism the bare clearance margin is enough to carry the *reported* position
-  out of the zone but not always enough to disengage the latch, which is what
-  ``tilt_zone_release_pct`` exists to measure;
+  edge. On the real mechanism carrying the *reported* position out of the zone is not always enough
+  to disengage the latch, which is what ``tilt_zone_release_pct`` exists to measure;
 - downward travel never changes it.
 
 Plans that are correct under this model are also correct under milder, reversal-only models, because
