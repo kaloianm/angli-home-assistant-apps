@@ -4,3 +4,4 @@ indent_width = 4
 column_limit = 100
 allow_split_before_dict_value = false
 split_before_named_assigns = false
+space_between_ending_comma_and_closing_bracket = true
