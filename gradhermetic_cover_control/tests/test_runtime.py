@@ -13,8 +13,8 @@ from gradhermetic_cover_control.runtime import (
 
 
 def _runtime():
-    zone = Zone(tilt_zone_upper_pct=44.0, tilt_zone_lower_pct=38.0, tilt_zone_epsilon_pct=2.0,
-                tilt_zone_release_pct=46.0, tilt_step_pct=1.2)
+    zone = Zone(tilt_zone_upper_pct=44, tilt_zone_lower_pct=38, tilt_zone_epsilon_pct=2,
+                tilt_zone_release_pct=46, tilt_step_pct=2)
     config = GradhermeticConfig(
         real_cover="cover.living_room_blind",
         virtual_id="living_room",
@@ -38,8 +38,10 @@ class TestCommandRateLimiting(unittest.TestCase):
     # apart instead would say nothing, since a cadence of one command per second can never gather
     # COMMAND_RATE_LIMIT of them inside a window that is COMMAND_RATE_WINDOW_SECONDS long.
     def _burst(self, count, start=0):
-        return [self.runtime.record_command(self.t0 + timedelta(milliseconds=start + i))
-                for i in range(count)]
+        return [
+            self.runtime.record_command(self.t0 + timedelta(milliseconds=start + i))
+            for i in range(count)
+        ]
 
     def test_within_limit_is_allowed(self):
         self.assertEqual([False] * COMMAND_RATE_LIMIT, self._burst(COMMAND_RATE_LIMIT))

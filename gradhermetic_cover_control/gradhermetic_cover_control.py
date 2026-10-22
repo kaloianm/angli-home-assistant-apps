@@ -48,7 +48,7 @@ from gradhermetic_cover_control.executor import (
     NOTIFY_STALL,
     Action,
 )
-from gradhermetic_cover_control.geometry import to_command
+from gradhermetic_cover_control.geometry import to_whole_pct
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 from gradhermetic_cover_control.planner import DIRECTION_DOWN, DIRECTION_UP
 from gradhermetic_cover_control.runtime import (
@@ -179,9 +179,8 @@ class GradhermeticCoverControl(hass.Hass):
             # The event bus is open to any HA automation, so a malformed payload is bad input, not
             # an app bug: ignore it rather than letting it reach _report_error and disable it.
             raw_position = data.get("position")
-            try:
-                position = float(raw_position)
-            except (TypeError, ValueError):
+            position = _parse_pct(raw_position)
+            if position is None:
                 self.log(f"Ignoring set_position with invalid position {raw_position!r}",
                          level="WARNING")
                 return []
@@ -206,8 +205,8 @@ class GradhermeticCoverControl(hass.Hass):
         """
         try:
             position, is_moving, direction = _extract_feedback(new)
-            self._apply_actions(
-                self._runtime.logic.on_real_position(position, is_moving, direction))
+            self._apply_actions(self._runtime.logic.on_real_position(position, is_moving,
+                                                                     direction))
         except Exception as exc:
             self._report_error(f"_on_real_state(entity={entity!r})", exc)
 
@@ -221,8 +220,7 @@ class GradhermeticCoverControl(hass.Hass):
         try:
             self._runtime.settle_timer_handle = None
             position, is_moving, direction = self._read_real_position()
-            self._apply_actions(
-                self._runtime.logic.on_settle_timer(position, is_moving, direction))
+            self._apply_actions(self._runtime.logic.on_settle_timer(position, is_moving, direction))
         except Exception as exc:
             self._report_error("_on_settle", exc)
 
@@ -286,7 +284,7 @@ class GradhermeticCoverControl(hass.Hass):
             self._report_error(f"_on_step_button(entity={entity!r})", exc)
 
     def _on_tilt_button(self, entity: str, attribute: str, old: Any, new: Any,
-                       kwargs: Dict[str, Any]) -> None:
+                        kwargs: Dict[str, Any]) -> None:
         """
         Toggle tilt mode from the ``input_button`` tilt helper.
         """
@@ -330,8 +328,7 @@ class GradhermeticCoverControl(hass.Hass):
             return
         for action in actions:
             if action.kind == ACTION_MOVE_TO:
-                self._command(runtime, "cover/set_cover_position",
-                              position=to_command(action.position))
+                self._command(runtime, "cover/set_cover_position", position=action.position)
             elif action.kind == ACTION_OPEN_FULL:
                 self._command(runtime, "cover/open_cover")
             elif action.kind == ACTION_CLOSE_FULL:
@@ -372,7 +369,7 @@ class GradhermeticCoverControl(hass.Hass):
             message=f"Cover '{runtime.config.virtual_id}' {message}",
         )
 
-    def _publish_virtual(self, virtual_position: Optional[float], in_tilt: Optional[bool],
+    def _publish_virtual(self, virtual_position: Optional[int], in_tilt: Optional[bool],
                          motion: Optional[str]) -> None:
         """
         Publish what the virtual cover shows: its position, which scale that position is on, and
@@ -400,7 +397,7 @@ class GradhermeticCoverControl(hass.Hass):
         """
         self.set_state(
             self._position_entity,
-            state="unavailable" if virtual_position is None else str(to_command(virtual_position)),
+            state="unavailable" if virtual_position is None else str(virtual_position),
             attributes={
                 "friendly_name": f"{self._config.virtual_name} Position",
                 "unit_of_measurement": "%",
@@ -439,7 +436,7 @@ class GradhermeticCoverControl(hass.Hass):
 
     # -- Safety ------------------------------------------------------------------------------------
 
-    def _read_real_position(self) -> Tuple[Optional[float], bool, Optional[str]]:
+    def _read_real_position(self) -> Tuple[Optional[int], bool, Optional[str]]:
         """
         Read the real cover's current position, motion and direction from Home Assistant.
         """
@@ -501,7 +498,7 @@ def _describe_command(service: str, data: Dict[str, Any]) -> str:
     return f"{service} {data or ''}".strip()
 
 
-def _extract_feedback(state: Any) -> Tuple[Optional[float], bool, Optional[str]]:
+def _extract_feedback(state: Any) -> Tuple[Optional[int], bool, Optional[str]]:
     """
     Extract (current_position, is_moving, direction) from a full Home Assistant cover state object.
 
@@ -510,7 +507,8 @@ def _extract_feedback(state: Any) -> Tuple[Optional[float], bool, Optional[str]]
 
     A missing or unreadable position yields None, which the logic treats as "the cover is
     unavailable": bad state from a flaky integration must not reach the error boundary and disable
-    the blind.
+    the blind. A readable one is rounded to a whole percent here, at the boundary (see
+    :func:`_parse_pct`).
     """
     if not isinstance(state, dict):
         return None, False, None
@@ -518,10 +516,22 @@ def _extract_feedback(state: Any) -> Tuple[Optional[float], bool, Optional[str]]
     cover_state = state.get("state")
     direction = {"opening": DIRECTION_UP, "closing": DIRECTION_DOWN}.get(cover_state)
     is_moving = direction is not None
+    return _parse_pct(raw_position), is_moving, direction
+
+
+def _parse_pct(raw: Any) -> Optional[int]:
+    """
+    Read a percentage arriving from Home Assistant as a whole percent, or None if it is unreadable.
+
+    Cover positions are integers already; anything fractional (a template cover, an automation's
+    event payload) is rounded here, so that nothing past this boundary ever handles a fraction.
+    """
+    if isinstance(raw, bool):
+        return None
     try:
-        return float(raw_position), is_moving, direction
-    except (TypeError, ValueError):
-        return None, is_moving, direction
+        return to_whole_pct(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _knx_direction(data: Dict[str, Any]) -> Optional[str]:

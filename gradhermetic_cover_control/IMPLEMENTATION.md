@@ -84,15 +84,14 @@ first) is `latch != UNLATCHED`. Those two derived forms are the only ones the gu
 
 ## Movement Plans
 
-Every intent compiles to an ordered list of **steps**, each with an explicit satisfaction predicate
-stated in the integer domain the actuator actually speaks — commands are rounded to whole percent
-and a KNX actuator reports the setpoint value it reached, so exact integer comparison is the honest
-test:
+Every intent compiles to an ordered list of **steps**, each with an explicit satisfaction predicate.
+Every position in the app is a whole percent (see "Tilt-Zone Math"), and a KNX actuator reports the
+setpoint value it reached, so exact comparison is the honest test:
 
-- `MoveTo(target)` — satisfied when `round(position) == round(target)`. The `open_full` and
+- `MoveTo(target)` — satisfied when `position == target`. The `open_full` and
   `close_full` variants send `cover.open_cover` / `cover.close_cover` rather than a position, so the
   actuator drives against its own limit switch.
-- `RiseToAtLeast(target)` — satisfied when `round(position) >= round(target)`. Used only for the
+- `RiseToAtLeast(target)` — satisfied when `position >= target`. Used only for the
   tilt exit, which travels to the top limit but has done its job as soon as it is clear of the
   release target.
 
@@ -122,7 +121,7 @@ The step lifecycle is where the timing correctness lives:
    a travel-time cap. Settled and satisfied → complete, which covers an actuator that reported only
    its final state or none at all. Settled within `DEVIATION_TOLERANCE_PCT` of a `MoveTo` target →
    accept with a logged warning, because real actuators occasionally stop a percent off — but only
-   for an ordinary height move whose target is clear of the band. A slat step is smaller than the
+   for an ordinary height move whose target is clear of the band. A slat step is usually no larger than the
    tolerance (accepting would complete a move that never happened), and a target on a band edge or
    inside the band — the enter dip, the latching rise, the release height — is where a percent
    decides whether the mechanism latched or released. Those land exactly or stall. Otherwise → drop
@@ -149,8 +148,8 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
   inside the zone, which `Zone.enter_landing_virtual` converts to the virtual scale the intent
   carries — however the entry was triggered: the tilt helper, the KNX slat-mode address and the
   `set_tilt_mode` event all resolve to the same enter intent with the same configured landing. The
-  fourth step is dropped when its landing rounds to the same integer command as the upper edge,
-  because a command that repeats the current setpoint moves nothing.
+  fourth step is dropped when its landing is the upper edge itself, because a command that repeats
+  the current setpoint moves nothing.
 - **Leave tilt** — `RiseToAtLeast(release_target)` carried by `open_full`, available only from a
   confident `LATCHED` belief. `release_target` is `tilt_zone_release_pct`, which is required.
 
@@ -178,7 +177,7 @@ plans to nothing (a slat step outside tilt, say) leaves the running plan alone.
   descends or the position is unknown.
 - **Height step** — `position ± height_step_pct`, snapped clear of the band *in the direction of
   travel* (down continues to `band_low`, up to `band_high`), then the same single guarded `MoveTo`.
-  A step that rounds to the current position (a travel limit) plans nothing.
+  A step that clamps to the current position (a travel limit) plans nothing.
 
   Both height moves commit `UNLATCHED` except in one case: a position-commanded rise that ends
   exactly on `release_target` and started below the lower edge, or from a belief that was not a
@@ -228,38 +227,51 @@ are allowed to differ. Today only the tilt exit makes them differ, and it does s
 **Every configured percentage is real blind travel** — the numbers the actuator reports and accepts.
 The virtual slat scale below is internal: it is what the cover entity's position slider shows while
 tilt mode is engaged, and the scale the planner's intents are stated in. `geometry.Zone` is the only
-place the two meet, and the two slat settings cross the boundary there —
-`Zone.enter_landing_virtual` converts the configured `tilt_zone_enter_pct`, and `Zone.step`
-converts `tilt_step_pct` (`tilt_step_pct / span * 100`).
+place the two meet: `Zone.virtual_to_real` and `Zone.real_to_virtual` are the whole mapping, and
+`Zone.enter_landing_virtual` uses it to convert the configured `tilt_zone_enter_pct`. A slat step
+does not cross the boundary at all: it moves the real position by `tilt_step_pct`, clamped to the
+zone edges.
+
+**Every position is a whole percent.** The actuator accepts and reports nothing else, so every
+configured number, step target, belief and published value is an `int`. `config.py` accepts `38`
+and `38.0` but rejects `38.5` rather than rounding it, `Zone` refuses any non-`int` field, and the
+model tests assert that every command and publish carries an `int`. Rounding happens in exactly
+two places: in the adapter, on positions arriving from Home Assistant (halves round up), and in the
+virtual mapping, because a zone a few percent wide is shown as a 0-100 slider.
 
 Outside the zone the virtual cover maps one-to-one to the real travel position (up = open = 100 =
-more light). Inside the zone the mapping is inverted between the edges:
+more light). Inside the zone the mapping is inverted between the edges, and each direction rounds
+to the nearest whole percent with halves going up (integer arithmetic, no floats):
 
 ```text
-real   = upper - (virtual / 100) * (upper - lower)
-virtual = (upper - real) / (upper - lower) * 100
+real    = upper - round(virtual * (upper - lower) / 100)
+virtual = round((upper - real) * 100 / (upper - lower))
 ```
+
+A real position survives the round trip through the virtual scale unchanged. One real percent is
+`100 / span` virtual percents wide, and a zone is always narrower than the whole travel, so a
+rounded virtual value is always less than half a real percent from where it came from. That is what
+lets the slider send back the value it was shown without moving the slats.
 
 With `upper = 44`, `lower = 38`, `epsilon = 2`, `release = 46`:
 
 - virtual `100` → real `38` (slats open / perpendicular / most light).
 - virtual `0` → real `44` (slats closed / parallel / least light).
-- virtual `50` → real `41`.
+- virtual `50` → real `41`, and real `43` → virtual `17` (one sixth of the way open).
 - entering dips to `lower - epsilon = 36`, then rises to `44` to latch, then moves to
   `tilt_zone_enter_pct` if that is not `44` as well (it is already a real position, so no
   conversion is involved in the move itself).
 - leaving drives fully open, and is satisfied on the way once the blind reports `release_target`,
   which is `tilt_zone_release_pct = 46`.
 
-Because the zone is narrow (6% here) and KNX actuators report integer positions, the zone holds only
-about `span + 1` distinct slat positions (~7 for a 6% zone). A slat step must therefore be at least
-one whole reported percent of real travel, otherwise the rounded position command repeats the
-current position and the blind never moves. Config validation enforces `tilt_step_pct >= 1.0` so
-every step advances the actuator, and `tilt_step_pct <= upper - lower` because a step wider than the
-whole zone is not a step; `tilt_zone_epsilon_pct >= 1` likewise, so the dip target rounds to an
-integer distinct from the lower edge it must clear. Epsilon pads the lower edge only: the upper side
-of the band is `tilt_zone_release_pct`, which must round to a whole percent strictly above `upper`
-(at or below it, the release would not even carry the reported position out of the zone). The band
+Because the zone is narrow (6% here), it holds only `span + 1` slat positions (7 for a 6% zone).
+Validation enforces `tilt_step_pct >= 1` so every step moves the actuator, and
+`tilt_step_pct <= upper - lower` because a step wider than the whole zone is not a step. A step
+that does not divide the zone evenly stops on the edge for its last press. `tilt_zone_epsilon_pct
+>= 1` likewise, so the dip target is a position distinct from the lower edge it must clear. Epsilon
+pads the lower edge only: the upper side of the band is `tilt_zone_release_pct`, which must be
+strictly above `upper` (at or below it, the release would not even carry the reported position out
+of the zone). The band
 must also stop short of both travel
 limits: `lower - epsilon > 0` and `release_target < 100`. A blind resting on either end stop is one
 the app has to be able to trust as unlatched — that trust is what lets a restart at 0 or 100 resume
@@ -596,23 +608,24 @@ GradhermeticLivingRoom:
   virtual_id: living_room
   virtual_name: "Living Room Blind"
 
-  # Every percentage here is real blind travel, never the inverted virtual slat scale: tilt_step_pct
-  # is the real travel one slat step moves the blind (>= 1.0, <= the zone's width).
-  tilt_zone_upper_pct: 44.0
-  tilt_zone_lower_pct: 38.0
-  tilt_zone_epsilon_pct: 2.0
-  tilt_step_pct: 1.2
+  # Every percentage here is a whole percent of real blind travel, never the inverted virtual slat
+  # scale: tilt_step_pct is the real travel one slat step moves the blind (>= 1, <= the zone's
+  # width).
+  tilt_zone_upper_pct: 44
+  tilt_zone_lower_pct: 38
+  tilt_zone_epsilon_pct: 2
+  tilt_step_pct: 2
 
-  # Optional; one step button press outside slat mode moves the blind this much. Defaults to 2.0.
-  height_step_pct: 2.0
+  # Optional; one step button press outside slat mode moves the blind this much. Defaults to 2.
+  height_step_pct: 2
 
-  # Required; see the README for how to measure the release height. Must round to a whole percent
-  # above tilt_zone_upper_pct, and stay below 100.
-  tilt_zone_release_pct: 50.0
+  # Required; see the README for how to measure the release height. Must be above
+  # tilt_zone_upper_pct, and below 100.
+  tilt_zone_release_pct: 50
 
   # Optional; see the README for how to pick a landing. The landing is an absolute position inside
   # the zone (44 = slats closed, 38 = fully open).
-  tilt_zone_enter_pct: 42.8
+  tilt_zone_enter_pct: 42
 
   knx_move_address: "2/6/0"
   knx_step_address: "2/6/1"

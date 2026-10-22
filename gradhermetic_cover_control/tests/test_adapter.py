@@ -44,16 +44,15 @@ ARGS = {
     "real_cover": REAL_COVER,
     "virtual_id": VIRTUAL_ID,
     "virtual_name": "Living Room Blind",
-    "tilt_zone_upper_pct": 44.0,
-    "tilt_zone_lower_pct": 38.0,
-    "tilt_zone_epsilon_pct": 2.0,
-    "tilt_zone_release_pct": 46.0,
-    "tilt_step_pct": 1.2,
+    "tilt_zone_upper_pct": 44,
+    "tilt_zone_lower_pct": 38,
+    "tilt_zone_epsilon_pct": 2,
+    "tilt_zone_release_pct": 46,
+    "tilt_step_pct": 2,
     "knx_move_address": MOVE_ADDRESS,
     "knx_step_address": STEP_ADDRESS,
     "knx_tilt_address": TILT_ADDRESS,
 }
-
 
 # Distinguishes "the test did not care" from "the entity does not exist".
 _DEFAULT_STATE = object()
@@ -78,7 +77,7 @@ class FakeApp(GradhermeticCoverControl):
         Pass ``state=None`` for a ``real_cover`` that does not exist in Home Assistant.
         """
         self.args = dict(ARGS if args is None else args)
-        self.cover_state = cover_state(100.0) if state is _DEFAULT_STATE else state
+        self.cover_state = cover_state(100) if state is _DEFAULT_STATE else state
         self.logs = []
         self.service_calls = []
         self.published = {}
@@ -219,8 +218,8 @@ class TestInitialize(unittest.TestCase):
 
     def test_missing_real_cover_is_reported(self):
         app = FakeApp(state=None).start(seed_startup_state=False)
-        self.assertTrue(any(level == "ERROR" and "does not exist" in message
-                            for level, message in app.logs))
+        self.assertTrue(
+            any(level == "ERROR" and "does not exist" in message for level, message in app.logs))
 
 
 class TestStartupSeed(unittest.TestCase):
@@ -229,17 +228,17 @@ class TestStartupSeed(unittest.TestCase):
     """
 
     def test_outside_the_band_resumes_and_publishes(self):
-        app = FakeApp(state=cover_state(80.0)).start()
+        app = FakeApp(state=cover_state(80)).start()
         self.assertEqual([], app.calls_to("cover/open_cover"))
         self.assertEqual("80", app.published[POSITION_ENTITY]["state"])
 
     def test_fully_closed_publishes_zero_as_a_string(self):
         # AppDaemon strips falsy values from the request body, so an integer 0 would never arrive.
-        app = FakeApp(state=cover_state(0.0, "closed")).start()
+        app = FakeApp(state=cover_state(0, "closed")).start()
         self.assertEqual("0", app.published[POSITION_ENTITY]["state"])
 
     def test_inside_the_band_does_not_move_the_blind(self):
-        app = FakeApp(state=cover_state(41.0)).start()
+        app = FakeApp(state=cover_state(41)).start()
         self.assertEqual([], app.service_calls)
         self.assertTrue(app._ready)  # pylint: disable=protected-access
 
@@ -249,14 +248,14 @@ class TestStartupSeed(unittest.TestCase):
         self.assertTrue(app._ready)  # pylint: disable=protected-access
 
     def test_commands_before_the_state_is_seeded_are_ignored(self):
-        app = FakeApp(state=cover_state(80.0)).start(seed_startup_state=False)
+        app = FakeApp(state=cover_state(80)).start(seed_startup_state=False)
         app.command_event(command="close")
         app.knx_event(MOVE_ADDRESS, 1)
         app.press(f"input_button.gradhermetic_{VIRTUAL_ID}_tilt")
         self.assertEqual([], app.service_calls)
 
     def test_a_failing_startup_seed_disables_and_notifies(self):
-        app = FakeApp(state=cover_state(80.0)).start(seed_startup_state=False)
+        app = FakeApp(state=cover_state(80)).start(seed_startup_state=False)
         app.get_state = _raises
         app.fire_timers()
         self.assertIn("GradhermeticCoverControl error", app.notify_titles())
@@ -266,7 +265,7 @@ class TestStartupSeed(unittest.TestCase):
 class TestCommandEvents(unittest.TestCase):
 
     def setUp(self):
-        self.app = FakeApp(state=cover_state(80.0)).start()
+        self.app = FakeApp(state=cover_state(80)).start()
 
     def test_commands_for_another_blind_are_ignored(self):
         self.app.command_event(virtual_id="kitchen", command="close")
@@ -292,9 +291,25 @@ class TestCommandEvents(unittest.TestCase):
         self.assertEqual([], self.app.calls_to("cover/stop_cover"))
 
     def test_set_position_sends_a_whole_percent(self):
+        # A fractional payload is rounded once, here at the boundary, halves going up.
         self.app.command_event(command="set_position", position="30.4")
-        self.assertEqual([{"entity_id": REAL_COVER, "position": 30}],
-                         self.app.calls_to("cover/set_cover_position"))
+        self.assertEqual([{
+            "entity_id": REAL_COVER,
+            "position": 30
+        }], self.app.calls_to("cover/set_cover_position"))
+        self.app.service_calls.clear()
+        self.app.command_event(command="set_position", position=24.5)
+        self.assertEqual([{
+            "entity_id": REAL_COVER,
+            "position": 25
+        }], self.app.calls_to("cover/set_cover_position"))
+
+    def test_a_non_finite_position_is_ignored_not_fatal(self):
+        for raw in ("nan", "inf", True):
+            with self.subTest(raw=raw):
+                self.app.command_event(command="set_position", position=raw)
+                self.assertEqual([], self.app.service_calls)
+                self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
 
     def test_a_malformed_position_is_ignored_not_fatal(self):
         self.app.command_event(command="set_position", position="banana")
@@ -318,7 +333,7 @@ class TestCommandEvents(unittest.TestCase):
 class TestKnxTelegrams(unittest.TestCase):
 
     def setUp(self):
-        self.app = FakeApp(state=cover_state(80.0)).start()
+        self.app = FakeApp(state=cover_state(80)).start()
 
     def test_a_long_press_uses_the_move_address(self):
         self.app.knx_event(MOVE_ADDRESS, 1)  # 1 = down = less light
@@ -326,8 +341,10 @@ class TestKnxTelegrams(unittest.TestCase):
 
     def test_a_short_press_uses_the_step_address(self):
         self.app.knx_event(STEP_ADDRESS, 1)  # 1 = down: one height step from 80
-        self.assertEqual([{"entity_id": REAL_COVER, "position": 78}],
-                         self.app.calls_to("cover/set_cover_position"))
+        self.assertEqual([{
+            "entity_id": REAL_COVER,
+            "position": 78
+        }], self.app.calls_to("cover/set_cover_position"))
 
     def test_telegrams_for_other_addresses_are_ignored(self):
         self.app.knx_event("9/9/9", 1)
@@ -379,7 +396,7 @@ class TestKnxTelegrams(unittest.TestCase):
         """
         logic = self.app._runtime.logic
         logic._latch = LATCH_LATCHED
-        logic._position = 41.0
+        logic._position = 41
 
     def _pending_final_latch(self):
         """
@@ -391,7 +408,7 @@ class TestKnxTelegrams(unittest.TestCase):
 class TestButtonPresses(unittest.TestCase):
 
     def setUp(self):
-        self.app = FakeApp(state=cover_state(80.0)).start()
+        self.app = FakeApp(state=cover_state(80)).start()
         self.tilt = f"input_button.gradhermetic_{VIRTUAL_ID}_tilt"
         self.step_up = f"input_button.gradhermetic_{VIRTUAL_ID}_step_up"
 
@@ -412,11 +429,16 @@ class TestButtonPresses(unittest.TestCase):
 
     def test_a_step_press_nudges_the_height_when_not_latched(self):
         self.app.press(self.step_up)
-        self.assertEqual([{"entity_id": REAL_COVER, "position": 82}],
-                         self.app.calls_to("cover/set_cover_position"))
-        self.app.report(82.0)
+        self.assertEqual([{
+            "entity_id": REAL_COVER,
+            "position": 82
+        }], self.app.calls_to("cover/set_cover_position"))
+        self.app.report(82)
         self.app.press(f"input_button.gradhermetic_{VIRTUAL_ID}_step_down")
-        self.assertEqual({"entity_id": REAL_COVER, "position": 80},
+        self.assertEqual({
+            "entity_id": REAL_COVER,
+            "position": 80
+        },
                          self.app.calls_to("cover/set_cover_position")[-1])
 
     def test_a_step_press_never_enters_tilt(self):
@@ -426,7 +448,7 @@ class TestButtonPresses(unittest.TestCase):
 
     def test_a_step_press_while_moving_stops_the_blind(self):
         self.app.command_event(command="close")
-        self.app.report(70.0, state="closing")
+        self.app.report(70, state="closing")
         self.app.press(self.step_up)
         self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/stop_cover"))
         self.assertEqual([], self.app.calls_to("cover/set_cover_position"))
@@ -435,27 +457,38 @@ class TestButtonPresses(unittest.TestCase):
 class TestActionTranslation(unittest.TestCase):
 
     def setUp(self):
-        self.app = FakeApp(state=cover_state(80.0)).start()
+        self.app = FakeApp(state=cover_state(80)).start()
         self.app.service_calls.clear()
 
     def _apply(self, *actions):
         self.app._apply_actions(list(actions))  # pylint: disable=protected-access
 
     def test_move_close_open_and_stop(self):
-        self._apply(Action(ACTION_MOVE_TO, position=42.8), Action(ACTION_OPEN_FULL),
+        self._apply(Action(ACTION_MOVE_TO, position=43), Action(ACTION_OPEN_FULL),
                     Action(ACTION_CLOSE_FULL), Action(ACTION_STOP))
         self.assertEqual([
-            ("cover/set_cover_position", {"entity_id": REAL_COVER, "position": 43}),
-            ("cover/open_cover", {"entity_id": REAL_COVER}),
-            ("cover/close_cover", {"entity_id": REAL_COVER}),
-            ("cover/stop_cover", {"entity_id": REAL_COVER}),
+            ("cover/set_cover_position", {
+                "entity_id": REAL_COVER,
+                "position": 43
+            }),
+            ("cover/open_cover", {
+                "entity_id": REAL_COVER
+            }),
+            ("cover/close_cover", {
+                "entity_id": REAL_COVER
+            }),
+            ("cover/stop_cover", {
+                "entity_id": REAL_COVER
+            }),
         ], self.app.service_calls)
 
     def test_commands_log_a_short_human_readable_line(self):
-        self._apply(Action(ACTION_MOVE_TO, position=42.8), Action(ACTION_OPEN_FULL),
+        self._apply(Action(ACTION_MOVE_TO, position=43), Action(ACTION_OPEN_FULL),
                     Action(ACTION_CLOSE_FULL), Action(ACTION_STOP))
-        cover_logs = [message for level, message in self.app.logs
-                      if level == "INFO" and message.startswith("Cover ")]
+        cover_logs = [
+            message for level, message in self.app.logs
+            if level == "INFO" and message.startswith("Cover ")
+        ]
         self.assertEqual([
             "Cover move to 43%",
             "Cover open fully",
@@ -464,7 +497,7 @@ class TestActionTranslation(unittest.TestCase):
         ], cover_logs)
 
     def test_publish_writes_the_position_sensor(self):
-        self._apply(Action(ACTION_PUBLISH_STATE, position=66.6))
+        self._apply(Action(ACTION_PUBLISH_STATE, position=67))
         published = self.app.published[POSITION_ENTITY]
         self.assertEqual("67", published["state"])
         self.assertEqual("%", published["attributes"]["unit_of_measurement"])
@@ -473,8 +506,7 @@ class TestActionTranslation(unittest.TestCase):
 
     def test_publish_writes_the_motion_beside_the_position(self):
         # The template cover's state template reads it to report opening/closing.
-        self._apply(Action(ACTION_PUBLISH_STATE, position=40.0, in_tilt=False,
-                           motion=MOTION_CLOSING))
+        self._apply(Action(ACTION_PUBLISH_STATE, position=40, in_tilt=False, motion=MOTION_CLOSING))
         published = self.app.published[POSITION_ENTITY]
         self.assertEqual(MOTION_CLOSING, published["attributes"]["motion"])
 
@@ -482,12 +514,12 @@ class TestActionTranslation(unittest.TestCase):
         # The position sensor tracks travel percent by percent; rewriting the mode beside it with
         # the value it already holds on every one of those reports is pure churn, and it is
         # mirrored onto the KNX bus by an expose.
-        self._apply(Action(ACTION_PUBLISH_STATE, position=40.0, in_tilt=False))
+        self._apply(Action(ACTION_PUBLISH_STATE, position=40, in_tilt=False))
         self.app.published.pop(TILT_MODE_ENTITY)
-        self._apply(Action(ACTION_PUBLISH_STATE, position=41.0, in_tilt=False))
+        self._apply(Action(ACTION_PUBLISH_STATE, position=41, in_tilt=False))
         self.assertNotIn(TILT_MODE_ENTITY, self.app.published)
         # A real change is written.
-        self._apply(Action(ACTION_PUBLISH_STATE, position=42.0, in_tilt=True))
+        self._apply(Action(ACTION_PUBLISH_STATE, position=42, in_tilt=True))
         self.assertEqual("on", self.app.published[TILT_MODE_ENTITY]["state"])
 
     def test_an_unknown_position_publishes_the_sensor_as_unavailable(self):
@@ -498,18 +530,18 @@ class TestActionTranslation(unittest.TestCase):
     def test_publish_writes_the_tilt_mode_sensor_beside_it(self):
         # Both are written from the one action, so a dashboard can never read a slat angle as a
         # height: whichever scale the position is on, the flag beside it says so.
-        self._apply(Action(ACTION_PUBLISH_STATE, position=66.6, in_tilt=True))
+        self._apply(Action(ACTION_PUBLISH_STATE, position=67, in_tilt=True))
         published = self.app.published[TILT_MODE_ENTITY]
         self.assertEqual("on", published["state"])
         self.assertEqual("Living Room Blind Slat Mode", published["attributes"]["friendly_name"])
 
-        self._apply(Action(ACTION_PUBLISH_STATE, position=20.0, in_tilt=False))
+        self._apply(Action(ACTION_PUBLISH_STATE, position=20, in_tilt=False))
         self.assertEqual("off", self.app.published[TILT_MODE_ENTITY]["state"])
 
     def test_an_unknown_tilt_mode_publishes_as_off(self):
         # in_tilt is only ever None on an action built without it; "off" is the safe reading, since
         # slat control is offered exactly when the app is confident it is latched.
-        self._apply(Action(ACTION_PUBLISH_STATE, position=66.6))
+        self._apply(Action(ACTION_PUBLISH_STATE, position=67))
         self.assertEqual("off", self.app.published[TILT_MODE_ENTITY]["state"])
 
     def test_the_settle_timer_is_armed_and_cancelled(self):
@@ -535,21 +567,28 @@ class TestActionTranslation(unittest.TestCase):
 class TestFeedbackAndTheSettleTimer(unittest.TestCase):
 
     def setUp(self):
-        self.app = FakeApp(state=cover_state(80.0)).start()
+        self.app = FakeApp(state=cover_state(80)).start()
 
     def test_feedback_advances_a_plan(self):
         self.app.command_event(command="set_position", position=30)
-        self.app.report(30.0)
+        self.app.report(30)
         self.assertEqual("30", self.app.published[POSITION_ENTITY]["state"])
         # pylint: disable-next=protected-access
         self.assertFalse(self.app._runtime.logic.has_pending_plan)
 
     def test_an_unavailable_cover_clears_the_position_belief(self):
-        self.app.report(70.0, state="closing")
+        self.app.report(70, state="closing")
         self.app.report(None, state="unavailable")
         logic = self.app._runtime.logic  # pylint: disable=protected-access
         self.assertIsNone(logic.last_position)
         self.assertFalse(logic.is_moving)
+
+    def test_a_fractional_reading_is_rounded_to_a_whole_percent(self):
+        # Nothing past the adapter handles a fraction, even from a cover that reports one.
+        self.app.report(41.6)
+        logic = self.app._runtime.logic  # pylint: disable=protected-access
+        self.assertEqual(42, logic.last_position)
+        self.assertIs(int, type(logic.last_position))
 
     def test_a_non_numeric_position_is_treated_as_unavailable(self):
         self.app.report("unknown")
@@ -560,7 +599,7 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
     def test_the_settle_timer_reads_the_controller_and_stalls(self):
         self.app.command_event(command="set_position", position=30)
         self.app.service_calls.clear()
-        self.app.cover_state = cover_state(55.0)  # settled well short of the target
+        self.app.cover_state = cover_state(55)  # settled well short of the target
         self.app.fire_timers()
         # The blind is at rest, so no stop goes out: on KNX that would be a step telegram.
         self.assertEqual([], self.app.calls_to("cover/stop_cover"))
@@ -569,18 +608,18 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
 
     def test_feedback_shows_travel_as_it_happens(self):
         self.app.command_event(command="close")
-        self.app.report(60.0, state="closing")
+        self.app.report(60, state="closing")
         published = self.app.published[POSITION_ENTITY]
         self.assertEqual("60", published["state"])
         self.assertEqual("closing", published["attributes"]["motion"])
-        self.app.report(0.0, state="closed")
+        self.app.report(0, state="closed")
         published = self.app.published[POSITION_ENTITY]
         self.assertEqual("0", published["state"])
         self.assertEqual("idle", published["attributes"]["motion"])
 
     def test_the_direction_comes_from_the_cover_state(self):
         # An external move: no plan of the app's own, so the cover's own state is the only source.
-        self.app.report(85.0, state="opening")
+        self.app.report(85, state="opening")
         self.assertEqual("opening", self.app.published[POSITION_ENTITY]["attributes"]["motion"])
         self.assertEqual("85", self.app.published[POSITION_ENTITY]["state"])
 
@@ -588,7 +627,7 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
         # The timer reads the controller itself, so it sees the travel direction too; dropping it
         # would leave the belief's direction stale for the whole of a long move.
         self.app.command_event(command="close")
-        self.app.cover_state = cover_state(55.0, state="closing")
+        self.app.cover_state = cover_state(55, state="closing")
         self.app.fire_timers()
         logic = self.app._runtime.logic  # pylint: disable=protected-access
         self.assertTrue(logic.is_moving)
@@ -596,7 +635,7 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
 
     def test_the_settle_timer_completes_a_silent_move(self):
         self.app.command_event(command="set_position", position=30)
-        self.app.cover_state = cover_state(30.0)  # arrived, but never told us
+        self.app.cover_state = cover_state(30)  # arrived, but never told us
         self.app.fire_timers()
         self.assertEqual("30", self.app.published[POSITION_ENTITY]["state"])
         self.assertEqual({}, self.app.timers)
@@ -605,7 +644,7 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
 class TestSafetyBoundaries(unittest.TestCase):
 
     def test_the_rate_limit_disables_and_notifies(self):
-        app = FakeApp(state=cover_state(80.0)).start()
+        app = FakeApp(state=cover_state(80)).start()
         runtime = app._runtime  # pylint: disable=protected-access
         # A runaway replan loop is synchronous, so its commands land milliseconds apart; that is
         # the shape the limit exists to catch, and the only one that can gather COMMAND_RATE_LIMIT
@@ -621,7 +660,7 @@ class TestSafetyBoundaries(unittest.TestCase):
         self.assertEqual([], app.service_calls)
 
     def test_an_unhandled_callback_exception_disables_and_notifies(self):
-        app = FakeApp(state=cover_state(80.0)).start()
+        app = FakeApp(state=cover_state(80)).start()
         app._runtime.logic.on_close = _raises  # pylint: disable=protected-access
         app.command_event(command="close")
         self.assertTrue(app._runtime.disabled)  # pylint: disable=protected-access

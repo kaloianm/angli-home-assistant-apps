@@ -17,6 +17,10 @@ The latch model is deliberately the most pessimistic one consistent with the har
 Plans that are correct under this model are also correct under milder, reversal-only models, because
 they never rely on a crossing *not* latching.
 
+The blind's *physical* position and its calibration error are real-valued, because they are physics:
+a motor does not stop on whole percents. Everything the simulator *reports* to the app is a whole
+percent, exactly as a KNX actuator's feedback is.
+
 An optional calibration-drift knob models the fact the whole redesign turns on: the actuator's
 reported percentage may not match the blind's true position, and only reaching the top limit
 re-references it. With drift enabled, a sequence that starts from a full open still lands exactly
@@ -28,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
-from gradhermetic_cover_control.geometry import Zone, clamp_pct, to_command
+from gradhermetic_cover_control.geometry import Zone, to_whole_pct
 
 # How far the blind travels between two position reports, in real percent. One whole percent is what
 # a KNX actuator reports; a coarser stride is useful for tests that inject at every report.
@@ -37,13 +41,20 @@ DEFAULT_STRIDE_PCT = 1.0
 _EPSILON = 1e-9
 
 
+def _clamp_physical(value: float) -> float:
+    """
+    Clamp a physical position into the blind's travel.
+    """
+    return max(0.0, min(100.0, value))
+
+
 @dataclass(frozen=True)
 class Report:
     """
     One position update as the controller would publish it.
     """
 
-    position: Optional[float]
+    position: Optional[int]
     is_moving: bool
 
 
@@ -94,7 +105,7 @@ class BlindSimulator:
         """
         The whole-percent position the actuator publishes, calibration error included.
         """
-        return to_command(self.physical + self.drift)
+        return to_whole_pct(self.physical + self.drift)
 
     @property
     def busy(self) -> bool:
@@ -169,7 +180,7 @@ class BlindSimulator:
         previous = self.physical
         remaining = self._target - self.physical
         stride = min(abs(remaining), self._stride)
-        self.physical = clamp_pct(self.physical + (stride if remaining > 0 else -stride))
+        self.physical = _clamp_physical(self.physical + (stride if remaining > 0 else -stride))
         self._apply_latch(previous, self.physical)
         if self.latched and self.physical < self._zone.lower - _EPSILON:
             self.violations.append(
@@ -181,7 +192,7 @@ class BlindSimulator:
             self._settle()
             self._emit_settled()
         elif self.quirks.report_intermediate:
-            self._outbox.append(Report(float(self.reported), self.quirks.report_motion_state))
+            self._outbox.append(Report(self.reported, self.quirks.report_motion_state))
 
         reports, self._outbox = self._outbox, []
         return reports
@@ -192,7 +203,7 @@ class BlindSimulator:
 
         Returns whether the blind actually has anywhere to go.
         """
-        physical_target = clamp_pct(physical_target)
+        physical_target = _clamp_physical(physical_target)
         if self.latched and physical_target < self._zone.lower - _EPSILON:
             self.violations.append(
                 f"commanded to {physical_target} below the lower edge {self._zone.lower} while "
@@ -203,7 +214,7 @@ class BlindSimulator:
             return False
         self._target = physical_target
         if self.quirks.echo_before_moving:
-            self._outbox.append(Report(float(self.reported), self.quirks.report_motion_state))
+            self._outbox.append(Report(self.reported, self.quirks.report_motion_state))
         return True
 
     def _apply_latch(self, start: float, end: float) -> None:
@@ -235,6 +246,6 @@ class BlindSimulator:
         """
         Queue the settled report(s) for the position the blind came to rest at.
         """
-        self._outbox.append(Report(float(self.reported), False))
+        self._outbox.append(Report(self.reported, False))
         if self.quirks.duplicate_settled:
-            self._outbox.append(Report(float(self.reported), False))
+            self._outbox.append(Report(self.reported, False))

@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from gradhermetic_cover_control.geometry import Zone, clamp_pct, to_command
+from gradhermetic_cover_control.geometry import Zone
 
 # -- Latch belief ----------------------------------------------------------------------------------
 
@@ -77,9 +77,6 @@ INTENT_SLAT_STEP = "slat_step"
 INTENT_HEIGHT_STEP = "height_step"
 INTENT_LONG_PRESS = "long_press"
 
-# Guard for floating-point edge comparisons on the virtual scale.
-_VIRTUAL_EPSILON = 1e-6
-
 
 @dataclass(frozen=True)
 class Belief:
@@ -87,7 +84,7 @@ class Belief:
     What the app believes about the blind right now.
     """
 
-    position: Optional[float]
+    position: Optional[int]
     latch: str
     is_moving: bool = False
 
@@ -119,12 +116,12 @@ class Step:
     """
 
     kind: str
-    target: float
+    target: int
     command: str = COMMAND_POSITION
-    command_pct: Optional[float] = None
+    command_pct: Optional[int] = None
 
     @property
-    def command_position(self) -> float:
+    def command_position(self) -> int:
         """
         The real position to command for this step, which defaults to its satisfaction target.
         """
@@ -132,20 +129,17 @@ class Step:
             return self.target
         return self.command_pct
 
-    def satisfied_by(self, position: float) -> bool:
+    def satisfied_by(self, position: int) -> bool:
         """
         Whether a reported real position satisfies this step.
 
-        The comparison happens in the integer domain the actuator speaks: commands are rounded to
-        whole percent and a KNX actuator reports the setpoint value it reached, so exact integer
-        equality is the honest test -- and it cannot be accidentally satisfied by a stale report of
-        the position the step started from.
+        A KNX actuator reports the whole-percent setpoint it reached, so exact equality is the
+        honest test -- and it cannot be accidentally satisfied by a stale report of the position the
+        step started from.
         """
-        reported = to_command(position)
-        target = to_command(self.target)
         if self.kind == STEP_RISE_TO_AT_LEAST:
-            return reported >= target
-        return reported == target
+            return position >= self.target
+        return position == self.target
 
 
 @dataclass(frozen=True)
@@ -174,10 +168,10 @@ class Intent:
     """
 
     kind: str
-    virtual_pct: Optional[float] = None
+    virtual_pct: Optional[int] = None
     direction: Optional[str] = None
     cross_open_edge: bool = False
-    landing_virtual: Optional[float] = None
+    landing_virtual: Optional[int] = None
 
 
 def plan(zone: Zone, belief: Belief, intent: Intent) -> Optional[Plan]:
@@ -226,7 +220,7 @@ def _plan_open(zone: Zone, belief: Belief) -> Plan:
     """
     if belief.in_tilt:
         return _slat_plan(zone.lower)
-    return Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),), LATCH_UNLATCHED)
+    return Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 100, COMMAND_OPEN), ), LATCH_UNLATCHED)
 
 
 def _plan_close(zone: Zone, belief: Belief) -> Plan:
@@ -235,18 +229,18 @@ def _plan_close(zone: Zone, belief: Belief) -> Plan:
     """
     if belief.in_tilt:
         return _slat_plan(zone.upper)
-    return Plan(PLAN_NORMAL, _guard_descent(belief, (Step(STEP_MOVE_TO, 0.0, COMMAND_CLOSE),)),
+    return Plan(PLAN_NORMAL, _guard_descent(belief, (Step(STEP_MOVE_TO, 0, COMMAND_CLOSE), )),
                 LATCH_UNLATCHED)
 
 
-def _plan_set_position(zone: Zone, belief: Belief, virtual_pct: Optional[float]) -> Optional[Plan]:
+def _plan_set_position(zone: Zone, belief: Belief, virtual_pct: Optional[int]) -> Optional[Plan]:
     """
     Move to an absolute virtual position: a slat angle when latched, a height otherwise.
     """
     if virtual_pct is None:
         return None
     if belief.in_tilt:
-        return _slat_plan(zone.virtual_to_real(clamp_pct(virtual_pct)))
+        return _slat_plan(zone.virtual_to_real(virtual_pct))
     # Snapping keeps normal mode out of the band interior, where a rise would silently latch.
     return _height_move(zone, belief, zone.snap_normal_target(virtual_pct, belief.position))
 
@@ -257,7 +251,7 @@ def _plan_height_step(zone: Zone, belief: Belief, direction: Optional[str]) -> O
 
     A step that would land inside the ambiguity band continues to the band edge ahead of it, so
     the band is crossed in one press rather than being a wall the blind stops in front of. A step
-    that rounds to the position the blind already rests on -- at either travel limit -- is nothing.
+    that clamps to the position the blind already rests on -- at either travel limit -- is nothing.
     """
     position = belief.position
     if belief.in_tilt or position is None:
@@ -265,12 +259,12 @@ def _plan_height_step(zone: Zone, belief: Belief, direction: Optional[str]) -> O
     rising = direction == DIRECTION_UP
     target = position + zone.height_step_pct if rising else position - zone.height_step_pct
     target = zone.snap_step_target(target, rising)
-    if to_command(target) == to_command(position):
+    if target == position:
         return None
     return _height_move(zone, belief, target)
 
 
-def _height_move(zone: Zone, belief: Belief, target: float) -> Plan:
+def _height_move(zone: Zone, belief: Belief, target: int) -> Plan:
     """
     One whole-height move to a target already snapped clear of the band interior.
 
@@ -285,16 +279,16 @@ def _height_move(zone: Zone, belief: Belief, target: float) -> Plan:
     from a known release.
     """
     position = belief.position
-    steps: Tuple[Step, ...] = (Step(STEP_MOVE_TO, target),)
-    if position is None or to_command(target) < to_command(position):
+    steps: Tuple[Step, ...] = (Step(STEP_MOVE_TO, target), )
+    if position is None or target < position:
         steps = _guard_descent(belief, steps)
     if steps[0].command == COMMAND_OPEN:
         # Referenced against the top limit first: released by construction, wherever it ends.
         return Plan(PLAN_NORMAL, steps, LATCH_UNLATCHED)
-    if position is not None and to_command(target) < to_command(position):
+    if position is not None and target < position:
         # A descent from a known release cannot latch.
         return Plan(PLAN_NORMAL, steps, LATCH_UNLATCHED)
-    lands_on_release = to_command(target) == to_command(zone.band_high)
+    lands_on_release = target == zone.band_high
     provably_clear = (belief.latch == LATCH_UNLATCHED and position is not None
                       and position >= zone.lower)
     if lands_on_release and not provably_clear:
@@ -302,7 +296,7 @@ def _height_move(zone: Zone, belief: Belief, target: float) -> Plan:
     return Plan(PLAN_NORMAL, steps, LATCH_UNLATCHED)
 
 
-def _plan_enter_tilt(zone: Zone, landing_virtual: Optional[float] = None) -> Plan:
+def _plan_enter_tilt(zone: Zone, landing_virtual: Optional[int] = None) -> Plan:
     """
     The canonical latch sequence, correct from any starting position.
 
@@ -314,20 +308,19 @@ def _plan_enter_tilt(zone: Zone, landing_virtual: Optional[float] = None) -> Pla
     The latching rise necessarily ends at the closed edge, so landing anywhere else costs one more
     in-zone slat move. ``landing_virtual`` names that landing (the configured
     ``tilt_zone_enter_pct``, converted to the virtual scale by the zone); when it is omitted the
-    sequence finishes at the closed edge, where the rise already ends. The extra
-    step is omitted when it would command the position the rise already reached -- compared in the
-    integer domain the actuator speaks, since a command that rounds to the current setpoint moves
-    nothing and would only be skipped again by the executor.
+    sequence finishes at the closed edge, where the rise already ends. The extra step is omitted
+    when its landing is the upper edge the rise already reached, since a command to the current
+    setpoint moves nothing and would only be skipped again by the executor.
     """
     if landing_virtual is None:
-        landing_virtual = 0.0
+        landing_virtual = 0
     steps = [
-        Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),
+        Step(STEP_MOVE_TO, 100, COMMAND_OPEN),
         Step(STEP_MOVE_TO, zone.dip_target),
         Step(STEP_MOVE_TO, zone.upper),
     ]
-    landing = zone.virtual_to_real(clamp_pct(landing_virtual))
-    if to_command(landing) != to_command(zone.upper):
+    landing = zone.virtual_to_real(landing_virtual)
+    if landing != zone.upper:
         steps.append(Step(STEP_MOVE_TO, landing))
     return Plan(PLAN_ENTER, tuple(steps), LATCH_LATCHED)
 
@@ -351,8 +344,8 @@ def _plan_leave_tilt(zone: Zone, belief: Belief) -> Optional[Plan]:
     if not belief.in_tilt:
         return None
     return Plan(PLAN_LEAVE,
-                (Step(STEP_RISE_TO_AT_LEAST, zone.release_target, COMMAND_OPEN,
-                      command_pct=100.0),), LATCH_UNLATCHED)
+                (Step(STEP_RISE_TO_AT_LEAST, zone.release_target, COMMAND_OPEN, command_pct=100), ),
+                LATCH_UNLATCHED)
 
 
 def _plan_slat_step(zone: Zone, belief: Belief, direction: Optional[str],
@@ -360,8 +353,9 @@ def _plan_slat_step(zone: Zone, belief: Belief, direction: Optional[str],
     """
     Step the slats by one step within the zone.
 
-    The step is taken on the virtual scale, as ``zone.step`` -- the configured ``tilt_step_pct``
-    real travel percent expressed as a fraction of the zone's span.
+    The step is ``tilt_step_pct`` of real travel, taken on the real scale and clamped to the zone
+    edges, so every slat position it lands on is a whole percent the actuator can hold. An up step
+    (more light) opens the slats, which on the real scale is downward toward the lower edge.
 
     ``cross_open_edge`` decides what an up step does when the slats are already fully open: a KNX
     wall button leaves tilt upward (its two buttons are all it has), while the dashboard step
@@ -370,16 +364,14 @@ def _plan_slat_step(zone: Zone, belief: Belief, direction: Optional[str],
     """
     if not belief.in_tilt or belief.position is None:
         return None
-    current_virtual = zone.real_to_virtual(belief.position)
+    current = min(max(belief.position, zone.lower), zone.upper)
     if direction == DIRECTION_UP:
-        if current_virtual >= 100.0 - _VIRTUAL_EPSILON:
+        if current == zone.lower:
             return _plan_leave_tilt(zone, belief) if cross_open_edge else None
-        target_virtual = min(100.0, current_virtual + zone.step)
-    else:
-        if current_virtual <= _VIRTUAL_EPSILON:
-            return None
-        target_virtual = max(0.0, current_virtual - zone.step)
-    return _slat_plan(zone.virtual_to_real(target_virtual))
+        return _slat_plan(max(zone.lower, current - zone.tilt_step_pct))
+    if current == zone.upper:
+        return None
+    return _slat_plan(min(zone.upper, current + zone.tilt_step_pct))
 
 
 def _plan_long_press(belief: Belief, direction: Optional[str]) -> Plan:
@@ -387,16 +379,16 @@ def _plan_long_press(belief: Belief, direction: Optional[str]) -> Plan:
     Long wall-button press: jump to an extreme, releasing the latch first when descending.
     """
     if direction == DIRECTION_UP:
-        return Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),), LATCH_UNLATCHED)
-    return Plan(PLAN_NORMAL, _guard_descent(belief, (Step(STEP_MOVE_TO, 0.0, COMMAND_CLOSE),)),
+        return Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 100, COMMAND_OPEN), ), LATCH_UNLATCHED)
+    return Plan(PLAN_NORMAL, _guard_descent(belief, (Step(STEP_MOVE_TO, 0, COMMAND_CLOSE), )),
                 LATCH_UNLATCHED)
 
 
-def _slat_plan(real_target: float) -> Plan:
+def _slat_plan(real_target: int) -> Plan:
     """
     A single in-zone move that changes slat angle without changing height.
     """
-    return Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, real_target),), LATCH_LATCHED)
+    return Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, real_target), ), LATCH_LATCHED)
 
 
 def _guard_descent(belief: Belief, steps: Tuple[Step, ...]) -> Tuple[Step, ...]:
@@ -411,7 +403,7 @@ def _guard_descent(belief: Belief, steps: Tuple[Step, ...]) -> Tuple[Step, ...]:
     descends directly, which is the common case (closing right after leaving tilt costs no detour).
     """
     if belief.may_be_latched:
-        return (Step(STEP_MOVE_TO, 100.0, COMMAND_OPEN),) + steps
+        return (Step(STEP_MOVE_TO, 100, COMMAND_OPEN), ) + steps
     return steps
 
 
@@ -483,7 +475,7 @@ def _check_descents(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
         if any(earlier.command == COMMAND_OPEN for earlier in movement.steps[:index]):
             break
         commanded = step.command_position
-        descends = position is None or to_command(commanded) < to_command(position)
+        descends = position is None or commanded < position
         if descends and commanded < zone.lower:
             return (f"L1: descent to {commanded} below the lower edge is not preceded by a "
                     "full open")
@@ -504,11 +496,11 @@ def _check_latching(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
     steps = movement.steps
     if len(steps) not in (3, 4) or any(step.kind != STEP_MOVE_TO for step in steps):
         return "E1: the enter sequence must be three or four move steps"
-    if steps[0].command != COMMAND_OPEN or to_command(steps[0].target) != 100:
+    if steps[0].command != COMMAND_OPEN or steps[0].target != 100:
         return "E1: the enter sequence must begin by driving fully open"
     if steps[1].target >= zone.lower:
         return f"E1: the enter dip to {steps[1].target} does not clear the lower edge"
-    if to_command(steps[2].target) != to_command(zone.upper):
+    if steps[2].target != zone.upper:
         return f"E1: the latching rise must end at the upper edge, not {steps[2].target}"
     # The optional fourth step is the configured landing: any slat angle inside the zone. It starts
     # from the upper edge, so it can only ever descend to another in-zone position -- never across
@@ -536,7 +528,7 @@ def _check_releases(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
         # Stopping anywhere short of the top limit would leave the blind parked in the band with the
         # slats shut, and would make the release depend on the actuator's settling accuracy rather
         # than on a limit switch.
-        if step.command != COMMAND_OPEN or to_command(step.command_position) != 100:
+        if step.command != COMMAND_OPEN or step.command_position != 100:
             return (f"X1: the tilt exit must drive fully open, not {step.command} "
                     f"{step.command_position}")
     return None
@@ -561,8 +553,8 @@ def _check_release_claims(zone: Zone, belief: Belief, movement: Plan) -> Optiona
         if step.command == COMMAND_OPEN:
             return None
         commanded = step.command_position
-        rises = position is None or to_command(commanded) > to_command(position)
-        ends_on_release = to_command(commanded) == to_command(zone.band_high)
+        rises = position is None or commanded > position
+        ends_on_release = commanded == zone.band_high
         provably_clear = (latch == LATCH_UNLATCHED and position is not None
                           and position >= zone.lower)
         if rises and ends_on_release and not provably_clear:

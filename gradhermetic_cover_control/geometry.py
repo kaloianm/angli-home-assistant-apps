@@ -17,47 +17,51 @@ Two coordinate systems are in play:
 **Every configured number is real travel percent.** The virtual scale is an internal presentation
 detail -- it is what the cover entity's position slider shows while tilt mode is engaged, and what
 the planner's enter/set-position intents carry -- so this module is the only place the two scales
-meet: :attr:`Zone.enter_landing_virtual` and :attr:`Zone.step` convert the two configured slat
-numbers into the virtual terms the planner works in, and nothing outside this module maps between
-the scales.
+meet: :meth:`Zone.virtual_to_real` and :meth:`Zone.real_to_virtual` are the only mapping between
+them, and nothing outside this module converts.
 
-The actuator speaks whole percent: commands are rounded to integers and its feedback is the
-integer setpoint it reached. All arrival tests therefore happen in that integer domain (see
-:func:`to_command`), which is why the geometry validates that every target the planner can emit
-rounds to an integer distinct from the edge it is meant to clear.
+**Every position is a whole percent.** The actuator accepts and reports integers, so every
+configured number, every target and every belief the app holds is an ``int`` too, and :class:`Zone`
+rejects anything else. Rounding happens in exactly two places: values arriving from Home Assistant
+(:func:`to_whole_pct`), and the virtual mapping, because a zone a few percent wide is shown as a
+0-100 slat scale. The mapping rounds to the nearest whole percent in both directions, and since a
+zone is always narrower than the full travel, a real position survives the round trip through the
+virtual scale unchanged.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, fields
 from typing import Optional
-
-# Smallest usable clearance margin, in real travel percent. The margin only has to carry the
-# actuator's reported integer position clear of the lower zone edge, so one whole percent suffices.
-MIN_EPSILON_PCT = 1.0
-
-# Smallest usable step, slat or height, in real travel percent. The actuator speaks whole percent,
-# so a step that moves the blind less than one reported percent rounds back to the current setpoint
-# and moves nothing at all.
-MIN_STEP_PCT = 1.0
 
 # Real travel one height step moves the blind while it is not latched, unless apps.yaml says
 # otherwise. Two percent is a short nudge on a blind whose full travel takes about fifteen seconds.
-DEFAULT_HEIGHT_STEP_PCT = 2.0
+DEFAULT_HEIGHT_STEP_PCT = 2
 
 
-def clamp_pct(value: float) -> float:
+def clamp_pct(value: int) -> int:
     """
-    Clamp a percentage into [0, 100].
+    Clamp a whole percentage into [0, 100].
     """
-    return max(0.0, min(100.0, value))
+    return max(0, min(100, value))
 
 
-def to_command(value: float) -> int:
+def to_whole_pct(value: float) -> int:
     """
-    Round a real travel percentage to the integer position the actuator actually speaks.
+    Round a percentage from outside the app to the nearest whole percent, halves rounding up.
+
+    Home Assistant reports cover positions as integers already; this is the boundary that makes sure
+    nothing else -- a template cover, an automation's event payload -- ever gets further in.
     """
-    return int(round(clamp_pct(value)))
+    return clamp_pct(math.floor(value + 0.5))
+
+
+def _is_whole(value: object) -> bool:
+    """
+    Whether a value is an ``int`` proper. ``bool`` is an ``int`` subclass, but never a percentage.
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 @dataclass(frozen=True)
@@ -66,16 +70,13 @@ class Zone:
     Tilt-zone geometry for one blind.
 
     Field names match the ``apps.yaml`` keys so validation errors name the setting the user has to
-    fix, and every one of them is **real travel percent** -- the numbers the actuator reports and
-    accepts. Construction validates, so a ``Zone`` instance is always a usable geometry.
+    fix, and every one of them is a **whole percent of real travel** -- the numbers the actuator
+    reports and accepts. Construction validates, so a ``Zone`` instance is always a usable geometry.
 
-    - ``tilt_step_pct`` -- how far one slat step moves the blind, in real travel. It has to be at
-      least one whole reported percent (or the rounded command repeats the current setpoint) and at
-      most the zone's own width (a step larger than the zone is meaningless).
+    - ``tilt_step_pct`` -- how far one slat step moves the blind, in real travel. At least one
+      percent, and at most the zone's own width (a step larger than the zone is meaningless).
     - ``height_step_pct`` -- how far one step press moves the blind while it is *not* latched, in
-      real travel. Same lower bound, for the same reason; it defaults to
-      :data:`DEFAULT_HEIGHT_STEP_PCT`.
-
+      real travel. At least one percent; it defaults to :data:`DEFAULT_HEIGHT_STEP_PCT`.
     - ``tilt_zone_epsilon_pct`` -- the clearance below the lower edge that the entry sequence dips
       to before the latching rise. It only ever applies to the lower edge; the upper side of the
       band is ``tilt_zone_release_pct``.
@@ -95,13 +96,13 @@ class Zone:
       the rise already reaches, i.e. no extra entry step at all.
     """
 
-    tilt_zone_upper_pct: float
-    tilt_zone_lower_pct: float
-    tilt_zone_epsilon_pct: float
-    tilt_zone_release_pct: float
-    tilt_step_pct: float
-    tilt_zone_enter_pct: Optional[float] = None
-    height_step_pct: float = DEFAULT_HEIGHT_STEP_PCT
+    tilt_zone_upper_pct: int
+    tilt_zone_lower_pct: int
+    tilt_zone_epsilon_pct: int
+    tilt_zone_release_pct: int
+    tilt_step_pct: int
+    tilt_zone_enter_pct: Optional[int] = None
+    height_step_pct: int = DEFAULT_HEIGHT_STEP_PCT
 
     def __post_init__(self) -> None:
         """
@@ -113,34 +114,32 @@ class Zone:
         """
         Validate the zone numbers, raising ``ValueError`` naming the offending setting.
         """
-        if not 0.0 <= self.tilt_zone_lower_pct <= 100.0:
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if value is not None and not _is_whole(value):
+                raise ValueError(f"{field.name} must be a whole percent, not {value!r}")
+        if not 0 <= self.tilt_zone_lower_pct <= 100:
             raise ValueError("tilt_zone_lower_pct must be between 0 and 100")
-        if not 0.0 <= self.tilt_zone_upper_pct <= 100.0:
+        if not 0 <= self.tilt_zone_upper_pct <= 100:
             raise ValueError("tilt_zone_upper_pct must be between 0 and 100")
         if self.tilt_zone_lower_pct >= self.tilt_zone_upper_pct:
             raise ValueError("tilt_zone_lower_pct must be smaller than tilt_zone_upper_pct")
-        if self.tilt_zone_epsilon_pct <= 0.0:
-            raise ValueError("tilt_zone_epsilon_pct must be > 0")
-        if self.tilt_zone_epsilon_pct < MIN_EPSILON_PCT:
-            raise ValueError(
-                f"tilt_zone_epsilon_pct must be >= {MIN_EPSILON_PCT} so the dip target rounds "
-                "to an integer distinct from the lower edge it must clear")
+        if self.tilt_zone_epsilon_pct < 1:
+            raise ValueError("tilt_zone_epsilon_pct must be >= 1 so the dip target clears the "
+                             "lower edge")
         # The ambiguity band must leave both travel limits outside it. A blind resting fully closed
         # or fully open provably cannot be latched, and the app relies on that: at startup those two
         # positions are the ones it can be surest about, and the latch belief they seed is what
         # decides whether the next move has to re-reference the actuator first. A band reaching
         # either limit would make the app doubt a blind that is sitting on its own end stop.
-        if self.tilt_zone_lower_pct - self.tilt_zone_epsilon_pct <= 0.0:
+        if self.tilt_zone_lower_pct - self.tilt_zone_epsilon_pct <= 0:
             raise ValueError("tilt_zone_lower_pct - tilt_zone_epsilon_pct must be > 0 so the "
                              "ambiguity band stops short of the fully closed position")
         # A release at or below the upper edge would not even carry the reported position out of
-        # the zone, and one at or above 100 would put the top limit inside the band. The comparison
-        # is in the whole percent the actuator reports: a release a fraction above the edge would
-        # read back as the edge itself.
-        if to_command(self.tilt_zone_release_pct) <= to_command(self.tilt_zone_upper_pct):
-            raise ValueError("tilt_zone_release_pct must be > tilt_zone_upper_pct, by enough to "
-                             "round to a higher whole percent")
-        if self.tilt_zone_release_pct >= 100.0:
+        # the zone, and one at or above 100 would put the top limit inside the band.
+        if self.tilt_zone_release_pct <= self.tilt_zone_upper_pct:
+            raise ValueError("tilt_zone_release_pct must be > tilt_zone_upper_pct")
+        if self.tilt_zone_release_pct >= 100:
             raise ValueError("tilt_zone_release_pct must be < 100 so the ambiguity band stops "
                              "short of the fully open position")
         landing = self.tilt_zone_enter_pct
@@ -150,75 +149,56 @@ class Zone:
             if not self.tilt_zone_lower_pct <= landing <= self.tilt_zone_upper_pct:
                 raise ValueError("tilt_zone_enter_pct must be between tilt_zone_lower_pct and "
                                  "tilt_zone_upper_pct")
-        if self.tilt_step_pct <= 0.0:
-            raise ValueError("tilt_step_pct must be > 0")
-        # The step is real travel, and the actuator speaks whole percent: a step below one reported
-        # percent rounds back to the current setpoint and the slats never change.
-        if self.tilt_step_pct < MIN_STEP_PCT:
-            raise ValueError(
-                f"tilt_step_pct must be >= {MIN_STEP_PCT} so one step moves the actuator at least "
-                "one reported percent of real travel")
+        if self.tilt_step_pct < 1:
+            raise ValueError("tilt_step_pct must be >= 1 so one step moves the actuator")
         # A step wider than the zone itself always lands on an edge, which is not a step.
         if self.tilt_step_pct > self.span:
             raise ValueError("tilt_step_pct must be <= tilt_zone_upper_pct - tilt_zone_lower_pct, "
                              "the real travel the whole tilt zone spans")
-        if self.height_step_pct < MIN_STEP_PCT:
-            raise ValueError(
-                f"height_step_pct must be >= {MIN_STEP_PCT} so one step moves the actuator at "
-                "least one reported percent of real travel")
-        if self.height_step_pct > 100.0:
+        if self.height_step_pct < 1:
+            raise ValueError("height_step_pct must be >= 1 so one step moves the actuator")
+        if self.height_step_pct > 100:
             raise ValueError("height_step_pct must be <= 100, the blind's whole travel")
 
     # -- Named landmarks ---------------------------------------------------------------------------
 
     @property
-    def upper(self) -> float:
+    def upper(self) -> int:
         """
         Upper zone edge: slats parallel / closed / least light.
         """
         return self.tilt_zone_upper_pct
 
     @property
-    def lower(self) -> float:
+    def lower(self) -> int:
         """
         Lower zone edge: slats perpendicular / open / most light.
         """
         return self.tilt_zone_lower_pct
 
     @property
-    def epsilon(self) -> float:
+    def epsilon(self) -> int:
         """
         Clearance margin used to cleanly cross the lower zone edge on the dip.
         """
         return self.tilt_zone_epsilon_pct
 
     @property
-    def step(self) -> float:
-        """
-        Slat step size on the virtual scale, converted from the configured real travel.
-
-        ``tilt_step_pct`` is real travel like every other configured percentage, but the planner
-        steps the slats on the virtual scale, where the whole zone is 100 wide. Validation caps the
-        step at the zone's span, so this never exceeds 100.
-        """
-        return self.tilt_step_pct / self.span * 100.0
-
-    @property
-    def span(self) -> float:
+    def span(self) -> int:
         """
         Real travel percent between the two zone edges.
         """
         return self.tilt_zone_upper_pct - self.tilt_zone_lower_pct
 
     @property
-    def dip_target(self) -> float:
+    def dip_target(self) -> int:
         """
         Real position just below the lower edge, dipped to before the latching rise.
         """
         return self.lower - self.epsilon
 
     @property
-    def release_target(self) -> float:
+    def release_target(self) -> int:
         """
         Real position the blind must reach for the latch to have let go.
 
@@ -232,7 +212,7 @@ class Zone:
         return self.tilt_zone_release_pct
 
     @property
-    def enter_landing_real(self) -> float:
+    def enter_landing_real(self) -> int:
         """
         Real travel position the entry sequence finishes on.
 
@@ -244,25 +224,26 @@ class Zone:
         return self.upper
 
     @property
-    def enter_landing_virtual(self) -> float:
+    def enter_landing_virtual(self) -> int:
         """
         The same landing on the virtual slat scale (0 = closed edge, 100 = open edge).
 
         The setting is configured as a real position, like everything else in ``apps.yaml``, but the
         planner's enter intent carries a virtual slat position. Converting here keeps the
-        virtual<->real mapping in this module alone.
+        virtual<->real mapping in this module alone, and the round trip returns the configured
+        landing exactly.
         """
         return self.real_to_virtual(self.enter_landing_real)
 
     @property
-    def band_low(self) -> float:
+    def band_low(self) -> int:
         """
         Lower end of the latch-ambiguity band. Coincides with :attr:`dip_target`.
         """
         return self.dip_target
 
     @property
-    def band_high(self) -> float:
+    def band_high(self) -> int:
         """
         Upper end of the latch-ambiguity band. Coincides with :attr:`release_target`.
 
@@ -277,7 +258,7 @@ class Zone:
 
     # -- Predicates --------------------------------------------------------------------------------
 
-    def in_band(self, position: float) -> bool:
+    def in_band(self, position: int) -> bool:
         """
         Whether a real position falls inside the inclusive latch-ambiguity band.
 
@@ -289,7 +270,7 @@ class Zone:
         """
         return self.band_low <= position <= self.band_high
 
-    def in_zone(self, position: float) -> bool:
+    def in_zone(self, position: int) -> bool:
         """
         Whether a real position falls inside the inclusive tilt zone ``[lower, upper]``.
 
@@ -300,19 +281,27 @@ class Zone:
 
     # -- Mapping -----------------------------------------------------------------------------------
 
-    def virtual_to_real(self, virtual: float) -> float:
+    def virtual_to_real(self, virtual: int) -> int:
         """
-        Map an in-tilt virtual position (0-100) to a real travel position within the zone.
-        """
-        return self.upper - (clamp_pct(virtual) / 100.0) * self.span
+        Map an in-tilt virtual position (0-100) to the nearest real travel position within the zone.
 
-    def real_to_virtual(self, real: float) -> float:
+        Integer arithmetic with halves rounding up: the offset below the upper edge is
+        ``virtual * span / 100``, rounded.
         """
-        Map an in-tilt real travel position within the zone to a virtual position (0-100).
-        """
-        return clamp_pct((self.upper - real) / self.span * 100.0)
+        offset = (2 * clamp_pct(virtual) * self.span + 100) // 200
+        return self.upper - offset
 
-    def snap_normal_target(self, target: float, current: Optional[float] = None) -> float:
+    def real_to_virtual(self, real: int) -> int:
+        """
+        Map an in-tilt real travel position to the nearest virtual position (0-100).
+
+        The inverse of :meth:`virtual_to_real`, rounded the same way. Positions outside the zone
+        clamp to the nearer end of the slat scale.
+        """
+        depth = self.upper - real
+        return clamp_pct((200 * depth + self.span) // (2 * self.span))
+
+    def snap_normal_target(self, target: int, current: Optional[int] = None) -> int:
         """
         Snap a whole-height target that falls inside the ambiguity band to the nearest band edge.
 
@@ -337,11 +326,11 @@ class Zone:
             nearest, farthest = self.band_low, self.band_high
         else:
             nearest, farthest = self.band_high, self.band_low
-        if current is not None and to_command(nearest) == to_command(current):
+        if current is not None and nearest == current:
             return farthest
         return nearest
 
-    def snap_step_target(self, target: float, rising: bool) -> float:
+    def snap_step_target(self, target: int, rising: bool) -> int:
         """
         Snap a height-step target that falls inside the ambiguity band to the edge ahead of it.
 
