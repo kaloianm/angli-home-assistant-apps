@@ -66,7 +66,7 @@ Entering tilt mode is therefore a single sequence, run from wherever the blind h
 1. Drive fully open with `cover.open_cover`. Sending the command rather than a target position makes the actuator run against its own limit switch, which re-references it. This step is skipped only when the blind already reports being fully open.
 2. Move down to `tilt_zone_lower_pct - tilt_zone_epsilon_pct` (dip below the lower edge). Starting from fully open this is a pure descent, so it cannot engage the latch on the way down.
 3. Move up to `tilt_zone_upper_pct`. The upward crossing of the lower edge latches the mechanism in tilt mode, with the slats parallel (closed).
-4. Move to the slat angle given by `tilt_zone_enter_pct` — an absolute real position that must lie inside the zone (`tilt_zone_lower_pct` = slats fully open, `tilt_zone_upper_pct` = slats closed). This is one more small in-zone move and is omitted when the landing rounds to the position step 3 already reached. It defaults to `tilt_zone_upper_pct`, the closed edge the latching rise ends on anyway — i.e. no fourth step at all.
+4. Move to the slat angle given by `tilt_zone_enter_pct` — an absolute real position that must lie inside the zone (`tilt_zone_lower_pct` = slats fully open, `tilt_zone_upper_pct` = slats closed). This is one more small in-zone move and is omitted when the landing is the upper edge step 3 already reached. It defaults to `tilt_zone_upper_pct`, the closed edge the latching rise ends on anyway — i.e. no fourth step at all.
 
 Step 4 exists because the latching rise necessarily ends with the slats fully closed, and on a real blind the slats often do not visibly open until a couple of percent below `tilt_zone_upper_pct` — so an entry that lands exactly on the closed edge looks like it did nothing. Set `tilt_zone_enter_pct` to the height at which the slats are as open as you want tilt mode to start; on a zone of `[29, 34]`, for instance, `32` is a slightly-open landing. Every entry goes through this same sequence: the tilt helper, the KNX slat-mode address, the event and the service.
 
@@ -84,11 +84,11 @@ To leave tilt mode:
 
 Whenever the latch state is instead **uncertain** — after an interrupted sequence, a restart, or a move the application did not command — a release cannot rely on a reported percentage either, so it is a full `cover.open_cover` as well. This is also how the application re-references itself after a restart, lazily, when a move first needs it (see "Position And Restart Behavior").
 
-`tilt_zone_epsilon_pct` is the clearance margin used to cleanly cross the lower edge when engaging. It applies to the lower edge only; the upper side is `tilt_zone_release_pct`. It must be at least one whole percent, so the rounded command the actuator receives is distinct from the edge it has to clear.
+`tilt_zone_epsilon_pct` is the clearance margin used to cleanly cross the lower edge when engaging. It applies to the lower edge only; the upper side is `tilt_zone_release_pct`. It must be at least one percent, so the dip is a position distinct from the edge it has to clear.
 
 ### Calibrating `tilt_zone_release_pct`
 
-`tilt_zone_release_pct` is required, and it must be strictly above `tilt_zone_upper_pct` by at least one whole reported percent. Carrying the *reported* position out of the zone is not enough on its own: the latch itself may need considerably more real travel before it disengages. To measure it: latch the blind into tilt mode, then raise it in small increments (a percent or two at a time) and watch it. While the mechanism is still latched the movement only changes the slat angle; the height at which the blind starts lifting *as a whole* is the release height. Set `tilt_zone_release_pct` to that value (rounded up).
+`tilt_zone_release_pct` is required, and it must be strictly above `tilt_zone_upper_pct`. Carrying the *reported* position out of the zone is not enough on its own: the latch itself may need considerably more real travel before it disengages. To measure it: latch the blind into tilt mode, then raise it in small increments (a percent or two at a time) and watch it. While the mechanism is still latched the movement only changes the slat angle; the height at which the blind starts lifting *as a whole* is the release height. Set `tilt_zone_release_pct` to that value (rounded up).
 
 Until you have measured it, set it conservatively a few percent above the zone. An exit that does not physically release is the one failure the design cannot absorb: the application commits to believing the mechanism is free, so the next downward command descends straight away — on a blind that is still latched. Setting the value too *high* costs nothing: the exit travels to the top limit regardless, so the only effect is a slightly wider band of heights that `cover.set_cover_position` refuses to stop at.
 
@@ -173,41 +173,42 @@ gradhermetic_living_room:
   virtual_id: living_room
   virtual_name: "Living Room Blind"
 
-  # Mechanical tilt-zone bounds and movement tuning.
-  tilt_zone_upper_pct: 44.0
-  tilt_zone_lower_pct: 38.0
+  # Mechanical tilt-zone bounds and movement tuning. Every percentage in this config is a whole
+  # number, because the actuator only accepts and reports whole percents: 38 and 38.0 both mean 38,
+  # and a fractional value such as 38.5 is rejected at startup rather than rounded.
+  tilt_zone_upper_pct: 44
+  tilt_zone_lower_pct: 38
 
   # Clearance margin for crossing the lower zone edge cleanly on the way into tilt mode. Must be at
-  # least 1.0, so the rounded command the actuator receives differs from the edge it has to clear.
+  # least 1, so the dip is a position distinct from the edge it has to clear.
   # The band it defines around the zone (tilt_zone_lower_pct - tilt_zone_epsilon_pct up to
   # tilt_zone_release_pct) must stay strictly inside 0..100: a blind resting on either end stop has
   # to count as clearly unlatched.
-  tilt_zone_epsilon_pct: 2.0
+  tilt_zone_epsilon_pct: 2
 
   # Required. Real travel percent the blind must reach for the latch to genuinely release, measured
   # by raising the latched blind in small increments until it starts lifting as a whole instead of
-  # only rotating the slats. Must be above tilt_zone_upper_pct by at least one whole percent, and
-  # < 100. It also sets the top of the ambiguity band, so set_cover_position will not stop anywhere
-  # between tilt_zone_lower_pct - tilt_zone_epsilon_pct and this value.
-  tilt_zone_release_pct: 50.0
+  # only rotating the slats. Must be above tilt_zone_upper_pct, and < 100. It also sets the top of
+  # the ambiguity band, so set_cover_position will not stop anywhere between
+  # tilt_zone_lower_pct - tilt_zone_epsilon_pct and this value.
+  tilt_zone_release_pct: 50
 
   # Optional. Real travel position the entry sequence finishes on, which being a slat position must
   # lie inside the zone: tilt_zone_upper_pct = slats closed (the position the latching rise itself
   # ends at, and the default), tilt_zone_lower_pct = slats fully open. Set it a little below the
   # upper edge on a blind whose slats are not visibly open at the closed edge.
-  tilt_zone_enter_pct: 42.8
+  tilt_zone_enter_pct: 42
 
   # Real travel percent one slat step moves the blind, for short presses while inside the tilt zone.
-  # Because the actuator reports integer positions, a step below one whole percent would command a
-  # position that rounds back to the current one and move nothing at all, so tilt_step_pct must be
-  # >= 1.0; it must also be <= the zone's width (tilt_zone_upper_pct - tilt_zone_lower_pct), since a
-  # step larger than the whole zone is meaningless. A 6% zone therefore yields at most six usable
-  # slat positions. The app rejects an out-of-range step at startup.
-  tilt_step_pct: 1.2
+  # At least 1 and at most the zone's width (tilt_zone_upper_pct - tilt_zone_lower_pct), since a
+  # step larger than the whole zone is meaningless. A 6% zone therefore has at most seven slat
+  # positions, one per whole percent from edge to edge; a step that does not divide the zone evenly
+  # stops on the edge for its last press. The app rejects an out-of-range step at startup.
+  tilt_step_pct: 2
 
   # Optional. Real travel percent one step button press moves the blind while it is not in slat
-  # mode. Same lower bound as tilt_step_pct, for the same reason; at most 100. Defaults to 2.0.
-  height_step_pct: 2.0
+  # mode. At least 1 and at most 100. Defaults to 2.
+  height_step_pct: 2
 
   # Optional KNX wall-button group addresses, each of which nothing but Home Assistant may listen
   # on. The "move" address receives long presses; the "step" address receives short presses, with

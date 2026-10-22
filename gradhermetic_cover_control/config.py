@@ -5,10 +5,12 @@ This module only reads and type-checks the ``apps.yaml`` args. Every rule relati
 numbers to each other lives in :mod:`geometry`, which this module delegates to by constructing a
 :class:`~gradhermetic_cover_control.geometry.Zone`.
 
-Every percentage in the config is **real blind travel** -- the numbers the actuator reports and
-accepts. The inverted virtual slat scale exists only inside the app (it is what the cover entity's
-position slider shows while tilt mode is engaged), and :class:`Zone` is the only place the two
-meet.
+Every percentage in the config is a **whole percent of real blind travel** -- the numbers the
+actuator reports and accepts. ``38`` and ``38.0`` both read as 38; ``38.5`` is rejected rather
+than rounded, because the actuator has no such position and silently moving a calibrated edge
+would hide the mistake. The inverted virtual slat scale exists only inside the app (it is what the
+cover entity's position slider shows while tilt mode is engaged), and :class:`Zone` is the only
+place the two meet.
 """
 
 from __future__ import annotations
@@ -62,17 +64,17 @@ def parse_app_config(args: Dict[str, Any]) -> GradhermeticConfig:
     virtual_id = _require_non_empty_str(args, "virtual_id")
     virtual_name = _require_non_empty_str(args, "virtual_name")
 
-    # Read each number in isolation here (present, numeric, in range); Zone owns every rule that
+    # Read each number in isolation here (present, whole, in range); Zone owns every rule that
     # relates them to one another and raises naming the same apps.yaml keys.
     zone = Zone(
         tilt_zone_upper_pct=_parse_percentage(args, "tilt_zone_upper_pct"),
         tilt_zone_lower_pct=_parse_percentage(args, "tilt_zone_lower_pct"),
-        tilt_zone_epsilon_pct=_parse_positive_float(args, "tilt_zone_epsilon_pct"),
+        tilt_zone_epsilon_pct=_parse_positive_whole(args, "tilt_zone_epsilon_pct"),
         tilt_zone_release_pct=_parse_percentage(args, "tilt_zone_release_pct"),
-        tilt_step_pct=_parse_positive_float(args, "tilt_step_pct"),
+        tilt_step_pct=_parse_positive_whole(args, "tilt_step_pct"),
         # Optional: absent means "keep the geometric default", which Zone supplies.
         tilt_zone_enter_pct=_optional_percentage(args, "tilt_zone_enter_pct"),
-        **_optional_field(args, "height_step_pct", _parse_positive_float),
+        **_optional_field(args, "height_step_pct", _parse_positive_whole),
     )
 
     return GradhermeticConfig(
@@ -106,19 +108,19 @@ def _optional_str(source: Dict[str, Any], key: str) -> Optional[str]:
     return str(value).strip()
 
 
-def _parse_percentage(source: Dict[str, Any], key: str) -> float:
+def _parse_percentage(source: Dict[str, Any], key: str) -> int:
     """
-    Read a float field and enforce 0 <= value <= 100.
+    Read a whole-number field and enforce 0 <= value <= 100.
     """
-    value = _parse_float(source, key)
-    if value < 0.0 or value > 100.0:
+    value = _parse_whole(source, key)
+    if value < 0 or value > 100:
         raise ValueError(f"{key} must be between 0 and 100")
     return value
 
 
-def _optional_percentage(source: Dict[str, Any], key: str) -> Optional[float]:
+def _optional_percentage(source: Dict[str, Any], key: str) -> Optional[int]:
     """
-    Read an optional float field, enforcing 0 <= value <= 100 when it is present.
+    Read an optional whole-number field, enforcing 0 <= value <= 100 when it is present.
 
     Absent (or explicitly null) means the caller keeps its own default; anything relating the value
     to the rest of the geometry is Zone's business.
@@ -128,7 +130,7 @@ def _optional_percentage(source: Dict[str, Any], key: str) -> Optional[float]:
     return _parse_percentage(source, key)
 
 
-def _optional_field(source: Dict[str, Any], key: str, parse: Any) -> Dict[str, float]:
+def _optional_field(source: Dict[str, Any], key: str, parse: Any) -> Dict[str, int]:
     """
     Read an optional numeric field as keyword arguments: empty when absent, so the dataclass
     default applies, else ``{key: parsed value}``.
@@ -138,24 +140,32 @@ def _optional_field(source: Dict[str, Any], key: str, parse: Any) -> Dict[str, f
     return {key: parse(source, key)}
 
 
-def _parse_positive_float(source: Dict[str, Any], key: str) -> float:
+def _parse_positive_whole(source: Dict[str, Any], key: str) -> int:
     """
-    Read a float field and enforce > 0.
+    Read a whole-number field and enforce > 0.
     """
-    value = _parse_float(source, key)
-    if value <= 0.0:
+    value = _parse_whole(source, key)
+    if value <= 0:
         raise ValueError(f"{key} must be > 0")
     return value
 
 
-def _parse_float(source: Dict[str, Any], key: str) -> float:
+def _parse_whole(source: Dict[str, Any], key: str) -> int:
     """
-    Read a required numeric field as float.
+    Read a required numeric field as a whole number.
+
+    Integers, integral floats (YAML reads ``38.0`` as one) and numeric strings are accepted; a
+    fractional value is an error, since no actuator position corresponds to it.
     """
     value = source.get(key)
     if value is None:
         raise ValueError(f"{key} is required")
+    if isinstance(value, bool):
+        raise ValueError(f"{key} must be a number")
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{key} must be a number") from exc
+    if not number.is_integer():
+        raise ValueError(f"{key} must be a whole percent, not {value!r}")
+    return int(number)

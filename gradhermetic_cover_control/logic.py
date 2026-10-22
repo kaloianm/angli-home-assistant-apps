@@ -54,7 +54,7 @@ from gradhermetic_cover_control.executor import (
     Outcome,
     virtual_position,
 )
-from gradhermetic_cover_control.geometry import Zone, clamp_pct, to_command
+from gradhermetic_cover_control.geometry import Zone, clamp_pct
 from gradhermetic_cover_control.planner import (
     DIRECTION_DOWN,
     DIRECTION_UP,
@@ -77,7 +77,7 @@ from gradhermetic_cover_control.planner import (
 )
 
 # What one publish carries, for deduplication: (virtual position, in tilt, motion).
-_Published = Tuple[Optional[float], bool, str]
+_Published = Tuple[Optional[int], bool, str]
 
 
 class GradhermeticCoverLogic:
@@ -107,7 +107,7 @@ class GradhermeticCoverLogic:
         self._log = log
         self._disabled = False
 
-        self._position: Optional[float] = None
+        self._position: Optional[int] = None
         self._latch = LATCH_UNKNOWN
         self._is_moving = False
         # Which way the blind is travelling in real terms, while it is; from the controller when
@@ -123,7 +123,7 @@ class GradhermeticCoverLogic:
     # -- Accessors ---------------------------------------------------------------------------------
 
     @property
-    def last_position(self) -> Optional[float]:
+    def last_position(self) -> Optional[int]:
         """
         Most recent real travel position known to the logic.
         """
@@ -157,7 +157,7 @@ class GradhermeticCoverLogic:
         """
         return self._executor.has_plan
 
-    def current_virtual_position(self) -> Optional[float]:
+    def current_virtual_position(self) -> Optional[int]:
         """
         Virtual cover position for the current real position and mode, or None if unknown.
         """
@@ -173,7 +173,7 @@ class GradhermeticCoverLogic:
 
     # -- Lifecycle ---------------------------------------------------------------------------------
 
-    def seed_state(self, last_position: Optional[float], is_moving: bool = False,
+    def seed_state(self, last_position: Optional[int], is_moving: bool = False,
                    direction: Optional[str] = None) -> None:
         """
         Establish the belief from a first position reading, before any events are processed.
@@ -190,7 +190,7 @@ class GradhermeticCoverLogic:
         else:
             self._latch = LATCH_UNKNOWN
 
-    def on_startup(self, position: Optional[float], is_moving: bool = False,
+    def on_startup(self, position: Optional[int], is_moving: bool = False,
                    direction: Optional[str] = None) -> List[Action]:
         """
         Seed the belief from the first position reading. Startup never moves the blind.
@@ -270,7 +270,7 @@ class GradhermeticCoverLogic:
         actions.append(Action(ACTION_CANCEL_SETTLE_TIMER))
         return actions + self._publish_current()
 
-    def on_set_position(self, virtual_pct: float) -> List[Action]:
+    def on_set_position(self, virtual_pct: int) -> List[Action]:
         """
         Handle ``cover.set_cover_position`` to an absolute virtual position.
 
@@ -440,26 +440,21 @@ class GradhermeticCoverLogic:
         """
         Why a step press has nowhere to go, for the log.
 
-        A height step's rounded target can repeat the current setpoint at either travel limit,
-        which is the only case worth calling a "limit" -- but rounding can also send it back to the
-        position the blind already rests on away from a limit (a step whose raw target rounds to
-        the same integer the current position does, say), and that case is described plainly
-        instead of being misnamed a limit it is not at.
+        Every step moves at least one whole percent, and a step into the band continues to the band
+        edge ahead of it, so the only place a height step has nowhere to go is the travel limit it
+        is pointing at.
         """
         if self._position is None:
             return "the blind's position is unknown"
         if self.in_tilt:
             edge = "open" if direction == DIRECTION_UP else "closed"
             return f"the slats are already at the {edge} edge"
-        command = to_command(self._position)
-        if command in (0, 100):
-            limit = "top" if direction == DIRECTION_UP else "bottom"
-            return f"the blind is already at the {limit} limit"
-        return f"the step rounds back to the position the blind is already on ({command}%)"
+        limit = "top" if direction == DIRECTION_UP else "bottom"
+        return f"the blind is already at the {limit} limit"
 
     # -- Position feedback -------------------------------------------------------------------------
 
-    def on_real_position(self, position: Optional[float], is_moving: bool,
+    def on_real_position(self, position: Optional[int], is_moving: bool,
                          direction: Optional[str] = None) -> List[Action]:
         """
         Consume controller position/motion feedback, advancing any plan in progress.
@@ -491,7 +486,7 @@ class GradhermeticCoverLogic:
             self._log("latch belief cleared: external motion ended inside the tilt band")
         return actions + self._publish_current()
 
-    def on_settle_timer(self, position: Optional[float], is_moving: bool,
+    def on_settle_timer(self, position: Optional[int], is_moving: bool,
                         direction: Optional[str] = None) -> List[Action]:
         """
         Consume a settle-timer firing, with the controller state read at the moment it fired.
@@ -555,7 +550,7 @@ class GradhermeticCoverLogic:
             self._degrade_latch(outcome.plan)
         return outcome.actions
 
-    def _observe(self, position: Optional[float], is_moving: bool,
+    def _observe(self, position: Optional[int], is_moving: bool,
                  direction: Optional[str] = None) -> None:
         """
         Fold a controller reading into the belief.
@@ -583,7 +578,7 @@ class GradhermeticCoverLogic:
             self._direction = None
         elif direction is not None:
             self._direction = direction
-        elif previous is not None and to_command(position) != to_command(previous):
+        elif previous is not None and position != previous:
             self._direction = DIRECTION_UP if position > previous else DIRECTION_DOWN
         if not self._zone.in_band(position) and self._latch != LATCH_UNLATCHED:
             self._latch = LATCH_UNLATCHED
@@ -671,8 +666,8 @@ class GradhermeticCoverLogic:
         real = self._direction if self._is_moving else None
         step = self._executor.current_step if self._may_be_travelling() else None
         if real is None and step is not None and self._position is not None:
-            commanded = to_command(step.command_position)
-            here = to_command(self._position)
+            commanded = step.command_position
+            here = self._position
             if commanded != here:
                 real = DIRECTION_UP if commanded > here else DIRECTION_DOWN
         if real is None:

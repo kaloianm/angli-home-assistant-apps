@@ -32,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
-from gradhermetic_cover_control.geometry import Zone, clamp_pct, to_command
+from gradhermetic_cover_control.geometry import Zone, clamp_pct
 from gradhermetic_cover_control.planner import (
     COMMAND_CLOSE,
     COMMAND_OPEN,
@@ -78,9 +78,9 @@ SETTLED_RECHECK_SECONDS = 10
 # Real actuators occasionally settle a percent or so off their setpoint. A move that stopped this
 # close to its target is accepted (with a warning) rather than reported as an obstruction -- but
 # only where a percent is harmless: an ordinary height move clear of the band. A slat step is
-# smaller than the tolerance, and a target on a band edge or inside the band is exactly where a
-# percent decides whether the mechanism latched or released, so those must land or stall.
-DEVIATION_TOLERANCE_PCT = 2.0
+# usually no larger than the tolerance, and a target on a band edge or inside the band is exactly
+# where a percent decides whether the mechanism latched or released, so those must land or stall.
+DEVIATION_TOLERANCE_PCT = 2
 
 # -- Outcomes --------------------------------------------------------------------------------------
 
@@ -103,7 +103,7 @@ class Action:
     """
 
     kind: str
-    position: Optional[float] = None
+    position: Optional[int] = None
     in_tilt: Optional[bool] = None
     motion: Optional[str] = None
     seconds: Optional[float] = None
@@ -193,7 +193,7 @@ class Executor:
 
     # -- Events ------------------------------------------------------------------------------------
 
-    def start(self, movement: Plan, position: Optional[float], is_moving: bool) -> Outcome:
+    def start(self, movement: Plan, position: Optional[int], is_moving: bool) -> Outcome:
         """
         Begin a plan, activating its first unsatisfied step.
 
@@ -204,7 +204,7 @@ class Executor:
         self._index = 0
         return self._advance(position, is_moving)
 
-    def on_feedback(self, position: Optional[float], is_moving: bool) -> Outcome:
+    def on_feedback(self, position: Optional[int], is_moving: bool) -> Outcome:
         """
         Consume controller feedback, completing the current step once it has genuinely arrived.
         """
@@ -227,7 +227,7 @@ class Executor:
             return Outcome([_arm(SETTLED_RECHECK_SECONDS)], STATUS_RUNNING, self._plan)
         return Outcome()
 
-    def on_timer(self, position: Optional[float], is_moving: bool) -> Outcome:
+    def on_timer(self, position: Optional[int], is_moving: bool) -> Outcome:
         """
         Consume a settle-timer firing: keep waiting, accept, or declare a stall.
         """
@@ -263,10 +263,10 @@ class Executor:
         """
         Whether settling a percent or so off this step's target may be accepted as arrival.
 
-        Only an ordinary height move clear of the band qualifies. A slat step is smaller than the
-        tolerance, so accepting the pre-step position would silently complete a move that never
-        happened; a target in the band -- the enter dip, the latching rise, a band edge -- is where
-        a percent decides whether the mechanism latched or released, and must land exactly.
+        Only an ordinary height move clear of the band qualifies. A slat step is usually no larger
+        than the tolerance, so accepting the pre-step position would silently complete a move that
+        never happened; a target in the band -- the enter dip, the latching rise, a band edge -- is
+        where a percent decides whether the mechanism latched or released, and must land exactly.
         """
         if step.kind != STEP_MOVE_TO or self._plan.kind == PLAN_SLAT:
             return False
@@ -300,7 +300,7 @@ class Executor:
         self._saw_motion = False
         self._awaiting_arrival = False
 
-    def _advance(self, position: Optional[float], is_moving: bool) -> Outcome:
+    def _advance(self, position: Optional[int], is_moving: bool) -> Outcome:
         """
         Skip every already-satisfied step and command the first one that remains.
         """
@@ -318,7 +318,7 @@ class Executor:
             return Outcome([_command(step), _arm()], STATUS_RUNNING, self._plan)
         return self._complete(position)
 
-    def _complete(self, position: Optional[float]) -> Outcome:
+    def _complete(self, position: Optional[int]) -> Outcome:
         """
         Finish the plan and cancel the fallback timer. The caller commits the latch and publishes.
         """
@@ -336,7 +336,7 @@ class Executor:
         of the threshold, so that is the number a reader should compare the resting position with.
         """
         movement = self._plan
-        target = to_command(self._step().target)
+        target = self._step().target
         self._clear()
         message = (f"did not reach {target}% ({reason}) and the move was abandoned. Check the "
                    "blind for a mechanical obstruction or a misconfigured tilt zone.")
@@ -349,7 +349,7 @@ class Executor:
         return Outcome(actions, STATUS_STALLED, movement)
 
 
-def virtual_position(zone: Zone, latch: str, position: float) -> float:
+def virtual_position(zone: Zone, latch: str, position: int) -> int:
     """
     Map a real position to the virtual position the user-facing cover shows.
 
