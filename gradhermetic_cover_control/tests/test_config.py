@@ -44,8 +44,7 @@ class TestConfigParsing(unittest.TestCase):
 
     def test_release_and_landing_are_parsed(self):
         # Both are real travel positions; the landing has to lie inside the zone.
-        config = parse_app_config(
-            _valid_args(tilt_zone_release_pct=52, tilt_zone_enter_pct=41))
+        config = parse_app_config(_valid_args(tilt_zone_release_pct=52, tilt_zone_enter_pct=41))
         self.assertEqual(52, config.zone.tilt_zone_release_pct)
         self.assertEqual(52, config.zone.release_target)
         self.assertEqual(41, config.zone.enter_landing_real)
@@ -55,8 +54,7 @@ class TestConfigParsing(unittest.TestCase):
         self.assertIn("tilt_zone_enter_pct=41", str(config))
 
     def test_release_and_landing_accept_strings(self):
-        config = parse_app_config(
-            _valid_args(tilt_zone_release_pct="52", tilt_zone_enter_pct="41"))
+        config = parse_app_config(_valid_args(tilt_zone_release_pct="52", tilt_zone_enter_pct="41"))
         self.assertEqual(52, config.zone.release_target)
         self.assertEqual(41, config.zone.enter_landing_real)
 
@@ -68,9 +66,10 @@ class TestConfigParsing(unittest.TestCase):
 
     def test_every_number_is_parsed_as_a_whole_percent(self):
         # YAML reads 44.0 as a float and a quoted value as a string; both mean a whole percent.
-        config = parse_app_config(_valid_args(tilt_zone_upper_pct=44.0, tilt_zone_lower_pct="38",
-                                              tilt_zone_release_pct="46.0", tilt_step_pct=2.0,
-                                              tilt_zone_enter_pct=41.0, height_step_pct="3"))
+        config = parse_app_config(
+            _valid_args(tilt_zone_upper_pct=44.0, tilt_zone_lower_pct="38",
+                        tilt_zone_release_pct="46.0", tilt_step_pct=2.0, tilt_zone_enter_pct=41.0,
+                        height_step_pct="3"))
         zone = config.zone
         for value in (zone.tilt_zone_upper_pct, zone.tilt_zone_lower_pct,
                       zone.tilt_zone_epsilon_pct, zone.tilt_zone_release_pct, zone.tilt_step_pct,

@@ -61,7 +61,7 @@ def _enter_plan():
 
 
 def _move_plan(target, command="position"):
-    return Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, target, command),), LATCH_UNLATCHED)
+    return Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, target, command), ), LATCH_UNLATCHED)
 
 
 class TestActivation(unittest.TestCase):
@@ -156,7 +156,7 @@ class TestRiseToAtLeast(unittest.TestCase):
 
     def setUp(self):
         self.executor = Executor(ZONE)
-        self.plan = Plan("leave", (Step(STEP_RISE_TO_AT_LEAST, 46),), LATCH_UNLATCHED)
+        self.plan = Plan("leave", (Step(STEP_RISE_TO_AT_LEAST, 46), ), LATCH_UNLATCHED)
 
     def test_resting_past_the_target_satisfies_the_step(self):
         self.executor.start(self.plan, UPPER, False)
@@ -178,8 +178,9 @@ class TestCommandDistinctFromTarget(unittest.TestCase):
     def setUp(self):
         self.executor = Executor(ZONE)
         # The shape the tilt exit uses: satisfied at 46, commanded to 48.
-        self.plan = Plan("leave", (Step(STEP_RISE_TO_AT_LEAST, 46, COMMAND_POSITION,
-                                        command_pct=48),), LATCH_UNLATCHED)
+        self.plan = Plan("leave",
+                         (Step(STEP_RISE_TO_AT_LEAST, 46, COMMAND_POSITION, command_pct=48), ),
+                         LATCH_UNLATCHED)
 
     def test_the_command_carries_the_command_position(self):
         outcome = self.executor.start(self.plan, UPPER, False)
@@ -218,8 +219,7 @@ class TestCommandDistinctFromTarget(unittest.TestCase):
     def test_a_move_step_can_carry_a_command_position_too(self):
         executor = Executor(ZONE)
         movement = _move_plan(30)
-        movement = Plan(movement.kind,
-                        (Step(STEP_MOVE_TO, 30, COMMAND_POSITION, command_pct=28),),
+        movement = Plan(movement.kind, (Step(STEP_MOVE_TO, 30, COMMAND_POSITION, command_pct=28), ),
                         LATCH_UNLATCHED)
         outcome = executor.start(movement, 80, False)
         self.assertEqual(28, _of(outcome, ACTION_MOVE_TO)[0].position)
@@ -237,15 +237,17 @@ class TestVirtualPosition(unittest.TestCase):
 
     def test_latched_publishes_the_inverted_zone_mapping(self):
         self.assertEqual(50, virtual_position(ZONE, LATCH_LATCHED, 41))
-        self.assertEqual(ZONE.real_to_virtual(43), virtual_position(ZONE, LATCH_LATCHED,
-                                                                            43))
+        self.assertEqual(ZONE.real_to_virtual(43), virtual_position(ZONE, LATCH_LATCHED, 43))
 
     def test_the_executor_never_publishes(self):
         # Publishing needs the belief, which only the logic holds; the executor reports outcomes.
         executor = Executor(ZONE)
-        outcomes = [executor.start(_enter_plan(), 80, False),
-                    executor.on_feedback(100, False), executor.on_feedback(36, False),
-                    executor.on_feedback(UPPER, False)]
+        outcomes = [
+            executor.start(_enter_plan(), 80, False),
+            executor.on_feedback(100, False),
+            executor.on_feedback(36, False),
+            executor.on_feedback(UPPER, False)
+        ]
         self.assertEqual([], [a for o in outcomes for a in _of(o, ACTION_PUBLISH_STATE)])
 
 
@@ -313,7 +315,7 @@ class TestSettleTimer(unittest.TestCase):
         outcome = executor.on_timer(50 + DEVIATION_TOLERANCE_PCT, False)
         self.assertEqual(STATUS_COMPLETED, outcome.status)
         self.assertIn(("WARNING", "accepting 52 for target 50: settled within 2% of the "
-                                  "setpoint"), logged)
+                       "setpoint"), logged)
 
     def test_settled_short_stalls_without_stopping_a_blind_that_is_at_rest(self):
         # There is nothing to stop, and on a KNX actuator with no stop object a stop sent to an
@@ -347,7 +349,7 @@ class TestSettleTimer(unittest.TestCase):
         # A slat step is smaller than the tolerance: accepting the pre-step position would silently
         # complete a move that never happened.
         executor = Executor(ZONE)
-        executor.start(Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, 43),), LATCH_LATCHED), UPPER, False)
+        executor.start(Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, 43), ), LATCH_LATCHED), UPPER, False)
         self.assertEqual(STATUS_STALLED, executor.on_timer(UPPER, False).status)
 
     def test_a_deviation_accepted_mid_plan_continues(self):
@@ -359,7 +361,7 @@ class TestSettleTimer(unittest.TestCase):
 
     def test_deviation_tolerance_does_not_apply_to_rise_steps(self):
         executor = Executor(ZONE)
-        executor.start(Plan("leave", (Step(STEP_RISE_TO_AT_LEAST, 46),), LATCH_UNLATCHED), 41,
+        executor.start(Plan("leave", (Step(STEP_RISE_TO_AT_LEAST, 46), ), LATCH_UNLATCHED), 41,
                        False)
         self.assertEqual(STATUS_STALLED, executor.on_timer(45, False).status)
 

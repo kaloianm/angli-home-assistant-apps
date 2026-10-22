@@ -77,6 +77,7 @@ INTENT_SLAT_STEP = "slat_step"
 INTENT_HEIGHT_STEP = "height_step"
 INTENT_LONG_PRESS = "long_press"
 
+
 @dataclass(frozen=True)
 class Belief:
     """
@@ -219,7 +220,7 @@ def _plan_open(zone: Zone, belief: Belief) -> Plan:
     """
     if belief.in_tilt:
         return _slat_plan(zone.lower)
-    return Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 100, COMMAND_OPEN),), LATCH_UNLATCHED)
+    return Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 100, COMMAND_OPEN), ), LATCH_UNLATCHED)
 
 
 def _plan_close(zone: Zone, belief: Belief) -> Plan:
@@ -228,7 +229,7 @@ def _plan_close(zone: Zone, belief: Belief) -> Plan:
     """
     if belief.in_tilt:
         return _slat_plan(zone.upper)
-    return Plan(PLAN_NORMAL, _guard_descent(belief, (Step(STEP_MOVE_TO, 0, COMMAND_CLOSE),)),
+    return Plan(PLAN_NORMAL, _guard_descent(belief, (Step(STEP_MOVE_TO, 0, COMMAND_CLOSE), )),
                 LATCH_UNLATCHED)
 
 
@@ -278,7 +279,7 @@ def _height_move(zone: Zone, belief: Belief, target: int) -> Plan:
     from a known release.
     """
     position = belief.position
-    steps: Tuple[Step, ...] = (Step(STEP_MOVE_TO, target),)
+    steps: Tuple[Step, ...] = (Step(STEP_MOVE_TO, target), )
     if position is None or target < position:
         steps = _guard_descent(belief, steps)
     if steps[0].command == COMMAND_OPEN:
@@ -343,8 +344,8 @@ def _plan_leave_tilt(zone: Zone, belief: Belief) -> Optional[Plan]:
     if not belief.in_tilt:
         return None
     return Plan(PLAN_LEAVE,
-                (Step(STEP_RISE_TO_AT_LEAST, zone.release_target, COMMAND_OPEN,
-                      command_pct=100),), LATCH_UNLATCHED)
+                (Step(STEP_RISE_TO_AT_LEAST, zone.release_target, COMMAND_OPEN, command_pct=100), ),
+                LATCH_UNLATCHED)
 
 
 def _plan_slat_step(zone: Zone, belief: Belief, direction: Optional[str],
@@ -378,8 +379,8 @@ def _plan_long_press(belief: Belief, direction: Optional[str]) -> Plan:
     Long wall-button press: jump to an extreme, releasing the latch first when descending.
     """
     if direction == DIRECTION_UP:
-        return Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 100, COMMAND_OPEN),), LATCH_UNLATCHED)
-    return Plan(PLAN_NORMAL, _guard_descent(belief, (Step(STEP_MOVE_TO, 0, COMMAND_CLOSE),)),
+        return Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 100, COMMAND_OPEN), ), LATCH_UNLATCHED)
+    return Plan(PLAN_NORMAL, _guard_descent(belief, (Step(STEP_MOVE_TO, 0, COMMAND_CLOSE), )),
                 LATCH_UNLATCHED)
 
 
@@ -387,7 +388,7 @@ def _slat_plan(real_target: int) -> Plan:
     """
     A single in-zone move that changes slat angle without changing height.
     """
-    return Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, real_target),), LATCH_LATCHED)
+    return Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, real_target), ), LATCH_LATCHED)
 
 
 def _guard_descent(belief: Belief, steps: Tuple[Step, ...]) -> Tuple[Step, ...]:
@@ -402,7 +403,7 @@ def _guard_descent(belief: Belief, steps: Tuple[Step, ...]) -> Tuple[Step, ...]:
     descends directly, which is the common case (closing right after leaving tilt costs no detour).
     """
     if belief.may_be_latched:
-        return (Step(STEP_MOVE_TO, 100, COMMAND_OPEN),) + steps
+        return (Step(STEP_MOVE_TO, 100, COMMAND_OPEN), ) + steps
     return steps
 
 

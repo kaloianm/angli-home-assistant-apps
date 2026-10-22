@@ -397,8 +397,8 @@ class TestStepHelperWhileNotLatched(unittest.TestCase):
         self.logic = GradhermeticCoverLogic(_config())
 
     def test_a_step_moves_the_height_by_one_increment(self):
-        cases = ((80, DIRECTION_DOWN, 78), (80, DIRECTION_UP, 82),
-                 (10, DIRECTION_UP, 12), (10, DIRECTION_DOWN, 8))
+        cases = ((80, DIRECTION_DOWN, 78), (80, DIRECTION_UP, 82), (10, DIRECTION_UP, 12),
+                 (10, DIRECTION_DOWN, 8))
         for start, direction, expected in cases:
             with self.subTest(start=start, direction=direction):
                 logic = GradhermeticCoverLogic(_config())
@@ -903,8 +903,8 @@ class TestLogging(unittest.TestCase):
         debug = [message for level, message in entries if level == "DEBUG"]
 
         self.assertIn("plan complete: latch=unlatched position=30", info)
-        self.assertTrue(any("commanding move_to 30 (satisfied at 30) from 80" in message
-                            for message in debug))
+        self.assertTrue(
+            any("commanding move_to 30 (satisfied at 30) from 80" in message for message in debug))
         self.assertFalse(any("plan complete" in message for message in debug))
 
     def test_interrupting_a_plan_logs_the_latch_transition_at_info(self):
@@ -920,8 +920,9 @@ class TestLogging(unittest.TestCase):
         logic.on_stop()
 
         info = [message for level, message in entries if level == "INFO"]
-        self.assertTrue(any("latch belief latched -> unknown: leave plan interrupted" in message
-                            for message in info))
+        self.assertTrue(
+            any("latch belief latched -> unknown: leave plan interrupted" in message
+                for message in info))
 
     def test_a_violating_plan_is_logged_at_error(self):
         entries = []

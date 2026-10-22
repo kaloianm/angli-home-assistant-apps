@@ -54,7 +54,6 @@ ARGS = {
     "knx_tilt_address": TILT_ADDRESS,
 }
 
-
 # Distinguishes "the test did not care" from "the entity does not exist".
 _DEFAULT_STATE = object()
 
@@ -219,8 +218,8 @@ class TestInitialize(unittest.TestCase):
 
     def test_missing_real_cover_is_reported(self):
         app = FakeApp(state=None).start(seed_startup_state=False)
-        self.assertTrue(any(level == "ERROR" and "does not exist" in message
-                            for level, message in app.logs))
+        self.assertTrue(
+            any(level == "ERROR" and "does not exist" in message for level, message in app.logs))
 
 
 class TestStartupSeed(unittest.TestCase):
@@ -294,12 +293,16 @@ class TestCommandEvents(unittest.TestCase):
     def test_set_position_sends_a_whole_percent(self):
         # A fractional payload is rounded once, here at the boundary, halves going up.
         self.app.command_event(command="set_position", position="30.4")
-        self.assertEqual([{"entity_id": REAL_COVER, "position": 30}],
-                         self.app.calls_to("cover/set_cover_position"))
+        self.assertEqual([{
+            "entity_id": REAL_COVER,
+            "position": 30
+        }], self.app.calls_to("cover/set_cover_position"))
         self.app.service_calls.clear()
         self.app.command_event(command="set_position", position=24.5)
-        self.assertEqual([{"entity_id": REAL_COVER, "position": 25}],
-                         self.app.calls_to("cover/set_cover_position"))
+        self.assertEqual([{
+            "entity_id": REAL_COVER,
+            "position": 25
+        }], self.app.calls_to("cover/set_cover_position"))
 
     def test_a_non_finite_position_is_ignored_not_fatal(self):
         for raw in ("nan", "inf", True):
@@ -338,8 +341,10 @@ class TestKnxTelegrams(unittest.TestCase):
 
     def test_a_short_press_uses_the_step_address(self):
         self.app.knx_event(STEP_ADDRESS, 1)  # 1 = down: one height step from 80
-        self.assertEqual([{"entity_id": REAL_COVER, "position": 78}],
-                         self.app.calls_to("cover/set_cover_position"))
+        self.assertEqual([{
+            "entity_id": REAL_COVER,
+            "position": 78
+        }], self.app.calls_to("cover/set_cover_position"))
 
     def test_telegrams_for_other_addresses_are_ignored(self):
         self.app.knx_event("9/9/9", 1)
@@ -424,11 +429,16 @@ class TestButtonPresses(unittest.TestCase):
 
     def test_a_step_press_nudges_the_height_when_not_latched(self):
         self.app.press(self.step_up)
-        self.assertEqual([{"entity_id": REAL_COVER, "position": 82}],
-                         self.app.calls_to("cover/set_cover_position"))
+        self.assertEqual([{
+            "entity_id": REAL_COVER,
+            "position": 82
+        }], self.app.calls_to("cover/set_cover_position"))
         self.app.report(82)
         self.app.press(f"input_button.gradhermetic_{VIRTUAL_ID}_step_down")
-        self.assertEqual({"entity_id": REAL_COVER, "position": 80},
+        self.assertEqual({
+            "entity_id": REAL_COVER,
+            "position": 80
+        },
                          self.app.calls_to("cover/set_cover_position")[-1])
 
     def test_a_step_press_never_enters_tilt(self):
@@ -457,17 +467,28 @@ class TestActionTranslation(unittest.TestCase):
         self._apply(Action(ACTION_MOVE_TO, position=43), Action(ACTION_OPEN_FULL),
                     Action(ACTION_CLOSE_FULL), Action(ACTION_STOP))
         self.assertEqual([
-            ("cover/set_cover_position", {"entity_id": REAL_COVER, "position": 43}),
-            ("cover/open_cover", {"entity_id": REAL_COVER}),
-            ("cover/close_cover", {"entity_id": REAL_COVER}),
-            ("cover/stop_cover", {"entity_id": REAL_COVER}),
+            ("cover/set_cover_position", {
+                "entity_id": REAL_COVER,
+                "position": 43
+            }),
+            ("cover/open_cover", {
+                "entity_id": REAL_COVER
+            }),
+            ("cover/close_cover", {
+                "entity_id": REAL_COVER
+            }),
+            ("cover/stop_cover", {
+                "entity_id": REAL_COVER
+            }),
         ], self.app.service_calls)
 
     def test_commands_log_a_short_human_readable_line(self):
         self._apply(Action(ACTION_MOVE_TO, position=43), Action(ACTION_OPEN_FULL),
                     Action(ACTION_CLOSE_FULL), Action(ACTION_STOP))
-        cover_logs = [message for level, message in self.app.logs
-                      if level == "INFO" and message.startswith("Cover ")]
+        cover_logs = [
+            message for level, message in self.app.logs
+            if level == "INFO" and message.startswith("Cover ")
+        ]
         self.assertEqual([
             "Cover move to 43%",
             "Cover open fully",
@@ -485,8 +506,7 @@ class TestActionTranslation(unittest.TestCase):
 
     def test_publish_writes_the_motion_beside_the_position(self):
         # The template cover's state template reads it to report opening/closing.
-        self._apply(Action(ACTION_PUBLISH_STATE, position=40, in_tilt=False,
-                           motion=MOTION_CLOSING))
+        self._apply(Action(ACTION_PUBLISH_STATE, position=40, in_tilt=False, motion=MOTION_CLOSING))
         published = self.app.published[POSITION_ENTITY]
         self.assertEqual(MOTION_CLOSING, published["attributes"]["motion"])
 

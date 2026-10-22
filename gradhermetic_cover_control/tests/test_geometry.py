@@ -322,8 +322,7 @@ class TestValidation(unittest.TestCase):
 
     def test_a_zone_near_the_top_limit_only_needs_room_for_the_release(self):
         # Epsilon no longer pads the upper edge, so it does not limit how high the zone may sit.
-        zone = _zone(tilt_zone_upper_pct=98, tilt_zone_lower_pct=92,
-                     tilt_zone_release_pct=99)
+        zone = _zone(tilt_zone_upper_pct=98, tilt_zone_lower_pct=92, tilt_zone_release_pct=99)
         self.assertEqual(99, zone.band_high)
 
     def test_release_at_or_above_a_hundred_raises(self):

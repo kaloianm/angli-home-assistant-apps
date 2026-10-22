@@ -78,7 +78,7 @@ def _commands(movement):
 def _leave_plan(target, command=COMMAND_POSITION, command_pct=None):
     """A hand-built exit plan, for the X1 checks that need shapes the planner will not produce."""
     step = Step(STEP_RISE_TO_AT_LEAST, target, command, command_pct=command_pct)
-    return Plan(PLAN_LEAVE, (step,), LATCH_UNLATCHED)
+    return Plan(PLAN_LEAVE, (step, ), LATCH_UNLATCHED)
 
 
 class TestEnterTilt(unittest.TestCase):
@@ -88,8 +88,7 @@ class TestEnterTilt(unittest.TestCase):
         for start in STARTS:
             for latch in (LATCH_UNLATCHED, LATCH_UNKNOWN):
                 with self.subTest(start=start, latch=latch):
-                    movement = plan(ZONE, _belief(start, latch),
-                                    Intent(INTENT_ENTER_TILT))
+                    movement = plan(ZONE, _belief(start, latch), Intent(INTENT_ENTER_TILT))
                     self.assertEqual(PLAN_ENTER, movement.kind)
                     self.assertEqual([100, DIP, UPPER], _targets(movement))
                     self.assertEqual([COMMAND_OPEN, COMMAND_POSITION, COMMAND_POSITION],
@@ -102,16 +101,14 @@ class TestEnterTilt(unittest.TestCase):
 
     def test_a_landing_of_zero_is_the_bare_three_step_sequence(self):
         # Virtual 0 is the closed edge, which is exactly where the latching rise ends.
-        movement = plan(ZONE, _belief(80),
-                        Intent(INTENT_ENTER_TILT, landing_virtual=0))
+        movement = plan(ZONE, _belief(80), Intent(INTENT_ENTER_TILT, landing_virtual=0))
         self.assertEqual([100, DIP, UPPER], _targets(movement))
 
     def test_a_mid_zone_landing_adds_one_in_zone_step(self):
         movement = plan(ZONE, _belief(80), Intent(INTENT_ENTER_TILT, landing_virtual=50))
         self.assertEqual([100, DIP, UPPER, 41], _targets(movement))
-        self.assertEqual(
-            [COMMAND_OPEN, COMMAND_POSITION, COMMAND_POSITION, COMMAND_POSITION],
-            _commands(movement))
+        self.assertEqual([COMMAND_OPEN, COMMAND_POSITION, COMMAND_POSITION, COMMAND_POSITION],
+                         _commands(movement))
         self.assertEqual(LATCH_LATCHED, movement.final_latch)
         self.assertTrue(ZONE.in_zone(movement.steps[3].target))
 
@@ -194,32 +191,32 @@ class TestWholeHeight(unittest.TestCase):
 
     def test_set_position_upward_needs_no_release(self):
         movement = plan(ZONE, _belief(41, LATCH_UNKNOWN), Intent(INTENT_SET_POSITION,
-                                                                   virtual_pct=90))
+                                                                 virtual_pct=90))
         self.assertEqual([90], _targets(movement))
 
     def test_set_position_downward_from_an_uncertain_belief_releases_first(self):
         movement = plan(ZONE, _belief(41, LATCH_UNKNOWN), Intent(INTENT_SET_POSITION,
-                                                                   virtual_pct=10))
+                                                                 virtual_pct=10))
         self.assertEqual([100, 10], _targets(movement))
         self.assertEqual(COMMAND_OPEN, movement.steps[0].command)
 
     def test_set_position_downward_from_a_known_release_descends_directly(self):
-        movement = plan(ZONE, _belief(80, LATCH_UNLATCHED), Intent(INTENT_SET_POSITION,
-                                                                     virtual_pct=10))
+        movement = plan(ZONE, _belief(80, LATCH_UNLATCHED),
+                        Intent(INTENT_SET_POSITION, virtual_pct=10))
         self.assertEqual([10], _targets(movement))
 
     def test_set_position_inside_the_band_snaps_to_an_edge(self):
-        movement = plan(ZONE, _belief(80, LATCH_UNLATCHED), Intent(INTENT_SET_POSITION,
-                                                                     virtual_pct=37))
+        movement = plan(ZONE, _belief(80, LATCH_UNLATCHED),
+                        Intent(INTENT_SET_POSITION, virtual_pct=37))
         self.assertEqual([DIP], _targets(movement))
-        movement = plan(ZONE, _belief(80, LATCH_UNLATCHED), Intent(INTENT_SET_POSITION,
-                                                                     virtual_pct=45))
+        movement = plan(ZONE, _belief(80, LATCH_UNLATCHED),
+                        Intent(INTENT_SET_POSITION, virtual_pct=45))
         self.assertEqual([RELEASE], _targets(movement))
 
     def test_set_position_to_the_current_position_is_not_a_descent(self):
         # Equal targets must not trip the descent guard; the executor skips the step instead.
         movement = plan(ZONE, _belief(50, LATCH_UNKNOWN), Intent(INTENT_SET_POSITION,
-                                                                   virtual_pct=50))
+                                                                 virtual_pct=50))
         self.assertEqual([50], _targets(movement))
 
     def test_set_position_from_a_band_edge_into_the_band_goes_to_the_far_edge(self):
@@ -235,8 +232,8 @@ class TestWholeHeight(unittest.TestCase):
         # From below the lower edge the rise latches on the way up and reaches the release height
         # with no margin at all; a position command cannot vouch for the release, so the belief it
         # commits is unknown and the next descent buys the full-open release.
-        for start, latch in ((20, LATCH_UNLATCHED), (DIP, LATCH_UNLATCHED),
-                             (41, LATCH_UNKNOWN), (None, LATCH_UNKNOWN)):
+        for start, latch in ((20, LATCH_UNLATCHED), (DIP, LATCH_UNLATCHED), (41, LATCH_UNKNOWN),
+                             (None, LATCH_UNKNOWN)):
             with self.subTest(start=start, latch=latch):
                 movement = plan(ZONE, _belief(start, latch),
                                 Intent(INTENT_SET_POSITION, virtual_pct=45))
@@ -277,6 +274,7 @@ class TestWholeHeight(unittest.TestCase):
                         Intent(INTENT_LONG_PRESS, direction=DIRECTION_DOWN))
         self.assertEqual([0], _targets(movement))
 
+
 class TestSlatMoves(unittest.TestCase):
 
     def test_open_and_close_become_in_zone_slat_moves(self):
@@ -313,9 +311,8 @@ class TestSlatMoves(unittest.TestCase):
                  Intent(INTENT_SLAT_STEP, direction=DIRECTION_UP)))
 
     def test_step_up_at_the_open_edge_leaves_tilt_for_a_wall_button(self):
-        movement = plan(
-            ZONE, _belief(LOWER, LATCH_LATCHED),
-            Intent(INTENT_SLAT_STEP, direction=DIRECTION_UP, cross_open_edge=True))
+        movement = plan(ZONE, _belief(LOWER, LATCH_LATCHED),
+                        Intent(INTENT_SLAT_STEP, direction=DIRECTION_UP, cross_open_edge=True))
         self.assertEqual(PLAN_LEAVE, movement.kind)
 
     def test_no_slat_move_without_a_latch_belief(self):
@@ -392,23 +389,22 @@ class TestHeightStep(unittest.TestCase):
 class TestCanChangeLatch(unittest.TestCase):
 
     def test_in_zone_plans_cannot(self):
-        self.assertFalse(can_change_latch(ZONE, plan(ZONE, _belief(UPPER, LATCH_LATCHED),
-                                                     Intent(INTENT_OPEN))))
+        self.assertFalse(
+            can_change_latch(ZONE, plan(ZONE, _belief(UPPER, LATCH_LATCHED), Intent(INTENT_OPEN))))
 
     def test_a_step_commanding_outside_the_zone_can(self):
         # The blind travels to the commanded position, so an in-zone target does not make a plan
         # harmless if what it actually sends leaves the zone.
         movement = Plan(PLAN_SLAT,
-                        (Step(STEP_MOVE_TO, 41, COMMAND_POSITION, command_pct=RELEASE),),
+                        (Step(STEP_MOVE_TO, 41, COMMAND_POSITION, command_pct=RELEASE), ),
                         LATCH_LATCHED)
         self.assertTrue(can_change_latch(ZONE, movement))
 
     def test_sequences_crossing_an_edge_can(self):
+        self.assertTrue(can_change_latch(ZONE, plan(ZONE, _belief(80), Intent(INTENT_ENTER_TILT))))
         self.assertTrue(
-            can_change_latch(ZONE, plan(ZONE, _belief(80), Intent(INTENT_ENTER_TILT))))
-        self.assertTrue(
-            can_change_latch(ZONE, plan(ZONE, _belief(UPPER, LATCH_LATCHED),
-                                        Intent(INTENT_LEAVE_TILT))))
+            can_change_latch(ZONE,
+                             plan(ZONE, _belief(UPPER, LATCH_LATCHED), Intent(INTENT_LEAVE_TILT))))
         self.assertTrue(can_change_latch(ZONE, plan(ZONE, _belief(80), Intent(INTENT_CLOSE))))
 
 
@@ -473,20 +469,20 @@ class TestInvariantRejections(unittest.TestCase):
     """check_plan must actually reject the shapes it exists to forbid."""
 
     def test_n1_rejects_a_normal_target_inside_the_band(self):
-        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 41),), LATCH_UNLATCHED)
+        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 41), ), LATCH_UNLATCHED)
         self.assertIn("N1", check_plan(ZONE, _belief(80), movement))
 
     def test_n1_allows_the_band_edges(self):
         for target in (DIP, RELEASE):
-            movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, target),), LATCH_UNLATCHED)
+            movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, target), ), LATCH_UNLATCHED)
             self.assertIsNone(check_plan(ZONE, _belief(80, LATCH_UNLATCHED), movement))
 
     def test_n1_applies_to_a_normal_plan_whatever_belief_it_commits(self):
-        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 41),), LATCH_UNKNOWN)
+        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 41), ), LATCH_UNKNOWN)
         self.assertIn("N1", check_plan(ZONE, _belief(80), movement))
 
     def test_r1_rejects_a_release_claimed_by_rising_to_the_release_height(self):
-        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, RELEASE),), LATCH_UNLATCHED)
+        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, RELEASE), ), LATCH_UNLATCHED)
         # From below the lower edge the rise latches; from an uncertain belief it may already be.
         self.assertIn("R1", check_plan(ZONE, _belief(20, LATCH_UNLATCHED), movement))
         self.assertIn("R1", check_plan(ZONE, _belief(DIP, LATCH_UNLATCHED), movement))
@@ -494,38 +490,39 @@ class TestInvariantRejections(unittest.TestCase):
         self.assertIn("R1", check_plan(ZONE, _belief(None, LATCH_UNKNOWN), movement))
 
     def test_r1_allows_what_cannot_have_crossed_the_lower_edge_latched(self):
-        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, RELEASE),), LATCH_UNLATCHED)
+        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, RELEASE), ), LATCH_UNLATCHED)
         # A descent onto the release height, and a rise that started at or above the lower edge
         # from a known release.
         self.assertIsNone(check_plan(ZONE, _belief(80, LATCH_UNLATCHED), movement))
         self.assertIsNone(check_plan(ZONE, _belief(LOWER, LATCH_UNLATCHED), movement))
         # A rise referenced by a full open first: the mechanism is released by construction.
-        guarded = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 100, COMMAND_OPEN),
-                                     Step(STEP_MOVE_TO, RELEASE)), LATCH_UNLATCHED)
+        guarded = Plan(PLAN_NORMAL,
+                       (Step(STEP_MOVE_TO, 100, COMMAND_OPEN), Step(STEP_MOVE_TO, RELEASE)),
+                       LATCH_UNLATCHED)
         self.assertIsNone(check_plan(ZONE, _belief(20, LATCH_UNKNOWN), guarded))
         # And the same rise committing an unknown belief makes no claim at all.
-        honest = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, RELEASE),), LATCH_UNKNOWN)
+        honest = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, RELEASE), ), LATCH_UNKNOWN)
         self.assertIsNone(check_plan(ZONE, _belief(20, LATCH_UNLATCHED), honest))
 
     def test_t1_rejects_a_slat_move_without_a_latch_belief(self):
-        movement = Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, 41),), LATCH_LATCHED)
+        movement = Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, 41), ), LATCH_LATCHED)
         self.assertIn("T1", check_plan(ZONE, _belief(41, LATCH_UNKNOWN), movement))
 
     def test_t1_rejects_a_slat_target_outside_the_zone(self):
-        movement = Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, 30),), LATCH_LATCHED)
+        movement = Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, 30), ), LATCH_LATCHED)
         self.assertIn("T1", check_plan(ZONE, _belief(41, LATCH_LATCHED), movement))
 
     def test_l1_rejects_an_unguarded_descent_from_an_uncertain_belief(self):
-        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 0, COMMAND_CLOSE),), LATCH_UNLATCHED)
+        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 0, COMMAND_CLOSE), ), LATCH_UNLATCHED)
         self.assertIn("L1", check_plan(ZONE, _belief(41, LATCH_UNKNOWN), movement))
         self.assertIn("L1", check_plan(ZONE, _belief(41, LATCH_LATCHED), movement))
 
     def test_l1_allows_a_descent_from_a_known_release(self):
-        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 0, COMMAND_CLOSE),), LATCH_UNLATCHED)
+        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 0, COMMAND_CLOSE), ), LATCH_UNLATCHED)
         self.assertIsNone(check_plan(ZONE, _belief(80, LATCH_UNLATCHED), movement))
 
     def test_e1_rejects_latching_outside_the_canonical_sequence(self):
-        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 80),), LATCH_LATCHED)
+        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 80), ), LATCH_LATCHED)
         self.assertIn("E1", check_plan(ZONE, _belief(41, LATCH_UNLATCHED), movement))
 
     def test_e1_rejects_an_enter_sequence_that_does_not_start_fully_open(self):
@@ -594,9 +591,10 @@ class TestInvariantRejections(unittest.TestCase):
     def test_x1_rejects_an_exit_that_stops_below_full_travel(self):
         # Parking in the band leaves the slats shut and makes the release depend on the actuator's
         # settling accuracy rather than on its top limit switch.
-        movement = Plan(PLAN_LEAVE,
-                        (Step(STEP_RISE_TO_AT_LEAST, RELEASE, COMMAND_POSITION,
-                              command_pct=RELEASE + 2),), LATCH_UNLATCHED)
+        movement = Plan(
+            PLAN_LEAVE,
+            (Step(STEP_RISE_TO_AT_LEAST, RELEASE, COMMAND_POSITION, command_pct=RELEASE + 2), ),
+            LATCH_UNLATCHED)
         violation = check_plan(ZONE, _belief(UPPER, LATCH_LATCHED), movement)
         self.assertIn("X1", violation)
         self.assertIn("fully open", violation)
@@ -605,8 +603,8 @@ class TestInvariantRejections(unittest.TestCase):
         # The open *command* is what runs the actuator against its limit switch; a position command
         # of 100 is still referenced against whatever the actuator believes its travel to be.
         movement = Plan(PLAN_LEAVE,
-                        (Step(STEP_RISE_TO_AT_LEAST, RELEASE, COMMAND_POSITION,
-                              command_pct=100),), LATCH_UNLATCHED)
+                        (Step(STEP_RISE_TO_AT_LEAST, RELEASE, COMMAND_POSITION, command_pct=100), ),
+                        LATCH_UNLATCHED)
         self.assertIn("X1", check_plan(ZONE, _belief(UPPER, LATCH_LATCHED), movement))
 
     def test_x1_allows_the_exit_the_planner_builds(self):
@@ -615,20 +613,18 @@ class TestInvariantRejections(unittest.TestCase):
 
     def test_n1_rejects_a_commanded_position_inside_the_band(self):
         # The hazard is where the blind physically stops, so the commanded position counts too.
-        movement = Plan(PLAN_NORMAL,
-                        (Step(STEP_MOVE_TO, DIP, COMMAND_POSITION, command_pct=41),),
+        movement = Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, DIP, COMMAND_POSITION, command_pct=41), ),
                         LATCH_UNLATCHED)
         self.assertIn("N1", check_plan(ZONE, _belief(80), movement))
 
     def test_t1_rejects_a_commanded_slat_position_outside_the_zone(self):
-        movement = Plan(PLAN_SLAT,
-                        (Step(STEP_MOVE_TO, 41, COMMAND_POSITION, command_pct=30),),
+        movement = Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, 41, COMMAND_POSITION, command_pct=30), ),
                         LATCH_LATCHED)
         self.assertIn("T1", check_plan(ZONE, _belief(41, LATCH_LATCHED), movement))
 
     def test_l1_rejects_a_commanded_descent_below_the_lower_edge(self):
         movement = Plan(PLAN_NORMAL,
-                        (Step(STEP_MOVE_TO, RELEASE, COMMAND_POSITION, command_pct=10),),
+                        (Step(STEP_MOVE_TO, RELEASE, COMMAND_POSITION, command_pct=10), ),
                         LATCH_UNLATCHED)
         self.assertIn("L1", check_plan(ZONE, _belief(41, LATCH_UNKNOWN), movement))
 

@@ -38,8 +38,10 @@ class TestCommandRateLimiting(unittest.TestCase):
     # apart instead would say nothing, since a cadence of one command per second can never gather
     # COMMAND_RATE_LIMIT of them inside a window that is COMMAND_RATE_WINDOW_SECONDS long.
     def _burst(self, count, start=0):
-        return [self.runtime.record_command(self.t0 + timedelta(milliseconds=start + i))
-                for i in range(count)]
+        return [
+            self.runtime.record_command(self.t0 + timedelta(milliseconds=start + i))
+            for i in range(count)
+        ]
 
     def test_within_limit_is_allowed(self):
         self.assertEqual([False] * COMMAND_RATE_LIMIT, self._burst(COMMAND_RATE_LIMIT))

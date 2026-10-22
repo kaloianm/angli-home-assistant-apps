@@ -222,8 +222,9 @@ class Executor:
         if self._saw_motion:
             # It moved and has now stopped somewhere else: judge it soon, not after the timeout.
             self._saw_motion = False
-            self._log(f"settled at {position} short of {self._step().target}; rechecking in "
-                      f"{SETTLED_RECHECK_SECONDS}s", level="DEBUG")
+            self._log(
+                f"settled at {position} short of {self._step().target}; rechecking in "
+                f"{SETTLED_RECHECK_SECONDS}s", level="DEBUG")
             return Outcome([_arm(SETTLED_RECHECK_SECONDS)], STATUS_RUNNING, self._plan)
         return Outcome()
 
@@ -251,8 +252,9 @@ class Executor:
         # a step that aims past it (the tilt exit) is a rise step and is never forgiven here.
         deviation = abs(position - step.target)
         if self._tolerates_deviation(step) and deviation <= DEVIATION_TOLERANCE_PCT:
-            self._log(f"accepting {position} for target {step.target}: settled within "
-                      f"{DEVIATION_TOLERANCE_PCT}% of the setpoint", level="WARNING")
+            self._log(
+                f"accepting {position} for target {step.target}: settled within "
+                f"{DEVIATION_TOLERANCE_PCT}% of the setpoint", level="WARNING")
             self._index += 1
             return self._advance(position, is_moving)
         # The blind is at rest: there is nothing to stop, and on a KNX actuator without a dedicated
@@ -311,8 +313,9 @@ class Executor:
                           level="DEBUG")
                 self._index += 1
                 continue
-            self._log(f"commanding {step.kind} {step.command_position} (satisfied at "
-                      f"{step.target}) from {position}", level="DEBUG")
+            self._log(
+                f"commanding {step.kind} {step.command_position} (satisfied at "
+                f"{step.target}) from {position}", level="DEBUG")
             self._saw_motion = False
             self._awaiting_arrival = True
             return Outcome([_command(step), _arm()], STATUS_RUNNING, self._plan)

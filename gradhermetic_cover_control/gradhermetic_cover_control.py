@@ -205,8 +205,8 @@ class GradhermeticCoverControl(hass.Hass):
         """
         try:
             position, is_moving, direction = _extract_feedback(new)
-            self._apply_actions(
-                self._runtime.logic.on_real_position(position, is_moving, direction))
+            self._apply_actions(self._runtime.logic.on_real_position(position, is_moving,
+                                                                     direction))
         except Exception as exc:
             self._report_error(f"_on_real_state(entity={entity!r})", exc)
 
@@ -220,8 +220,7 @@ class GradhermeticCoverControl(hass.Hass):
         try:
             self._runtime.settle_timer_handle = None
             position, is_moving, direction = self._read_real_position()
-            self._apply_actions(
-                self._runtime.logic.on_settle_timer(position, is_moving, direction))
+            self._apply_actions(self._runtime.logic.on_settle_timer(position, is_moving, direction))
         except Exception as exc:
             self._report_error("_on_settle", exc)
 
@@ -285,7 +284,7 @@ class GradhermeticCoverControl(hass.Hass):
             self._report_error(f"_on_step_button(entity={entity!r})", exc)
 
     def _on_tilt_button(self, entity: str, attribute: str, old: Any, new: Any,
-                       kwargs: Dict[str, Any]) -> None:
+                        kwargs: Dict[str, Any]) -> None:
         """
         Toggle tilt mode from the ``input_button`` tilt helper.
         """

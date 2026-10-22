@@ -478,8 +478,8 @@ class GradhermeticCoverLogic:
         actions: List[Action] = []
         if had_plan:
             actions = self._consume(self._executor.on_feedback(position, is_moving))
-        elif (was_moving and not is_moving and position is not None
-              and self._zone.in_band(position) and self._latch != LATCH_UNKNOWN):
+        elif (was_moving and not is_moving and position is not None and self._zone.in_band(position)
+              and self._latch != LATCH_UNKNOWN):
             # The real cover moved under external control and we did not see how it got here; a
             # rise across the lower edge latches.
             self._latch = LATCH_UNKNOWN
@@ -643,13 +643,12 @@ class GradhermeticCoverLogic:
         if self._position is None:
             state: _Published = (None, False, MOTION_IDLE)
         else:
-            state = (virtual_position(self._zone, display_latch, self._position), in_tilt,
-                     self._motion(in_tilt))
+            state = (virtual_position(self._zone, display_latch,
+                                      self._position), in_tilt, self._motion(in_tilt))
         if state == self._last_published:
             return []
         self._last_published = state
-        return [Action(ACTION_PUBLISH_STATE, position=state[0], in_tilt=state[1],
-                       motion=state[2])]
+        return [Action(ACTION_PUBLISH_STATE, position=state[0], in_tilt=state[1], motion=state[2])]
 
     def _motion(self, in_tilt: bool) -> str:
         """
@@ -690,7 +689,8 @@ class GradhermeticCoverLogic:
         self._executor.abandon()
         return [
             Action(ACTION_CANCEL_SETTLE_TIMER),
-            Action(ACTION_NOTIFY, notify_kind=NOTIFY_INVARIANT,
-                   message=(f"was disabled by a failed safety check: {violation}. This is a bug in "
-                            "the movement planner.")),
+            Action(
+                ACTION_NOTIFY, notify_kind=NOTIFY_INVARIANT,
+                message=(f"was disabled by a failed safety check: {violation}. This is a bug in "
+                         "the movement planner.")),
         ]

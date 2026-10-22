@@ -368,8 +368,7 @@ class TestInterruptions(ModelTestCase):
         ("guarded_descent", lambda: fresh(41, stride=8), lambda l: l.on_set_position(10)),
         # The tilt exit is a short move, so it needs a finer stride to have interior points at all.
         ("leave_tilt", lambda: latched_at(LOWER, stride=2), lambda l: l.on_set_tilt_mode(False)),
-        ("slat_step", lambda: latched_at(UPPER, stride=0.25),
-         lambda l: l.on_step(DIRECTION_UP)),
+        ("slat_step", lambda: latched_at(UPPER, stride=0.25), lambda l: l.on_step(DIRECTION_UP)),
         ("height_step_through_the_band", lambda: fresh(47, stride=2),
          lambda l: l.on_step(DIRECTION_DOWN)),
         # The same two sequences on a measured release and a landing mid-zone: a four-step entry
@@ -512,8 +511,9 @@ class TestFeedbackQuirks(ModelTestCase):
         # The report that used to complete a slat step before the blind had moved: a settled-looking
         # echo of the position the move started from.
         ("stale_echo", Quirks(report_motion_state=False, echo_before_moving=True)),
-        ("everything_at_once", Quirks(report_intermediate=False, report_motion_state=False,
-                                      duplicate_settled=True, echo_before_moving=True)),
+        ("everything_at_once",
+         Quirks(report_intermediate=False, report_motion_state=False, duplicate_settled=True,
+                echo_before_moving=True)),
     ]
 
     def test_every_intent_under_every_quirk(self):
@@ -757,10 +757,10 @@ class TestTheSlatOpenEdge(ModelTestCase):
         for label, zone in TestAlternateGeometries.ZONES + [("default", ZONE)]:
             for position in range(zone.lower, zone.upper + 1):
                 belief = Belief(position=position, latch=LATCH_LATCHED)
-                for name, intent in (
-                        ("open", Intent(INTENT_OPEN)),
-                        ("step_up", Intent(INTENT_SLAT_STEP, direction=DIRECTION_UP)),
-                        ("set_position_100", Intent(INTENT_SET_POSITION, virtual_pct=100))):
+                for name, intent in (("open", Intent(INTENT_OPEN)),
+                                     ("step_up", Intent(INTENT_SLAT_STEP, direction=DIRECTION_UP)),
+                                     ("set_position_100",
+                                      Intent(INTENT_SET_POSITION, virtual_pct=100))):
                     with self.subTest(zone=label, latched_at=position, intent=name):
                         movement = plan(zone, belief, intent)
                         if movement is None:
