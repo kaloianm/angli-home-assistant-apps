@@ -41,7 +41,7 @@ UPPER = 44.0
 LOWER = 38.0
 RELEASE = 46.0
 ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=2.0,
-            tilt_step_pct=1.2)
+            tilt_zone_release_pct=RELEASE, tilt_step_pct=1.2)
 
 
 def _kinds(outcome):

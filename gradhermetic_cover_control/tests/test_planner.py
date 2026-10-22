@@ -33,19 +33,20 @@ from gradhermetic_cover_control.planner import (
     plan,
 )
 
-# Zone [38, 44], epsilon 2, step 1.2 real travel percent -> band [36, 46]. Every configured number
-# is real blind travel; span 6 makes the 1.2% step 20 on the virtual scale the planner works in.
+# Zone [38, 44], epsilon 2, release 46, step 1.2 real travel percent -> band [36, 46]. Every
+# configured number is real blind travel; span 6 makes the 1.2% step 20 on the virtual scale the
+# planner works in.
 UPPER = 44.0
 LOWER = 38.0
 EPSILON = 2.0
 STEP = 1.2
 DIP = LOWER - EPSILON
-RELEASE = UPPER + EPSILON
+RELEASE = 46.0
 
 ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-            tilt_step_pct=STEP)
+            tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP)
 
-# The same zone with a measured release height well above the bare clearance, and an entry that
+# The same zone with a measured release height well above the zone, and an entry that
 # finishes at a slightly-open slat angle (real 41.6, i.e. virtual 40) instead of the closed edge.
 # Band = [36, 55].
 CUSTOM_RELEASE = 55.0
@@ -339,7 +340,8 @@ class TestHeightStep(unittest.TestCase):
         self.assertEqual([12.0], _targets(self._step(10.0, DIRECTION_UP)))
         self.assertEqual([8.0], _targets(self._step(10.0, DIRECTION_DOWN)))
         wide = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
-                    tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP, height_step_pct=5.0)
+                    tilt_zone_epsilon_pct=EPSILON, tilt_zone_release_pct=RELEASE,
+                    tilt_step_pct=STEP, height_step_pct=5.0)
         self.assertEqual([75.0], _targets(self._step(80.0, DIRECTION_DOWN, zone=wide)))
 
     def test_a_step_is_a_normal_plan_that_commits_a_release(self):
@@ -412,8 +414,8 @@ class TestCanChangeLatch(unittest.TestCase):
 class TestInvariantsHoldForEveryPlan(unittest.TestCase):
     """Every plan the planner can produce satisfies check_plan, over the whole state space."""
 
-    # Every geometry the config can express in kind: the default one, one whose release height is
-    # measured well above the bare clearance (so the band is much wider than the zone), and one
+    # Every geometry the config can express in kind: the base one, one whose release height is
+    # measured well above the zone (so the band is much wider than the zone), and one
     # whose entry lands mid-zone (so an enter plan has a fourth step that is neither zone edge).
     # The release can go no higher than 99: the band has to stop short of the top limit.
     ZONES = [
@@ -584,7 +586,7 @@ class TestInvariantRejections(unittest.TestCase):
         self.assertIn("X1", check_plan(ZONE, _belief(UPPER, LATCH_LATCHED), movement))
 
     def test_x1_rejects_an_exit_short_of_a_configured_release_height(self):
-        # The bare clearance is no longer enough once the true release height has been measured.
+        # The base fixture's release height is not enough on a blind that releases higher up.
         movement = _leave_plan(RELEASE)
         self.assertIn("X1", check_plan(CUSTOM_ZONE, _belief(UPPER, LATCH_LATCHED), movement))
 
