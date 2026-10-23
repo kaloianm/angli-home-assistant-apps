@@ -99,8 +99,7 @@ class GradhermeticCoverControl(hass.Hass):
 
         self.run_in(self._seed_startup_state, STARTUP_DELAY_SECONDS)
 
-        self.log(f"GradhermeticCoverControl initialized for '{config.virtual_id}' "
-                 f"wrapping {config.real_cover}.")
+        self.log(f"Initialized for '{config.virtual_id}' wrapping {config.real_cover}.")
 
     # -- Startup -----------------------------------------------------------------------------------
 

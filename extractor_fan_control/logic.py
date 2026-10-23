@@ -290,9 +290,8 @@ class ExtractorFanPairLogic:
         target_fan_on = occupancy_active or schedule_active
         target_keepalive_on = target_fan_on
 
-        activation_timer = (self._activation_due_at
-                            if self._light_is_on and not self._occupancy_active_while_light_on else
-                            None)
+        activation_timer = (self._activation_due_at if self._light_is_on
+                            and not self._occupancy_active_while_light_on else None)
         deadline_timer = self._compute_next_deadline(now)
 
         return {
