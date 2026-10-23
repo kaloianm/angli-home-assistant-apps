@@ -414,23 +414,15 @@ class TestInterruptions(ModelTestCase):
     @staticmethod
     def _settle_out(harness):
         """
-        Give the plan the one fallback the design provides, if it is waiting on the settle timer.
+        Fire the settle timer if the plan is waiting on it.
 
-        A replacement plan is commanded while the blind is still travelling -- deliberately, since a
-        blind passing through a position is not resting on it -- and an actuator commanded to the
-        position it is passing through is already on its setpoint: it stops and reports nothing,
-        because nothing changed. That is precisely the "reported no intermediate states, or none at
-        all" case the settle timer exists for, so the sequence comes to rest one timer firing later
-        rather than never. It costs the fallback timeout and nothing else: no violation, no stall,
-        and the belief stays sound throughout.
+        A replacement commanded to the position the blind is passing through stops it without any
+        new report, so the plan only advances on the timer.
         """
         if harness.logic.has_pending_plan:
             harness.fire_timer()
 
-    # The sweep above runs on a controller that reports everything, and the quirk sets are only
-    # ever driven from rest. Crossing them is where a replacement plan meets a controller that
-    # reports oddly -- which is exactly what the settled-short recheck has to reason about, since
-    # it decides whether a stop has anything left to stop.
+    # Interruptions crossed with feedback quirks, which the sweep above does not cover.
     QUIRK_SEQUENCES = [
         ("enter_from_above", lambda **kw: fresh(80, stride=8, **kw),
          lambda l: l.on_set_tilt_mode(True)),
@@ -464,13 +456,7 @@ class TestInterruptions(ModelTestCase):
     @staticmethod
     def _settle_fully(harness):
         """
-        Fire the fallback timer until the plan comes to rest.
-
-        A quirky controller can need more than one firing: a replacement commanded while the blind
-        was passing through its target reports nothing at all, and on a controller that also
-        withholds intermediate positions the step after it has nothing to advance on either. The
-        design's answer to both is the same fallback timer, so the only question a test can ask is
-        whether it does converge -- and how many firings it takes is bounded.
+        Fire the settle timer until the plan comes to rest, within a bounded number of firings.
         """
         for _ in range(4):
             if not harness.logic.has_pending_plan:
@@ -733,22 +719,10 @@ class TestSettleTimerAgainstTheModel(ModelTestCase):
 
 class TestTheSlatOpenEdge(ModelTestCase):
     """
-    The fully-open slat angle is the zone's lower edge exactly, and deliberately so.
+    The fully-open slat angle is exactly the lower edge, with no clearance margin.
 
-    It is the one landmark with no clearance margin of its own, which looks like an oversight next
-    to the dip and the release height until you ask what the margin would be protecting. The rule
-    it would pad is "never travel below the lower edge while latched", and what that rule exists to
-    prevent is the app *aiming* a descent through the slat range -- a close, a long press down -- on
-    an engaged mechanism. That is invariant L1, and the planner sweep proves no plan ever does it.
-
-    A margin here would instead pad against the actuator overshooting its own setpoint by a
-    fraction of a percent, and it could only be bought by moving the configured edge up, which
-    would make the slider's "fully open" stop short of the slats actually being fully open. That
-    trade is not worth making: the cost is visible every time the slats are opened, while the
-    overshoot is a few tens of milliseconds of travel against a stop the slats have already reached.
-    An actuator drifting far enough for it to matter has already put every slat angle, the entry
-    landing included, somewhere other than where the app believes -- so the open edge is not a weak
-    point in the design, it is simply where a zero-tolerance assertion happens to trip first.
+    A margin would only guard against sub-percent setpoint overshoot, at the cost of "fully open"
+    stopping short of fully open. L1 already prevents aimed descents below the edge.
     """
 
     def test_the_app_never_aims_below_the_open_edge_while_latched(self):

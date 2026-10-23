@@ -1,16 +1,9 @@
 """
-Pure config models and parsing for GradhermeticCoverControl.
+Config parsing for GradhermeticCoverControl.
 
-This module only reads and type-checks the ``apps.yaml`` args. Every rule relating the tilt-zone
-numbers to each other lives in :mod:`geometry`, which this module delegates to by constructing a
-:class:`~gradhermetic_cover_control.geometry.Zone`.
-
-Every percentage in the config is a **whole percent of real blind travel** -- the numbers the
-actuator reports and accepts. ``38`` and ``38.0`` both read as 38; ``38.5`` is rejected rather
-than rounded, because the actuator has no such position and silently moving a calibrated edge
-would hide the mistake. The inverted virtual slat scale exists only inside the app (it is what the
-cover entity's position slider shows while tilt mode is engaged), and :class:`Zone` is the only
-place the two meet.
+Reads and type-checks the ``apps.yaml`` args; rules relating the tilt-zone numbers to each other
+live in :class:`~gradhermetic_cover_control.geometry.Zone`. Percentages must be whole: ``38.5`` is
+rejected rather than silently rounding a calibrated edge.
 """
 
 from __future__ import annotations
@@ -64,15 +57,12 @@ def parse_app_config(args: Dict[str, Any]) -> GradhermeticConfig:
     virtual_id = _require_non_empty_str(args, "virtual_id")
     virtual_name = _require_non_empty_str(args, "virtual_name")
 
-    # Read each number in isolation here (present, whole, in range); Zone owns every rule that
-    # relates them to one another and raises naming the same apps.yaml keys.
     zone = Zone(
         tilt_zone_upper_pct=_parse_percentage(args, "tilt_zone_upper_pct"),
         tilt_zone_lower_pct=_parse_percentage(args, "tilt_zone_lower_pct"),
         tilt_zone_epsilon_pct=_parse_positive_whole(args, "tilt_zone_epsilon_pct"),
         tilt_zone_release_pct=_parse_percentage(args, "tilt_zone_release_pct"),
         tilt_step_pct=_parse_positive_whole(args, "tilt_step_pct"),
-        # Optional: absent means "keep the geometric default", which Zone supplies.
         tilt_zone_enter_pct=_optional_percentage(args, "tilt_zone_enter_pct"),
         **_optional_field(args, "height_step_pct", _parse_positive_whole),
     )
@@ -121,9 +111,6 @@ def _parse_percentage(source: Dict[str, Any], key: str) -> int:
 def _optional_percentage(source: Dict[str, Any], key: str) -> Optional[int]:
     """
     Read an optional whole-number field, enforcing 0 <= value <= 100 when it is present.
-
-    Absent (or explicitly null) means the caller keeps its own default; anything relating the value
-    to the rest of the geometry is Zone's business.
     """
     if source.get(key) is None:
         return None

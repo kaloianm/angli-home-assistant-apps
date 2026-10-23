@@ -1,30 +1,18 @@
 """
 A ground-truth model of the physical Gradhermetic blind.
 
-The app's tests can only prove the app consistent with itself. This simulator supplies the other
-half: an independent model of the mechanism that records a **violation** whenever it is asked to
-travel below the lower zone edge while latched. Tests assert zero violations, which is the safety
-proof.
+An independent model of the mechanism that records a **violation** whenever it is asked to travel
+below the lower zone edge while latched. Tests assert zero violations.
 
-The latch model is deliberately the most pessimistic one consistent with the hardware:
+The latch model is the most pessimistic one consistent with the hardware:
 
-- *any* upward crossing of the lower edge that starts below it engages the latch;
-- only a rise reaching the zone's **release target** releases it -- not merely clearing the upper
-  edge. On the real mechanism carrying the *reported* position out of the zone is not always enough
-  to disengage the latch, which is what ``tilt_zone_release_pct`` exists to measure;
+- any upward crossing of the lower edge from below engages the latch;
+- only a rise reaching the **release target** releases it;
 - downward travel never changes it.
 
-Plans that are correct under this model are also correct under milder, reversal-only models, because
-they never rely on a crossing *not* latching.
-
-The blind's *physical* position and its calibration error are real-valued, because they are physics:
-a motor does not stop on whole percents. Everything the simulator *reports* to the app is a whole
-percent, exactly as a KNX actuator's feedback is.
-
-An optional calibration-drift knob models the fact the whole redesign turns on: the actuator's
-reported percentage may not match the blind's true position, and only reaching the top limit
-re-references it. With drift enabled, a sequence that starts from a full open still lands exactly
-where it intends, while a short rise to a merely *reported* percentage does not.
+Physical position and calibration error are real-valued; reported positions are whole percents, as
+from a KNX actuator. Optional calibration drift makes reported positions differ from physical ones
+until the blind reaches the top limit.
 """
 
 from __future__ import annotations
@@ -220,10 +208,6 @@ class BlindSimulator:
     def _apply_latch(self, start: float, end: float) -> None:
         """
         Update the latch for one step of travel, under the conservative crossing model.
-
-        Engaging is easy and releasing is hard: any rise across the lower edge latches, while
-        nothing short of reaching the release target lets go. Written so a release target at the top
-        limit still releases when the blind gets there.
         """
         if end <= start:
             return

@@ -1,20 +1,15 @@
 """
 The state machine for one Gradhermetic cover.
 
-This module holds the app's *belief* about the blind and routes events to the two pure modules that
-do the thinking: :mod:`planner` compiles an intent into a movement plan, :mod:`executor` drives that
-plan and decides every timing question. It has no AppDaemon or Home Assistant dependencies -- the
-adapter feeds events in and performs the returned actions.
+Holds the app's *belief* about the blind and routes events to :mod:`planner` (intent -> plan) and
+:mod:`executor` (drives the plan). Returns declarative actions; no AppDaemon dependencies.
 
 The belief has three parts:
 
-- ``position`` -- the last real travel position reported by the controller, or ``None`` once the
-  cover becomes unavailable. An unknown position makes every guard conservative automatically.
-- ``latch`` -- ``LATCHED`` / ``UNLATCHED`` / ``UNKNOWN``, event-sourced rather than derived from the
-  position, because a position inside the band is neither necessary nor sufficient for being
-  latched. Only a completed enter sequence establishes ``LATCHED``; everything else can only
-  degrade it.
-- ``is_moving`` -- whether the blind is travelling, from feedback, and which way.
+- ``position`` -- the last reported real travel position, or ``None`` while unavailable.
+- ``latch`` -- ``LATCHED`` / ``UNLATCHED`` / ``UNKNOWN``. Tracked from events, not derived from the
+  position: a position inside the band neither proves nor rules out a latch.
+- ``is_moving`` -- whether the blind is travelling, and which way.
 
 Latch transitions, in full:
 
@@ -25,11 +20,9 @@ Latch transitions, in full:
   could have crossed a zone edge; externally-caused motion ending inside the band; the cover
   becoming unavailable; a position-commanded rise that ends exactly on the release height.
 
-Publishing is this module's job too: after every event it emits what the virtual cover should show
--- position, mode and motion -- whenever that differs from what it last emitted. The mode shown is
-the belief the app would hold if the plan in flight were interrupted right now, so an entry shows
-the real height climbing to the top and back until the moment it actually latches, and an exit
-shows height mode from the moment it starts.
+After every event it publishes position, mode and motion if they changed. The mode shown is the
+belief the app would hold if the plan in flight were interrupted now: an entry shows tilt mode only
+once it latches, an exit drops it at once.
 """
 
 from __future__ import annotations
@@ -95,13 +88,6 @@ class GradhermeticCoverLogic:
     ) -> None:
         """
         Create logic state for one blind.
-
-        ``zone`` holds the tilt-zone geometry. All runtime state is kept internally and every public
-        event method returns declarative actions.
-
-        ``log`` is called as ``log(message, level=...)``. Only decisions worth seeing in the normal
-        log are logged at ``INFO``; the per-event/per-step trace explaining how a decision was
-        reached goes to ``DEBUG``.
         """
         self._zone = zone
         self._log = log
@@ -110,12 +96,9 @@ class GradhermeticCoverLogic:
         self._position: Optional[int] = None
         self._latch = LATCH_UNKNOWN
         self._is_moving = False
-        # Which way the blind is travelling in real terms, while it is; from the controller when
-        # it says, else from the trend of its reported positions.
+        # Real direction of travel: from the controller if it says, else from the position trend.
         self._direction: Optional[str] = None
-        # Whether this controller has ever reported the blind moving. Some integrations publish
-        # positions but never an opening/closing state, and for those a settled-looking report
-        # carries no information about motion at all -- see :meth:`_may_be_travelling`.
+        # Whether this controller has ever reported motion; see _may_be_travelling.
         self._controller_reports_motion = False
         self._executor = Executor(zone, log)
         self._last_published: Optional[_Published] = None
@@ -176,11 +159,8 @@ class GradhermeticCoverLogic:
     def seed_state(self, last_position: Optional[int], is_moving: bool = False,
                    direction: Optional[str] = None) -> None:
         """
-        Establish the belief from a first position reading, before any events are processed.
-
-        State is never persisted across restarts, so the latch belief starts from the position
-        alone: clearly outside the band the mechanism cannot be latched, and anywhere else it is
-        genuinely unknown.
+        Establish the belief from a first position reading: unlatched if clear of the band,
+        otherwise unknown.
         """
         self._position = last_position
         self._is_moving = bool(is_moving) and last_position is not None
@@ -195,12 +175,8 @@ class GradhermeticCoverLogic:
         """
         Seed the belief from the first position reading. Startup never moves the blind.
 
-        An unreadable or in-band position leaves the latch belief ``UNKNOWN``, and that is where it
-        stays: re-referencing the actuator is deferred to the first action that actually needs a
-        trusted position. Every such action already opens fully on its own -- every descent is
-        guarded by one, every tilt entry begins with one, and opening is one -- so the reference is
-        bought lazily, by the move that needs it, instead of raising the blind unprompted in the
-        middle of the night after a power cut.
+        An unknown latch is not resolved here: every move that needs a trusted position already
+        starts with a full open, so the blind is not raised unprompted after a power cut.
         """
         if self._disabled:
             return []
@@ -249,18 +225,9 @@ class GradhermeticCoverLogic:
 
     def on_stop(self) -> List[Action]:
         """
-        Handle ``cover.stop_cover``: abandon the current plan and stop travel.
-
-        The stop command itself goes out only when the blind might actually be travelling: the
-        controller has told us it is moving, or a command has gone out for the current step and no
-        settled report has come back for it yet (:attr:`Executor.may_be_travelling`). A pending
-        plan by itself is not enough -- the settled-short recheck keeps a plan open for a few
-        seconds after the blind has already reported coming to rest, and sending a stop then is
-        the exact defect this app exists to prevent: on a KNX actuator with no dedicated stop
-        object, Home Assistant carries ``cover.stop_cover`` on the step object, which nudges an
-        idle blind instead of stopping it. When the controller has told us the blind is at rest
-        there is nothing to stop; when a command is outstanding and nothing has come back, a stop
-        is the safe response to genuinely not knowing.
+        Handle ``cover.stop_cover``: abandon the current plan, and send a stop only if the blind
+        may be travelling (see :attr:`Executor.may_be_travelling` for why an idle blind must not
+        get one).
         """
         if self._disabled:
             return []
@@ -281,29 +248,11 @@ class GradhermeticCoverLogic:
 
     def on_set_tilt_mode(self, enabled: bool) -> List[Action]:
         """
-        Handle the custom ``set_tilt_mode`` service.
+        Handle the ``set_tilt_mode`` command: enter (landing on ``tilt_zone_enter_pct``) or leave.
 
-        Entering latches the mechanism and finishes at the configured ``tilt_zone_enter_pct``
-        slat angle -- a real travel position inside the zone, which :class:`Zone` converts to the
-        virtual scale the enter intent speaks; leaving disengages it upward. Both are no-ops when
-        the blind is already in the requested mode.
-
-        The landing exists because the latching rise necessarily ends at the closed edge, where some
-        blinds show no visible slat opening at all -- a deliberate "enter tilt" is worth nothing if
-        it lands somewhere the user cannot see it worked.
-
-        "Already in the requested mode" is read off :meth:`_displayed_in_tilt`, the belief the
-        dashboard shows, rather than the raw latch: a ``PLAN_NORMAL`` started from a latched belief
-        (a KNX long press up, say) degrades the displayed belief long before the raw latch itself
-        changes, which only happens when that plan completes or stalls. Deciding from the raw latch
-        instead would silently refuse a request the dashboard chip claims is still available.
-
-        A request for the mode already being entered or left is a no-op rather than a restart:
-        repeating it would replan the sequence from scratch on every press, each one a real-cover
-        command counted against the rate limit. A request to leave while an entry is in flight, or
-        to enter while an exit is in flight, stops the plan that is running, which is the nearest
-        thing to what was asked -- and, for the entry case, is also what a wrong final belief would
-        otherwise result in as the exit is left to run to completion behind the user's back.
+        A no-op if already in, entering or leaving the requested mode, judged by what the
+        dashboard shows (:meth:`_displayed_in_tilt`). Requesting the opposite of a sequence in
+        flight stops it.
         """
         if self._disabled:
             return []
@@ -331,17 +280,8 @@ class GradhermeticCoverLogic:
 
     def on_toggle_tilt_mode(self) -> List[Action]:
         """
-        Toggle tilt mode from a control that has no state of its own: the dashboard tilt helper,
-        or the KNX tilt address.
-
-        While an entry or an exit is in flight the toggle cancels it, whatever the belief happens
-        to read mid-sequence. A toggle read off the belief alone would instead restart the very
-        sequence the user is tapping at, once per tap.
-
-        The direction to toggle is decided from :meth:`_displayed_in_tilt`, the same belief
-        :meth:`_publish_current` shows, rather than the raw latch: they disagree during any
-        ``PLAN_NORMAL`` started from a latched belief, which a KNX long press up starts, and
-        toggling off the raw latch there would ask to leave a mode the chip already shows as left.
+        Toggle tilt mode (dashboard tilt helper, KNX tilt address). Cancels an entry or exit in
+        flight; otherwise toggles what the dashboard shows (:meth:`_displayed_in_tilt`).
         """
         if self._disabled:
             return []
@@ -352,14 +292,10 @@ class GradhermeticCoverLogic:
 
     def _may_be_travelling(self) -> bool:
         """
-        Whether the blind might be moving right now, as conservatively as the feedback allows.
+        Whether the blind might be moving right now.
 
-        The controller saying so settles it. Otherwise a command that has gone out and not yet been
-        answered by a settled report means it might be (:attr:`Executor.may_be_travelling`), and a
-        settled report means it is not -- but only on a controller that reports motion at all. One
-        that only ever publishes positions reports ``is_moving`` false throughout a move, so
-        reading its settled-looking reports as "stopped" would lose the stop command on a blind
-        that is still travelling. For those, an outstanding plan is the only signal there is.
+        Some controllers report positions but never motion; for those a settled-looking report
+        proves nothing, so any pending plan counts as possibly moving.
         """
         if self._is_moving:
             return True
@@ -369,13 +305,8 @@ class GradhermeticCoverLogic:
 
     def _displayed_in_tilt(self) -> bool:
         """
-        Whether the belief the app would show right now -- if any plan in flight were interrupted
-        at this instant -- is latched.
-
-        This is what :meth:`_publish_current` displays, so it is also what "already in the
-        requested mode" has to mean for :meth:`on_set_tilt_mode` and :meth:`on_toggle_tilt_mode`:
-        the raw latch only updates when a plan completes or stalls, so it can read LATCHED for a
-        good while after a running plan has already committed to leaving tilt behind.
+        Whether the published mode is tilt. Differs from the raw latch while a plan that leaves
+        tilt (e.g. a KNX long press up) is still running.
         """
         return self._belief_after_interrupt().latch == LATCH_LATCHED
 
@@ -392,32 +323,24 @@ class GradhermeticCoverLogic:
 
     def on_knx_short(self, direction: str) -> List[Action]:
         """
-        Handle a short wall-button press: the step rule of :meth:`on_step`, plus one thing only a
-        two-button wall switch needs -- an up step at the open slat edge leaves tilt upward.
+        Handle a short wall-button press: :meth:`on_step`, except that an up step at the open
+        slat edge leaves tilt.
         """
         return self._step(direction, cross_open_edge=True)
 
     def on_step(self, direction: str) -> List[Action]:
         """
-        Handle a press of a dashboard step helper (the ``..._step_up`` / ``..._step_down``
-        input_buttons): stop, else step slats, else step height.
+        Handle a dashboard step button press.
         """
         return self._step(direction, cross_open_edge=False)
 
     def _step(self, direction: str, cross_open_edge: bool) -> List[Action]:
         """
-        The step rule every step control shares, in priority order:
+        The step rule shared by all step controls, like a KNX stop/step object:
 
-        1. If anything is moving -- a plan in flight or the blind reported travelling -- stop it.
-           This is what a KNX stop/step object does, and what a step press means mid-move.
-        2. If latched, step the slats by one ``tilt_step_pct`` of real travel, clamping at the
-           closed edge always and at the open edge unless ``cross_open_edge``.
-        3. Otherwise step the height by one ``height_step_pct``, skipping the ambiguity band in the
-           direction of travel. A step down while the latch might be engaged pays the full-open
-           release first, like every other descent.
-
-        A press that plans nothing -- at a travel limit, at a slat edge, with no position -- says
-        so in the log instead of vanishing.
+        1. If anything is moving, stop it.
+        2. If latched, step the slats by ``tilt_step_pct``.
+        3. Otherwise step the height by ``height_step_pct``, skipping over the ambiguity band.
         """
         if self._disabled:
             return []
@@ -427,8 +350,6 @@ class GradhermeticCoverLogic:
             intent = Intent(INTENT_SLAT_STEP, direction=direction, cross_open_edge=cross_open_edge)
         else:
             intent = Intent(INTENT_HEIGHT_STEP, direction=direction)
-        # No plan is pending here (the check above already returned otherwise), so the belief this
-        # is planned from is simply the current one -- there is nothing to interrupt.
         belief = self.belief()
         movement = planner.plan(self._zone, belief, intent)
         if movement is None:
@@ -439,10 +360,6 @@ class GradhermeticCoverLogic:
     def _describe_step_limit(self, direction: str) -> str:
         """
         Why a step press has nowhere to go, for the log.
-
-        Every step moves at least one whole percent, and a step into the band continues to the band
-        edge ahead of it, so the only place a height step has nowhere to go is the travel limit it
-        is pointing at.
         """
         if self._position is None:
             return "the blind's position is unknown"
@@ -457,16 +374,8 @@ class GradhermeticCoverLogic:
     def on_real_position(self, position: Optional[int], is_moving: bool,
                          direction: Optional[str] = None) -> List[Action]:
         """
-        Consume controller position/motion feedback, advancing any plan in progress.
-
-        ``direction`` is the real direction of travel when the controller reports one; without it
-        the direction is read off the trend of the reported positions.
-
-        A ``None`` position means the cover became unavailable: the motion belief is cleared and the
-        latch belief degrades to unknown, so no later decision reasons from a stale position.
-
-        Every reading ends in a publish of whatever changed -- position, mode or motion -- which is
-        what makes the virtual cover show travel as it happens rather than only where it ended.
+        Consume controller position/motion feedback, advancing any plan in progress. A ``None``
+        position means the cover became unavailable.
         """
         if self._disabled:
             return []
@@ -480,8 +389,7 @@ class GradhermeticCoverLogic:
             actions = self._consume(self._executor.on_feedback(position, is_moving))
         elif (was_moving and not is_moving and position is not None and self._zone.in_band(position)
               and self._latch != LATCH_UNKNOWN):
-            # The real cover moved under external control and we did not see how it got here; a
-            # rise across the lower edge latches.
+            # External motion ended in the band; it may have latched on the way.
             self._latch = LATCH_UNKNOWN
             self._log("latch belief cleared: external motion ended inside the tilt band")
         return actions + self._publish_current()
@@ -490,14 +398,6 @@ class GradhermeticCoverLogic:
                         direction: Optional[str] = None) -> List[Action]:
         """
         Consume a settle-timer firing, with the controller state read at the moment it fired.
-
-        The executor decides what it means: keep waiting through a long travel, accept an actuator
-        that reported only its final state (or stopped a hair short), or declare a stall.
-
-        ``direction`` is the real direction of travel when the controller reports one at that
-        moment, exactly as :meth:`on_real_position` accepts it; without it :meth:`_observe` falls
-        back to the trend of the reported positions, which cannot help while a long move is
-        settled on the same position it was last observed at.
         """
         if self._disabled or not self.has_pending_plan:
             return []
@@ -511,9 +411,8 @@ class GradhermeticCoverLogic:
         """
         Plan an intent from the current belief, check it, and start executing it.
 
-        A plan already in flight is replaced rather than queued: the replacement is derived from the
-        belief as it will be *after* the interruption, so it re-derives every safety guard. An
-        intent that plans to nothing leaves any in-flight plan alone.
+        A plan in flight is replaced, planned from the belief as it will be after the
+        interruption. An intent that plans to nothing leaves it alone.
         """
         if self._disabled:
             return []
@@ -525,13 +424,7 @@ class GradhermeticCoverLogic:
 
     def _execute(self, belief: Belief, movement: Plan) -> List[Action]:
         """
-        Check an already-planned movement and start executing it, replacing any plan in flight.
-
-        Split out of :meth:`_run` so a caller that has to inspect the plan before deciding what to
-        do -- :meth:`_step`, which needs to know whether there is one at all before it can say why
-        there is not -- plans it once rather than calling :func:`planner.plan` a second time with
-        the same belief and intent. The safety check runs on exactly the plan that is about to
-        execute, derived from exactly the belief it was planned from.
+        Safety-check a planned movement and start executing it, replacing any plan in flight.
         """
         violation = planner.check_plan(self._zone, belief, movement)
         if violation is not None:
@@ -553,13 +446,7 @@ class GradhermeticCoverLogic:
     def _observe(self, position: Optional[int], is_moving: bool,
                  direction: Optional[str] = None) -> None:
         """
-        Fold a controller reading into the belief.
-
-        Feedback can only ever degrade the latch belief: a blind resting clear of the band cannot be
-        latched, and an unreadable position means we no longer know anything about it.
-
-        Motion reported even once is remembered for the life of the app, because it is what makes
-        this controller's *absence* of motion meaningful (see :meth:`_may_be_travelling`).
+        Fold a controller reading into the belief. Feedback can only degrade the latch belief.
         """
         if is_moving:
             self._controller_reports_motion = True
@@ -615,10 +502,8 @@ class GradhermeticCoverLogic:
         """
         What the latch belief becomes if ``movement`` is abandoned where the blind is now.
 
-        A plan whose every target lies inside the zone is pure slat rotation and cannot have changed
-        anything, so a confident belief survives its interruption -- otherwise stopping a slat move
-        would drop the blind out of tilt mode. Any other plan may have been interrupted
-        mid-crossing, which is exactly the case the latch invariant exists for.
+        Interrupting a pure slat move keeps a confident latch; anything else may have stopped
+        mid-crossing.
         """
         if self._latch == LATCH_LATCHED and not planner.can_change_latch(self._zone, movement):
             return LATCH_LATCHED
@@ -628,15 +513,8 @@ class GradhermeticCoverLogic:
 
     def _publish_current(self) -> List[Action]:
         """
-        Emit what the virtual cover shows now, if it differs from what was last emitted.
-
-        Three things travel together: the position, the scale it is on, and the motion. The scale
-        is decided by the belief the app would hold if the plan in flight were interrupted this
-        instant (:meth:`_belief_after_interrupt`), never by the plan's hoped-for outcome -- so the
-        mode flag claims slat control only while the app would stand behind that claim. A
-        pure slat move keeps it; an entry earns it on completion; an exit drops it at once.
-
-        An unknown position is published as such (``position=None``) rather than left stale.
+        Emit position, mode and motion if they differ from what was last emitted. The mode comes
+        from :meth:`_belief_after_interrupt`, not from the plan's intended outcome.
         """
         display_latch = self._belief_after_interrupt().latch
         in_tilt = display_latch == LATCH_LATCHED
@@ -652,15 +530,11 @@ class GradhermeticCoverLogic:
 
     def _motion(self, in_tilt: bool) -> str:
         """
-        What the blind is doing, on the scale the published position is on.
+        What the blind is doing, on the published scale.
 
-        The real direction comes from the controller while it reports motion, else from the step
-        being driven toward -- but only while a command for it might still be outstanding
-        (:attr:`Executor.may_be_travelling`). Once a settled report has come back, that step is no
-        longer where the blind is headed, satisfied or not, and still claiming it were would
-        animate a stopped blind for the whole settled-short recheck -- or the whole settle timeout,
-        on a controller that never reports motion state at all. On the slat scale the sense
-        inverts: a real descent opens the slats.
+        The direction comes from the controller, else from the step being driven toward while a
+        command for it may be outstanding. On the slat scale it inverts: a real descent opens the
+        slats.
         """
         real = self._direction if self._is_moving else None
         step = self._executor.current_step if self._may_be_travelling() else None
@@ -678,11 +552,7 @@ class GradhermeticCoverLogic:
 
     def _fail_invariant(self, violation: str) -> List[Action]:
         """
-        Refuse a plan that failed a safety check, and disable the blind.
-
-        Unreachable by construction -- the planner is written to satisfy every invariant and the
-        model tests prove it does -- so reaching here means a planner bug, and the safe response is
-        to stop deciding anything for this blind until a human looks at it.
+        Refuse a plan that failed a safety check (a planner bug) and disable the blind.
         """
         self._log(f"refusing a plan that violates {violation}", level="ERROR")
         self._disabled = True

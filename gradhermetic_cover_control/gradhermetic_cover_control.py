@@ -1,32 +1,10 @@
 """
-AppDaemon entry point for GradhermeticCoverControl.
+AppDaemon adapter for GradhermeticCoverControl.
 
-The virtual cover is surfaced to Home Assistant without MQTT: a small template cover (defined in the
-HA config) forwards user commands to this app as ``gradhermetic_command`` events. AppDaemon cannot
-register a controllable cover entity by itself, so that template is the one irreducible HA-side
-shim; everything else the app owns. The displayed position is not an ``input_number`` helper the
-user must declare -- the app publishes it directly via ``set_state`` onto
-``sensor.gradhermetic_<id>_position``, which the template cover reads. Beside it goes
-``binary_sensor.gradhermetic_<id>_tilt_mode``: whether that position is a slat angle rather than a
-height. Nothing in HA can derive that -- a real position inside the tilt zone is neither necessary
-nor sufficient for being latched, which is the whole reason the app event-sources a latch belief --
-so the app publishing its own belief is the only honest source, and it is what lets a dashboard show
-which mode the blind is in.
-
-Stepping and tilt engagement are exposed as dumb ``input_button`` helpers the app listens on:
-``..._step_up`` / ``..._step_down`` stop a moving blind, step the slats while latched, and step the
-height otherwise -- the same rule a KNX stop/step object follows -- and ``..._tilt`` toggles tilt
-mode (cancelling an entry or exit in flight).
-
-The position sensor also carries a ``motion`` attribute (``opening`` / ``closing`` / ``idle``) so
-the template cover can show travel as it happens; the app publishes on every feedback event, not
-only when a move ends.
-
-Every decision -- which sequence to run, when a waypoint is reached, when the settle timer is armed
-or cancelled, when a stall is declared -- is made in the pure core. What is left here is transport:
-listening and filtering, gating commands until the startup state is seeded, decoding KNX telegrams
-and button presses, the command rate limit, the callback error boundary, and a one-to-one
-translation of :class:`Action` values into service calls.
+Transport only: listens for template-cover command events, step/tilt button presses, KNX telegrams
+and real-cover state changes, feeds them to the pure core (:mod:`logic`), and translates the
+resulting :class:`Action` values into service calls and ``set_state`` updates. Makes no decisions.
+See README.md for the Home Assistant contract and IMPLEMENTATION.md for the architecture.
 """
 
 from __future__ import annotations
@@ -94,15 +72,10 @@ class GradhermeticCoverControl(hass.Hass):
         self._step_up_button = f"input_button.gradhermetic_{config.virtual_id}_step_up"
         self._step_down_button = f"input_button.gradhermetic_{config.virtual_id}_step_down"
         self._tilt_button = f"input_button.gradhermetic_{config.virtual_id}_tilt"
-        # Commands are ignored until the first position reading has seeded the belief; a command
-        # arriving before that would run against unseeded state, and the guards that keep the
-        # mechanism safe are all derived from the belief.
+        # Commands are ignored until the first position reading has seeded the belief the safety
+        # guards are derived from.
         self._ready = False
-        # The tilt-mode sensor's last written state ("on"/"off"), so a publish that only moves the
-        # position does not rewrite it too; see _publish_virtual. None on a fresh instance, which is
-        # what makes the very first publish always write it -- AppDaemon builds a fresh instance on
-        # every reload, including a Home Assistant restart, which is what re-creates the entity if
-        # Home Assistant has forgotten it.
+        # Last state written to the tilt-mode sensor; see _publish_virtual.
         self._last_tilt_state: Optional[str] = None
 
         logic = GradhermeticCoverLogic(config.zone, log=self.log)
@@ -116,8 +89,7 @@ class GradhermeticCoverControl(hass.Hass):
         self.listen_state(self._on_real_state, config.real_cover, attribute="all")
         self.listen_event(self._on_command, COMMAND_EVENT)
 
-        # Dashboard step/tilt controls: dumb input_button helpers whose presses route into the same
-        # logic the KNX wall button uses. Each press updates the helper's timestamp state.
+        # Dashboard step/tilt input_button helpers; each press updates the helper's timestamp state.
         self.listen_state(self._on_step_button, self._step_up_button)
         self.listen_state(self._on_step_button, self._step_down_button)
         self.listen_state(self._on_tilt_button, self._tilt_button)
@@ -135,10 +107,6 @@ class GradhermeticCoverControl(hass.Hass):
     def _seed_startup_state(self, kwargs: Dict[str, Any]) -> None:
         """
         Seed the logic's belief from the real cover's first position reading.
-
-        State is not persisted across restarts, so the belief follows from that reading alone. No
-        movement is commanded here: an ambiguous position simply leaves the latch belief unknown,
-        and the first action that needs a trusted position re-references the actuator itself.
         """
         try:
             position, is_moving, direction = self._read_real_position()
@@ -176,8 +144,8 @@ class GradhermeticCoverControl(hass.Hass):
         if command == "stop":
             return runtime.logic.on_stop()
         if command == "set_position":
-            # The event bus is open to any HA automation, so a malformed payload is bad input, not
-            # an app bug: ignore it rather than letting it reach _report_error and disable it.
+            # Any automation can fire this event, so a malformed payload is ignored rather than
+            # raised into _report_error, which would disable the blind.
             raw_position = data.get("position")
             position = _parse_pct(raw_position)
             if position is None:
@@ -198,10 +166,8 @@ class GradhermeticCoverControl(hass.Hass):
     def _on_real_state(self, entity: str, attribute: str, old: Any, new: Any,
                        kwargs: Dict[str, Any]) -> None:
         """
-        Feed controller position/motion feedback into the logic engine.
-
-        A missing position (the cover went unavailable) is forwarded too, so the logic drops its
-        stale position and motion beliefs rather than reasoning from them indefinitely.
+        Feed controller position/motion feedback into the logic engine, including a missing
+        position when the cover goes unavailable.
         """
         try:
             position, is_moving, direction = _extract_feedback(new)
@@ -212,10 +178,8 @@ class GradhermeticCoverControl(hass.Hass):
 
     def _on_settle(self, kwargs: Dict[str, Any]) -> None:
         """
-        Hand a settle-timer firing to the logic, with the controller state read as it fired.
-
-        Reading here rather than relying on the last feedback event keeps the fallback honest even
-        if a state update never reached us -- which is the situation the timer exists for.
+        Hand a settle-timer firing to the logic, with the controller state read fresh, since the
+        timer exists for the case where a state update never arrived.
         """
         try:
             self._runtime.settle_timer_handle = None
@@ -233,8 +197,7 @@ class GradhermeticCoverControl(hass.Hass):
         try:
             destination = data.get("destination")
             config = self._config
-            # Guard against a telegram with no destination matching a None-valued address attribute
-            # when only some of the three KNX addresses are configured.
+            # Unconfigured addresses are None, which a destination-less telegram would match.
             if destination is None:
                 return
             if destination not in (config.knx_move_address, config.knx_step_address,
@@ -244,8 +207,7 @@ class GradhermeticCoverControl(hass.Hass):
                 self.log("Ignoring KNX press before startup state is seeded")
                 return
             logic = self._runtime.logic
-            # The tilt address carries no direction, so it is handled before any direction is
-            # decoded: it is a trigger, and what it does depends only on the current mode.
+            # The tilt address is a directionless toggle trigger.
             if destination == config.knx_tilt_address:
                 if not _knx_trigger(data):
                     return
@@ -267,10 +229,7 @@ class GradhermeticCoverControl(hass.Hass):
     def _on_step_button(self, entity: str, attribute: str, old: Any, new: Any,
                         kwargs: Dict[str, Any]) -> None:
         """
-        Route an ``input_button`` step press to the step logic.
-
-        The direction follows which helper fired. The logic decides what a step means: stop while
-        anything is moving, a slat step while latched, a height step otherwise.
+        Route an ``input_button`` step press to the step logic, up or down by which helper fired.
         """
         try:
             if not self._is_button_press(old, new):
@@ -303,10 +262,8 @@ class GradhermeticCoverControl(hass.Hass):
         """
         Whether an ``input_button`` state change represents a real press.
 
-        A real press is a timestamp -> different-timestamp transition. Transitions into or out of
-        unknown/unavailable/None (startup, HA helper reload, reconnect state restore) carry a fresh
-        timestamp on one side but are not presses, so both the old and the new state must be real
-        timestamps.
+        A real press changes one timestamp to another. Transitions into or out of
+        unknown/unavailable/None (startup, helper reload, reconnect) are not presses.
         """
         if new in (None, "unknown", "unavailable"):
             return False
@@ -318,10 +275,7 @@ class GradhermeticCoverControl(hass.Hass):
 
     def _apply_actions(self, actions: List[Action]) -> None:
         """
-        Translate declarative logic actions into AppDaemon side effects.
-
-        This is a mechanical one-to-one translation: every decision, including when the settle timer
-        is armed or cancelled, was made in the pure core.
+        Translate declarative logic actions one-to-one into AppDaemon side effects.
         """
         runtime = self._runtime
         if runtime.disabled:
@@ -372,28 +326,15 @@ class GradhermeticCoverControl(hass.Hass):
     def _publish_virtual(self, virtual_position: Optional[int], in_tilt: Optional[bool],
                          motion: Optional[str]) -> None:
         """
-        Publish what the virtual cover shows: its position, which scale that position is on, and
-        whether it is travelling.
+        Write the position sensor (with its ``motion`` attribute) and, if it changed, the tilt-mode
+        sensor.
 
-        The app owns both entities directly via ``set_state`` -- no user-declared helpers are
-        required -- creating ``sensor.gradhermetic_<id>_position`` and
-        ``binary_sensor.gradhermetic_<id>_tilt_mode`` in Home Assistant. Both come from one action
-        so a dashboard can never read a slat angle as though it were a height, but they are not
-        rewritten at the same rate: the logic now publishes on every feedback event, which is what
-        makes the position sensor track travel percent by percent, while the mode changes only a
-        few times per plan. Rewriting the binary sensor with the value it already holds on every one
-        of those position updates is pure churn -- it is also mirrored onto the KNX bus by an
-        expose -- so it is skipped whenever the mode has not actually changed since the last write.
-        ``self._last_tilt_state`` is instance state, not Home Assistant state: AppDaemon builds a
-        fresh instance of this app whenever it reloads it (including every Home Assistant restart),
-        and a fresh instance starts with nothing to compare against, so its first publish always
-        writes the sensor -- which is what re-creates it if Home Assistant has forgotten it. The
-        motion rides on the position sensor as an attribute, which the template cover's state
-        template reads to report ``opening`` / ``closing``. An unknown position publishes the sensor
-        as ``unavailable`` rather than leaving a stale number in it.  The position is sent as a string
-        because AppDaemon drops ``None`` and ``False`` from the request body before posting it, and
-        since ``0 == False`` it drops an integer ``0`` too -- Home Assistant then rejects the update
-        for having no state, and a fully closed blind never reads 0.
+        The tilt-mode sensor is only rewritten on change because it is mirrored onto KNX. A fresh
+        app instance (every reload, including an HA restart) always writes it once, which
+        re-creates it if HA has forgotten it.
+
+        The position is sent as a string: AppDaemon drops falsy values from the request body, so
+        an integer 0 would be lost and HA would reject the update.
         """
         self.set_state(
             self._position_entity,
@@ -482,10 +423,7 @@ class GradhermeticCoverControl(hass.Hass):
 
 def _describe_command(service: str, data: Dict[str, Any]) -> str:
     """
-    Render a real-cover service call as the short phrase the log shows.
-
-    The raw ``service + payload`` form is noisy and unreadable in the log; each of the four services
-    the app issues gets a human-readable description instead.
+    Render a real-cover service call as a short phrase for the log.
     """
     if service == "cover/set_cover_position":
         return f"move to {data.get('position')}%"
@@ -502,13 +440,8 @@ def _extract_feedback(state: Any) -> Tuple[Optional[int], bool, Optional[str]]:
     """
     Extract (current_position, is_moving, direction) from a full Home Assistant cover state object.
 
-    The direction is the real one the cover integration reports through its ``opening`` /
-    ``closing`` state, or None when it is not moving.
-
-    A missing or unreadable position yields None, which the logic treats as "the cover is
-    unavailable": bad state from a flaky integration must not reach the error boundary and disable
-    the blind. A readable one is rounded to a whole percent here, at the boundary (see
-    :func:`_parse_pct`).
+    An unreadable position yields None ("unavailable") rather than raising, so a flaky integration
+    cannot disable the blind.
     """
     if not isinstance(state, dict):
         return None, False, None
@@ -522,9 +455,6 @@ def _extract_feedback(state: Any) -> Tuple[Optional[int], bool, Optional[str]]:
 def _parse_pct(raw: Any) -> Optional[int]:
     """
     Read a percentage arriving from Home Assistant as a whole percent, or None if it is unreadable.
-
-    Cover positions are integers already; anything fractional (a template cover, an automation's
-    event payload) is rounded here, so that nothing past this boundary ever handles a fraction.
     """
     if isinstance(raw, bool):
         return None
@@ -543,8 +473,7 @@ def _knx_direction(data: Dict[str, Any]) -> Optional[str]:
         raw = raw[0] if raw else None
     if raw is None:
         return None
-    # A malformed telegram value is bad external input, not an app bug: ignore it (the caller treats
-    # None as "no direction") rather than raising into _report_error and disabling the blind.
+    # A malformed value is ignored rather than raised into _report_error, which would disable it.
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -554,19 +483,16 @@ def _knx_direction(data: Dict[str, Any]) -> Optional[str]:
 
 def _knx_trigger(data: Dict[str, Any]) -> bool:
     """
-    Decode a KNX tilt telegram into "act" or "ignore", acting only on a 1.
+    Whether a KNX tilt telegram is a toggle trigger: only a 1 is.
 
-    The tilt object is a stateless trigger, not a mode level: what it means is "toggle", and the app
-    toggles off its own latch belief exactly as the dashboard tilt helper does. Ignoring 0 is what
-    makes it correct on a momentary pushbutton parameterized as a two-state switch, which sends 1 on
-    press and 0 on release -- toggling on both edges would cancel out to nothing per press.
+    Ignoring 0 makes a pushbutton configured as a two-state switch (1 on press, 0 on release)
+    toggle once per press instead of twice.
     """
     raw = data.get("data")
     if isinstance(raw, (list, tuple)):
         raw = raw[0] if raw else None
     if raw is None:
         return False
-    # As in _knx_direction, a malformed telegram value is bad external input rather than an app bug.
     try:
         value = int(raw)
     except (TypeError, ValueError):

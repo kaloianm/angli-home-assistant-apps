@@ -834,10 +834,8 @@ class TestConfirmedBugRegressions(unittest.TestCase):
         self.logic = GradhermeticCoverLogic(_config())
 
     def test_close_after_leaving_tilt_starts_immediately(self):
-        # B1: known unlatched, the descent is the very first command -- no no-op waypoint that
-        # stalls until the fallback timer, and no full-open detour either. (The exit now ends at
-        # the top limit rather than inside the band; the band-interior case the bug was found in is
-        # covered by the planner, which can be handed that belief directly.)
+        # B1: known unlatched, the descent is the very first command -- no stalling no-op waypoint
+        # and no full-open detour.
         self.logic.seed_state(100)
         run_plan(self.logic, self.logic.on_set_tilt_mode(True))
         run_plan(self.logic, self.logic.on_set_tilt_mode(False))

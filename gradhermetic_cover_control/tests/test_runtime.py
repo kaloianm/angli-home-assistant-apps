@@ -33,10 +33,7 @@ class TestCommandRateLimiting(unittest.TestCase):
         self.runtime = _runtime()
         self.t0 = datetime(2026, 4, 15, 12, 0, 0)
 
-    # What the limit guards against is a runaway replan loop: synchronous code with no I/O in it,
-    # so it fires its commands milliseconds apart rather than seconds. Spacing these a whole second
-    # apart instead would say nothing, since a cadence of one command per second can never gather
-    # COMMAND_RATE_LIMIT of them inside a window that is COMMAND_RATE_WINDOW_SECONDS long.
+    # Commands a millisecond apart, like the runaway loop the limit guards against.
     def _burst(self, count, start=0):
         return [
             self.runtime.record_command(self.t0 + timedelta(milliseconds=start + i))

@@ -1,30 +1,16 @@
 """
 Execution of one movement plan, step by step.
 
-The executor owns the step lifecycle and every timing decision, so both are testable without an
-AppDaemon runtime. It consumes position feedback and settle-timer firings and emits declarative
-:class:`Action` values the adapter translates one-to-one.
+Consumes position feedback and settle-timer firings and emits declarative :class:`Action` values.
+Two lifecycle rules rule out stale-feedback races:
 
-The lifecycle is what makes two whole classes of race impossible:
+1. **Activation.** A step already satisfied by a settled blind is skipped without a command, so no
+   step waits for feedback the actuator will never send.
+2. **Arrival.** A step completes only on settled feedback that satisfies it. Since it was not
+   satisfied when commanded, a stale report of the starting position cannot complete it.
 
-1. **Activation.** If a step's predicate already holds and the blind is settled, the step is
-   *skipped* -- no command is sent and the next step activates immediately. A plan can therefore
-   never begin with a move the actuator will never acknowledge, so no waypoint can stall waiting for
-   feedback that will never arrive. (A step is not skipped while the blind is still travelling: it
-   may be passing through the target rather than resting on it.)
-2. **Arrival.** A step completes only on settled feedback whose position satisfies the predicate.
-   Because activation guaranteed the predicate did *not* hold when the command went out, a duplicate
-   or delayed report carrying the pre-command position cannot satisfy it -- however small the step
-   was.
-
-The settle timer is an inactivity timeout rather than a travel-time cap: a blind still reporting
-motion is merely slow, so the timer re-arms. It only declares a stall when the blind has settled
-short of its target, or when its position has become unreadable while a plan is pending. A blind
-seen moving and then settling short does not wait out the whole timeout: a short recheck is armed
-instead, so a percent of mis-settling costs seconds rather than most of a minute.
-
-What the virtual cover shows is not decided here. The executor reports what became of the plan;
-:mod:`logic` publishes, because only it knows the belief the published state has to be on.
+The settle timer is an inactivity timeout, not a travel cap: it re-arms while the blind reports
+motion, and declares a stall only when the blind settled short or its position became unreadable.
 """
 
 from __future__ import annotations
@@ -49,9 +35,7 @@ ACTION_MOVE_TO = "move_to"
 ACTION_OPEN_FULL = "open_full"
 ACTION_CLOSE_FULL = "close_full"
 ACTION_STOP = "stop"
-# Publish what the virtual cover shows: its position, whether that position is a slat angle rather
-# than a height, and whether it is travelling. They always travel together -- a position on the
-# inverted slat scale read as a height is simply wrong -- so one action carries all three.
+# Position, tilt mode and motion are published together so a slat angle is never read as a height.
 ACTION_PUBLISH_STATE = "publish_state"
 ACTION_ARM_SETTLE_TIMER = "arm_settle_timer"
 ACTION_CANCEL_SETTLE_TIMER = "cancel_settle_timer"
@@ -60,9 +44,7 @@ ACTION_NOTIFY = "notify"
 NOTIFY_STALL = "stall"
 NOTIFY_INVARIANT = "invariant"
 
-# What the virtual cover is doing, on the virtual scale: "opening" is toward more light whichever
-# mode the blind is in, so a slat move toward the open edge is opening even though the blind's real
-# position is falling.
+# Virtual-scale motion: "opening" means toward more light, in either mode.
 MOTION_OPENING = "opening"
 MOTION_CLOSING = "closing"
 MOTION_IDLE = "idle"
@@ -70,16 +52,12 @@ MOTION_IDLE = "idle"
 # How long a step may go without progress before the fallback timer looks at it.
 SETTLE_TIMEOUT_SECONDS = 45
 
-# How long to wait before judging a blind that was seen moving and then settled short of its
-# target. It has demonstrably stopped, so the only question left is whether a late report is
-# still on its way.
+# Shorter wait for a blind seen moving and then settled short: it has stopped, so only a late
+# report could still change the verdict.
 SETTLED_RECHECK_SECONDS = 10
 
-# Real actuators occasionally settle a percent or so off their setpoint. A move that stopped this
-# close to its target is accepted (with a warning) rather than reported as an obstruction -- but
-# only where a percent is harmless: an ordinary height move clear of the band. A slat step is
-# usually no larger than the tolerance, and a target on a band edge or inside the band is exactly
-# where a percent decides whether the mechanism latched or released, so those must land or stall.
+# How far off target an ordinary height move may settle and still count as arrived; see
+# Executor._tolerates_deviation.
 DEVIATION_TOLERANCE_PCT = 2
 
 # -- Outcomes --------------------------------------------------------------------------------------
@@ -134,24 +112,15 @@ class Executor:
     ) -> None:
         """
         Create an idle executor for one blind.
-
-        ``log`` is called as ``log(message, level=...)``. Only decisions worth seeing in the normal
-        log are logged at ``INFO``; the per-step trace explaining how a plan is being driven goes to
-        ``DEBUG``.
         """
         self._zone = zone
         self._log = log
         self._plan: Optional[Plan] = None
         self._index = 0
-        # Whether the blind has reported motion since the current step was commanded. A settled
-        # report short of the target after that is a blind that stopped, not one that has yet to
-        # start, and is rechecked quickly rather than after the whole inactivity timeout.
+        # Whether the blind reported motion since the current step was commanded, so settling short
+        # afterwards gets the quick recheck.
         self._saw_motion = False
-        # Whether a command has gone out for the current step and no settled report -- satisfied or
-        # not -- has come back for it yet. This is what :attr:`may_be_travelling` is built from: a
-        # pending plan alone does not mean the blind is moving, since the settled-short recheck (see
-        # :meth:`on_feedback`) keeps a plan open for a few seconds after the blind has already
-        # reported coming to rest.
+        # Whether a command for the current step is still unanswered by a settled report.
         self._awaiting_arrival = False
 
     @property
@@ -180,14 +149,11 @@ class Executor:
     @property
     def may_be_travelling(self) -> bool:
         """
-        Whether the blind might actually be moving right now.
+        Whether the blind might be moving: a command is out and no settled report has answered it.
 
-        A pending plan is not enough on its own: the settled-short recheck (see
-        :meth:`on_feedback`) keeps a plan open for a few seconds after the blind has already
-        reported coming to rest, so a stop sent during that window would land on a stationary
-        blind -- on a KNX actuator with no dedicated stop object, that is a step telegram that
-        nudges it. This is true only from the moment a command goes out for the current step until
-        a settled report, satisfied or not, comes back for it.
+        A pending plan alone is not enough, since the settled-short recheck keeps a plan open after
+        the blind has stopped. A stop sent to an idle blind matters: on a KNX actuator without a
+        dedicated stop object it is a step telegram that nudges the blind.
         """
         return self.has_plan and self._awaiting_arrival
 
@@ -195,10 +161,7 @@ class Executor:
 
     def start(self, movement: Plan, position: Optional[int], is_moving: bool) -> Outcome:
         """
-        Begin a plan, activating its first unsatisfied step.
-
-        Any plan already in progress must have been abandoned by the caller first, which is what
-        makes a replacement re-derive its safety guards from the current belief.
+        Begin a plan, activating its first unsatisfied step. The caller abandons any previous plan.
         """
         self._plan = movement
         self._index = 0
@@ -213,8 +176,6 @@ class Executor:
         if is_moving:
             self._saw_motion = True
             return Outcome()
-        # A settled report, satisfied or not, answers the command that was outstanding: from here
-        # there is nothing left to stop until the next command goes out.
         self._awaiting_arrival = False
         if self._step().satisfied_by(position):
             self._index += 1
@@ -233,10 +194,9 @@ class Executor:
         Consume a settle-timer firing: keep waiting, accept, or declare a stall.
         """
         if self._plan is None:
-            # A stray firing after the plan already finished; there is nothing left to time.
             return Outcome()
         if position is None:
-            # It may still be travelling for all anyone can tell, so this stall does send a stop.
+            # It may still be travelling, so this stall sends a stop.
             return self._stall("its position is unreadable", stop=True)
         if is_moving:
             # An inactivity timeout, not a travel cap: the move is simply long.
@@ -248,8 +208,6 @@ class Executor:
             # The actuator reported no intermediate states, only its final one -- or none at all.
             self._index += 1
             return self._advance(position, is_moving)
-        # Judged against the satisfaction target, which is the threshold the step actually needs;
-        # a step that aims past it (the tilt exit) is a rise step and is never forgiven here.
         deviation = abs(position - step.target)
         if self._tolerates_deviation(step) and deviation <= DEVIATION_TOLERANCE_PCT:
             self._log(
@@ -257,18 +215,15 @@ class Executor:
                 f"{DEVIATION_TOLERANCE_PCT}% of the setpoint", level="WARNING")
             self._index += 1
             return self._advance(position, is_moving)
-        # The blind is at rest: there is nothing to stop, and on a KNX actuator without a dedicated
-        # stop object a stop sent to an idle blind is a step telegram that nudges it.
+        # At rest: no stop (see may_be_travelling).
         return self._stall(f"it settled at {position}%", stop=False)
 
     def _tolerates_deviation(self, step: Step) -> bool:
         """
         Whether settling a percent or so off this step's target may be accepted as arrival.
 
-        Only an ordinary height move clear of the band qualifies. A slat step is usually no larger
-        than the tolerance, so accepting the pre-step position would silently complete a move that
-        never happened; a target in the band -- the enter dip, the latching rise, a band edge -- is
-        where a percent decides whether the mechanism latched or released, and must land exactly.
+        Only an ordinary height move clear of the band qualifies. A slat step is about as small as
+        the tolerance, and in the band a percent decides whether the mechanism latched.
         """
         if step.kind != STEP_MOVE_TO or self._plan.kind == PLAN_SLAT:
             return False
@@ -332,11 +287,7 @@ class Executor:
 
     def _stall(self, reason: str, stop: bool) -> Outcome:
         """
-        Abandon a plan the blind is not going to finish, and say so.
-
-        The message names the *satisfaction* target rather than the position commanded: a step that
-        deliberately aims past what it needs (the tilt exit) has not failed until the blind is short
-        of the threshold, so that is the number a reader should compare the resting position with.
+        Abandon a plan the blind is not going to finish, and notify, naming the satisfaction target.
         """
         movement = self._plan
         target = self._step().target
@@ -355,10 +306,6 @@ class Executor:
 def virtual_position(zone: Zone, latch: str, position: int) -> int:
     """
     Map a real position to the virtual position the user-facing cover shows.
-
-    Publishing what the blind actually reports -- rather than what was commanded -- keeps the
-    published value and the app's own belief identical, which is what makes them comparable in the
-    model tests.
     """
     if latch == LATCH_LATCHED:
         return zone.real_to_virtual(position)
@@ -368,10 +315,6 @@ def virtual_position(zone: Zone, latch: str, position: int) -> int:
 def _command(step: Step) -> Action:
     """
     Translate a step into the real-cover command that starts it.
-
-    A step may aim higher than the position that satisfies it (:attr:`Step.command_position`); what
-    goes to the actuator is where it should travel, while every arrival test above stays on the
-    satisfaction target.
     """
     if step.command == COMMAND_OPEN:
         return Action(ACTION_OPEN_FULL)
