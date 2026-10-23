@@ -35,16 +35,11 @@ class PairRuntime:
 
     disabled: bool = False
 
-    # Record of fan switch command timestamps for rate limiting.
     _fan_command_timestamps: Deque[datetime] = field(default_factory=deque)
 
     def record_fan_command(self, now: datetime) -> bool:
         """
-        Record a fan switch command and return True if the rate limit is exceeded.
-
-        Maintains a sliding window of timestamps. When more than ``FAN_CMD_RATE_LIMIT`` commands
-        land within ``FAN_CMD_RATE_WINDOW_SECONDS``, marks this pair as disabled and returns True
-        so the caller can alert and stop processing.
+        Record a fan switch command; if the rate limit is exceeded, mark disabled and return True.
         """
         window_start = now - timedelta(seconds=FAN_CMD_RATE_WINDOW_SECONDS)
         while self._fan_command_timestamps and self._fan_command_timestamps[0] <= window_start:

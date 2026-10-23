@@ -1,9 +1,6 @@
 """
-Pure business logic for extractor fan control.
-
-This module intentionally has no AppDaemon or Home Assistant dependencies.
-The runtime integration layer can feed events into ``ExtractorFanPairLogic`` and execute the
-returned actions.
+State machine for one light/fan pair. No AppDaemon dependencies: the adapter feeds events in and
+performs the returned actions.
 """
 
 from __future__ import annotations
@@ -58,12 +55,6 @@ class LogicConfig:
     def validate(self) -> None:
         """
         Validate config values.
-
-        - ``min_light_on_for_fan_seconds``: minimum continuous light-on time required before fan
-            automation can start.
-        - ``short_visit_threshold_seconds``: if the light-on duration is below this value, fan stops
-            immediately when light turns off.
-        - ``max_post_run_seconds``: upper bound for long-visit post-run time.
         """
         if self.min_light_on_for_fan_seconds < 0:
             raise ValueError("min_light_on_for_fan_seconds must be >= 0")
@@ -90,10 +81,6 @@ class Action:
 class ExtractorFanPairLogic:
     """
     State machine for one light/fan pair.
-
-    Notes:
-    - The app fully owns the fan switch; it does not observe or track manual toggles.
-    - Overlapping occupancy/scheduled demand is merged by latest end time.
     """
 
     def __init__(
@@ -103,21 +90,12 @@ class ExtractorFanPairLogic:
     ) -> None:
         """
         Create logic state for one light/fan pair.
-
-        ``config`` contains timing thresholds for activation and short-visit detection. The object
-        then keeps all runtime state internally and emits declarative actions from public event
-        methods.
-
-        ``log`` is called as ``log(message, level=...)``. Only decisions worth seeing in the normal
-        log are logged at ``INFO``; the per-event/per-action trace explaining how a decision was
-        reached goes to ``DEBUG``.
         """
         config.validate()
         self._config = config
         self._log = log
         self._disabled = False
 
-        # Input/state tracking.
         self._light_is_on = False
         self._light_on_since: Optional[datetime] = None
         self._activation_due_at: Optional[datetime] = None
@@ -125,7 +103,7 @@ class ExtractorFanPairLogic:
         self._occupancy_run_until: Optional[datetime] = None
         self._schedule_run_until: Optional[datetime] = None
 
-        # Output tracking for idempotent action emission.
+        # Last emitted outputs, so only changes produce actions.
         self._fan_output_on = False
         self._keepalive_output_on = False
         self._timer_outputs: Dict[str, Optional[datetime]] = {
@@ -169,9 +147,7 @@ class ExtractorFanPairLogic:
 
     def on_light_on(self, now: datetime) -> List[Action]:
         """
-        Handle a light ON event.
-
-        ``now`` is the event timestamp used for all duration math. This starts the activation timer.
+        Handle a light ON event, starting the activation timer.
         """
         actions: List[Action] = []
         self._log(f"event light_on at {now.isoformat()}", level="DEBUG")
@@ -188,14 +164,9 @@ class ExtractorFanPairLogic:
 
     def on_light_off(self, now: datetime) -> List[Action]:
         """
-        Handle a light OFF event.
-
-        ``now`` is used to compute how long the light stayed on.
-        - If activation never happened, fan demand ends immediately.
-        - If activation happened:
-          - short visit (< threshold): stop fan now
-          - long visit (>= threshold): keep fan for light-on duration, capped
-            by ``max_post_run_seconds``
+        Handle a light OFF event. After a short visit (or no activation) occupancy demand ends now;
+        after a long one the fan keeps running for the light-on duration, capped by
+        ``max_post_run_seconds``.
         """
         actions: List[Action] = []
         self._log(f"event light_off at {now.isoformat()}", level="DEBUG")
@@ -230,11 +201,7 @@ class ExtractorFanPairLogic:
 
     def on_schedule_started(self, now: datetime, *, duration_seconds: int) -> List[Action]:
         """
-        Start or extend a scheduled fan run.
-
-        ``now`` is the schedule trigger time.
-        ``duration_seconds`` is how long this scheduled demand should stay active. If another
-        scheduled window already exists, the later end time wins.
+        Start or extend a scheduled fan run; if one is already active, the later end wins.
         """
         if duration_seconds <= 0:
             raise ValueError("duration_seconds must be > 0")
@@ -251,10 +218,7 @@ class ExtractorFanPairLogic:
 
     def on_time_tick(self, now: datetime) -> List[Action]:
         """
-        Advance time-dependent state without a new device event.
-
-        ``now`` is used to expire activation/deadline windows and emit any resulting actions (for
-        example fan stop when demand reaches its end).
+        Advance time-dependent state (activation, expiring deadlines) without a device event.
         """
         self._log(f"event time_tick at {now.isoformat()}", level="DEBUG")
         return self._reconcile(now)
@@ -265,10 +229,7 @@ class ExtractorFanPairLogic:
         previous_state: Optional[PairState] = None,
     ) -> List[Action]:
         """
-        Recompute full output state for timestamp ``now``.
-
-        This is the single place where event-driven state changes are turned into externally visible
-        actions, keeping behavior deterministic.
+        Recompute all outputs at ``now`` and emit actions for the ones that changed.
         """
         if self._disabled:
             self._log("ignored event while disabled", level="DEBUG")
@@ -301,36 +262,26 @@ class ExtractorFanPairLogic:
 
     def _advance_time(self, now: datetime) -> None:
         """
-        Apply time-based state transitions before deciding outputs.
-
-        Important transitions:
-        - activation timer expiry promotes current light session to occupancy
-          demand (fan is now allowed to run)
-        - expired occupancy/schedule deadlines are dropped
+        Promote a light session to occupancy once activation is due, and drop expired deadlines.
         """
         if (self._light_is_on and self._activation_due_at is not None
                 and now >= self._activation_due_at):
-            # Light has been on long enough to count as real occupancy.
             self._occupancy_active_while_light_on = True
             self._activation_due_at = None
             self._log("activation threshold reached", level="DEBUG")
 
         if self._occupancy_run_until is not None and now >= self._occupancy_run_until:
-            # Post-run demand window has ended.
             self._occupancy_run_until = None
             self._log("occupancy demand expired", level="DEBUG")
 
         if self._schedule_run_until is not None and now >= self._schedule_run_until:
-            # Scheduled demand window has ended.
             self._schedule_run_until = None
             self._log("schedule demand expired", level="DEBUG")
 
     def _target_outputs(self, now: datetime) -> Dict[str, Optional[datetime] | bool]:
         """
-        Compute target fan/keepalive/timer outputs from current state.
-
-        Fan output is a simple merge of demand sources: if occupancy or schedule needs the fan, it
-        runs. The keepalive follows the fan so the KNX staircase output stays energized.
+        Compute target outputs. The fan runs if occupancy or schedule demand is active, and the
+        keepalive follows the fan.
         """
         occupancy_active = self._occupancy_active_while_light_on or (
             self._occupancy_run_until is not None and now < self._occupancy_run_until)
@@ -339,12 +290,9 @@ class ExtractorFanPairLogic:
         target_fan_on = occupancy_active or schedule_active
         target_keepalive_on = target_fan_on
 
-        activation_timer = (
-            # Activation timer exists only while waiting to decide if this light session
-            # is long enough to trigger fan behavior.
-            self._activation_due_at
-            if self._light_is_on and not self._occupancy_active_while_light_on else None)
-        # Deadline timer wakes integration layer on next relevant expiry.
+        activation_timer = (self._activation_due_at
+                            if self._light_is_on and not self._occupancy_active_while_light_on else
+                            None)
         deadline_timer = self._compute_next_deadline(now)
 
         return {
@@ -357,10 +305,7 @@ class ExtractorFanPairLogic:
 
     def _compute_next_deadline(self, now: datetime) -> Optional[datetime]:
         """
-        Return earliest active demand deadline, or ``None`` if no demand.
-
-        We use the nearest deadline so the caller can schedule one wake-up and then re-evaluate
-        state at that time.
+        Return the earliest active demand deadline (the next wake-up), or ``None`` if no demand.
         """
         candidates: List[datetime] = []
         if self._occupancy_run_until is not None and now < self._occupancy_run_until:
@@ -373,12 +318,8 @@ class ExtractorFanPairLogic:
 
     def _compute_off_deadline(self, now: datetime) -> Optional[datetime]:
         """
-        Return the moment the fan will turn off, or ``None`` if that is not yet knowable.
-
-        While the light is on and counted as occupancy the fan has no end time: the post-run window
-        is only computed once the light turns off. Otherwise every active demand window has a known
-        end, and the fan stops when the *last* of them expires -- so this is the latest deadline,
-        unlike ``_compute_next_deadline`` which returns the earliest one to schedule a wake-up.
+        Return when the fan will turn off: the latest active deadline. ``None`` while the light is
+        on with occupancy, since the post-run is only computed at light-off.
         """
         if self._occupancy_active_while_light_on:
             return None
@@ -394,22 +335,17 @@ class ExtractorFanPairLogic:
     def _emit_transitions(self, target_outputs: Dict[str,
                                                      Optional[datetime] | bool]) -> List[Action]:
         """
-        Emit only changes between previous output and target output.
-
-        This makes the logic idempotent: repeated events/ticks with unchanged target state produce
-        no duplicate commands.
+        Emit actions only for outputs that differ from the last emitted ones.
         """
         actions: List[Action] = []
 
         target_fan_on = bool(target_outputs["fan_on"])
         if target_fan_on != self._fan_output_on:
-            # Emit edge-triggered fan command only on state transition.
             actions.append(Action(ACTION_FAN_ON if target_fan_on else ACTION_FAN_OFF))
             self._fan_output_on = target_fan_on
 
         target_keepalive_on = bool(target_outputs["keepalive_on"])
         if target_keepalive_on != self._keepalive_output_on:
-            # Keepalive scheduler is also edge-triggered.
             actions.append(
                 Action(ACTION_START_KEEPALIVE if target_keepalive_on else ACTION_STOP_KEEPALIVE))
             self._keepalive_output_on = target_keepalive_on
@@ -418,7 +354,6 @@ class ExtractorFanPairLogic:
             target_at = target_outputs[timer_name]
             current_at = self._timer_outputs[timer_name]
             if target_at != current_at:
-                # Timer commands are declarative too: set when needed, cancel when no longer needed.
                 if target_at is None:
                     actions.append(Action(ACTION_CANCEL_TIMER, timer_name=timer_name))
                 else:
@@ -427,7 +362,7 @@ class ExtractorFanPairLogic:
 
         target_off_deadline = target_outputs["off_deadline"]
         if target_off_deadline != self._off_deadline_output:
-            # One action kind with an optional timestamp: ``at=None`` means "no known off time".
+            # at=None clears the sensor.
             actions.append(Action(ACTION_SET_OFF_DEADLINE, at=target_off_deadline))
             self._off_deadline_output = target_off_deadline
 

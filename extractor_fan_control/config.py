@@ -107,7 +107,6 @@ def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
         name = str(raw_name).strip()
 
     if raw_pair.get("off_at_sensor_entity") is None:
-        # Derived default keeps the sensor unique per pair without extra configuration.
         off_at_sensor_entity = f"sensor.extractor_fan_{name}_off_at"
     else:
         off_at_sensor_entity = _require_non_empty_str(raw_pair, "off_at_sensor_entity", idx)
@@ -137,7 +136,6 @@ def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
     daily_run_time_raw = raw_pair.get("daily_run_time")
     daily_run_duration_raw = raw_pair.get("daily_run_duration_seconds")
     if daily_run_time_raw is None or daily_run_duration_raw is None:
-        # Missing either field means this pair has no daily schedule configured.
         daily_run_time = None
         daily_run_duration_seconds = None
     else:

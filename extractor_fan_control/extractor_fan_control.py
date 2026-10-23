@@ -70,8 +70,7 @@ class ExtractorFanControl(hass.Hass):
             )
             self._runtime_by_name[pair_config.name] = runtime
 
-            # Creates the entity on startup and clears any countdown left over from before the
-            # restart: runtime state is not persisted, so a pre-restart deadline is already dead.
+            # Creates the sensor and clears any countdown left from before a restart.
             self._publish_off_deadline(runtime, None)
 
             runtime.light_listener_handle = self.listen_state(self._on_light_state,
@@ -204,10 +203,7 @@ class ExtractorFanControl(hass.Hass):
 
     def _turn_fan(self, runtime: PairRuntime, *, on: bool, keepalive: bool = False) -> None:
         """
-        Issue fan switch command and mark expected resulting state.
-
-        ``keepalive`` marks the periodic KNX staircase retrigger pulse, which repeats every few
-        tens of seconds for as long as the fan runs and therefore only logs at ``DEBUG``.
+        Issue a rate-limited fan switch command. Keepalive pulses log at ``DEBUG``.
         """
         if runtime.disabled:
             return
@@ -222,10 +218,8 @@ class ExtractorFanControl(hass.Hass):
 
     def _publish_off_deadline(self, runtime: PairRuntime, at: Optional[datetime]) -> None:
         """
-        Publish when the fan is going to turn off, or ``unknown`` when that is not knowable.
-
-        This is a state write, not a fan switch command, so it deliberately bypasses
-        ``record_fan_command`` and the rate limiter.
+        Publish when the fan is going to turn off, or ``unknown``. Not rate-limited: it is a state
+        write, not a fan command.
         """
         entity_id = runtime.config.off_at_sensor_entity
         state = "unknown" if at is None else self._to_local_aware(at).isoformat()
@@ -241,12 +235,8 @@ class ExtractorFanControl(hass.Hass):
 
     def _to_local_aware(self, naive_local: datetime) -> datetime:
         """
-        Attach the AppDaemon timezone to a naive local datetime from the logic layer.
-
-        The logic layer works entirely in naive local time (``self.datetime()``), but
-        ``device_class: timestamp`` only renders a timezone-aware ISO 8601 string, so the
-        conversion happens here at the publish boundary. The offset is taken from the current
-        moment; deadlines are minutes away, so a DST change in between is not a concern.
+        Attach the current AppDaemon timezone to a naive local datetime, as
+        ``device_class: timestamp`` needs. Deadlines are minutes away, so DST is not a concern.
         """
         return naive_local.replace(tzinfo=self.datetime(aware=True).tzinfo)
 
