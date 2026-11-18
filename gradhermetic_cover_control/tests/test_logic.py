@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from gradhermetic_cover_control.executor import ActionKind, Motion, NotifyKind
+from gradhermetic_cover_control.actions import ActionKind, Motion, NotifyKind
 from gradhermetic_cover_control.geometry import Zone
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 from gradhermetic_cover_control.planner import Direction, Latch, PlanKind

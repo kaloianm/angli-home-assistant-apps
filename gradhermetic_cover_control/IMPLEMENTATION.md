@@ -11,13 +11,14 @@ testable without AppDaemon. Each app instance manages one blind.
 |---|---|
 | `geometry.py` | `Zone`: config validation, band/zone predicates, named targets, band snapping, the real↔virtual mapping |
 | `planner.py` | `plan(zone, belief, intent) -> Plan`: all movement sequences and latch guards; `check_plan` invariants |
-| `executor.py` | Drives one `Plan`: step activation and arrival, settle timer, stall detection |
+| `actuator.py` | `Actuator`: the real cover with no Gradhermetic knowledge. Drives one `Move`, tracks position and motion, owns the settle timer and stops, and delivers an `Arrived` or `Stalled` verdict |
+| `executor.py` | Drives one `Plan` as a series of actuator moves: step activation, advancing on `Arrived`, notifying on `Stalled` |
 | `logic.py` | `GradhermeticCoverLogic`: holds the belief, routes events to planner/executor, publishes state |
 | `gradhermetic_cover_control.py` | AppDaemon adapter (I/O only) |
 | `config.py` | Parses `apps.yaml` args |
 | `runtime.py` | Settle-timer handle and command rate limiter |
 
-The core returns `Action`s, and the adapter translates them one-to-one:
+The core returns `Action`s (`actions.py`), and the adapter translates them one-to-one:
 
 | Action | Adapter call |
 |---|---|
@@ -61,21 +62,24 @@ satisfaction `target` and optionally a different `command_pct`:
 - `RiseToAtLeast(target)`: satisfied when `position >= target`. Only the tilt exit uses it: it
   commands 100 and is satisfied at `release`.
 
-Step lifecycle (`executor.py`):
+Step lifecycle (`executor.py` on top of `actuator.py`):
 
 1. **Activation.** A step already satisfied by a settled blind is skipped without a command. A blind
    still travelling is passing through, not resting, so nothing is skipped.
-2. Otherwise send the command and arm the settle timer (`SETTLE_TIMEOUT_SECONDS`).
-3. **Arrival.** Only settled feedback satisfying the step completes it. Since the step wasn't
-   satisfied when commanded, a stale report of the starting position can't complete it. Settling
-   short after being seen moving re-arms the timer for `SETTLED_RECHECK_SECONDS` instead.
-4. **Timer fires.** The possible outcomes:
-   - Still moving: re-arm. It's an inactivity timeout, not a travel cap.
-   - Satisfied: complete. This covers controllers that report only the final state.
-   - Within `DEVIATION_TOLERANCE_PCT`: accept with a warning, but only for a height move with its
-     target clear of the band. Slat steps and band targets must land exactly.
-   - Otherwise: stall and notify, with no stop.
-   - Position unreadable: stall and send a stop.
+2. Otherwise the step becomes an actuator `Move`, which sends the command and arms the settle timer
+   (`SETTLE_TIMEOUT_SECONDS`).
+3. **Arrival.** The actuator reports `Arrived` only on settled feedback satisfying the move. Since
+   the step wasn't satisfied when commanded, a stale report of the starting position can't complete
+   it. Settling short after being seen moving re-arms the timer for `SETTLED_RECHECK_SECONDS`
+   instead.
+4. **Timer fires.** The actuator's verdict:
+   - Still moving: none; re-arm. It's an inactivity timeout, not a travel cap.
+   - Satisfied: `Arrived`. This covers controllers that report only the final state.
+   - Within the move's `tolerance_pct`: `Arrived`, with a warning. The executor grants
+     `DEVIATION_TOLERANCE_PCT` only to a height move with its target clear of the band. Slat steps
+     and band targets must land exactly.
+   - Otherwise: `Stalled`, with no stop. The executor abandons the plan and notifies.
+   - Position unreadable: `Stalled`, and the actuator sends a stop.
 5. **Completion.** Commit the plan's latch belief and cancel the timer.
 
 A new command replaces a plan in flight, planned from the belief as it would be after the
@@ -259,7 +263,8 @@ python3 -m unittest discover -s gradhermetic_cover_control/tests -t . -v
 |---|---|
 | `test_geometry.py` | Mapping round-trips, predicates at the edges, snapping, validation |
 | `test_planner.py` | Golden sequences per intent; a full state-space sweep asserting every plan passes `check_plan`; each invariant rejecting what it forbids |
-| `test_executor.py` | Skip-if-satisfied, stale-feedback immunity, every settle-timer path, the recheck |
+| `test_actuator.py` | Command translation, stale-feedback immunity, every settle-timer path, the recheck, when a stop is sent, direction and heading |
+| `test_executor.py` | Skip-if-satisfied, advancing on verdicts, which steps get the deviation tolerance, stall notification |
 | `test_logic.py` | Event surface, belief transitions, replacement, step rule, publishing, tilt toggle, named regressions |
 | `test_config.py`, `test_runtime.py` | `apps.yaml` parsing, rate limiter |
 | `test_adapter.py` | The adapter against a fake `hass.Hass`: wiring, filtering, startup gate, malformed input, action translation, rate limit, error boundary |

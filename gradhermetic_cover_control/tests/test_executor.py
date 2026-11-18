@@ -1,17 +1,16 @@
 import unittest
 
+from gradhermetic_cover_control.actions import ActionKind, NotifyKind
+from gradhermetic_cover_control.actuator import Actuator, CommandKind
 from gradhermetic_cover_control.executor import (
-    ActionKind,
     DEVIATION_TOLERANCE_PCT,
     Executor,
-    NotifyKind,
-    SETTLED_RECHECK_SECONDS,
-    SETTLE_TIMEOUT_SECONDS,
+    Outcome,
     Status,
     virtual_position,
 )
 from gradhermetic_cover_control.geometry import Zone
-from gradhermetic_cover_control.planner import CommandKind, Latch, Plan, PlanKind, Step, StepKind
+from gradhermetic_cover_control.planner import Latch, Plan, PlanKind, Step, StepKind
 
 UPPER = 44
 LOWER = 38
@@ -36,174 +35,226 @@ def _enter_plan():
     ), Latch.LATCHED)
 
 
-def _move_plan(target, command="position"):
+def _move_plan(target, command=CommandKind.POSITION):
     return Plan(PlanKind.NORMAL, (Step(StepKind.MOVE_TO, target, command), ), Latch.UNLATCHED)
+
+
+class _Rig:
+    """
+    An executor on a real actuator, fed the way the logic feeds it.
+    """
+
+    def __init__(self, position, is_moving=False):
+        self.actuator = Actuator()
+        self.actuator.seed(position, is_moving)
+        self.executor = Executor(ZONE, self.actuator)
+
+    def start(self, movement):
+        return self.executor.start(movement)
+
+    def report(self, position, is_moving=False):
+        return self._feed(self.actuator.on_report(position, is_moving))
+
+    def timer(self, position, is_moving=False):
+        return self._feed(self.actuator.on_timer(position, is_moving))
+
+    def _feed(self, feedback):
+        outcome = self.executor.on_verdict(feedback.verdict)
+        return Outcome(feedback.actions + outcome.actions, outcome.status, outcome.plan)
 
 
 class TestActivation(unittest.TestCase):
 
-    def setUp(self):
-        self.executor = Executor(ZONE)
-
     def test_first_command_is_issued_and_the_timer_armed(self):
-        outcome = self.executor.start(_enter_plan(), 80, False)
+        outcome = _Rig(80).start(_enter_plan())
         self.assertEqual(Status.RUNNING, outcome.status)
         self.assertEqual([ActionKind.OPEN_FULL, ActionKind.ARM_SETTLE_TIMER], _kinds(outcome))
-        self.assertEqual(SETTLE_TIMEOUT_SECONDS,
-                         _of(outcome, ActionKind.ARM_SETTLE_TIMER)[0].seconds)
 
     def test_satisfied_step_is_skipped(self):
         # Already fully open: the enter sequence starts at the dip, with no no-op waypoint that the
         # actuator would never acknowledge.
-        outcome = self.executor.start(_enter_plan(), 100, False)
+        outcome = _Rig(100).start(_enter_plan())
         self.assertEqual([ActionKind.MOVE_TO, ActionKind.ARM_SETTLE_TIMER], _kinds(outcome))
         self.assertEqual(36, _of(outcome, ActionKind.MOVE_TO)[0].position)
 
     def test_satisfied_step_is_not_skipped_while_still_travelling(self):
         # Passing through 100 is not resting at 100, so the command still goes out.
-        outcome = self.executor.start(_enter_plan(), 100, True)
+        outcome = _Rig(100, is_moving=True).start(_enter_plan())
         self.assertEqual([ActionKind.OPEN_FULL, ActionKind.ARM_SETTLE_TIMER], _kinds(outcome))
 
     def test_a_wholly_satisfied_plan_completes_at_once(self):
-        outcome = self.executor.start(_move_plan(50), 50, False)
+        rig = _Rig(50)
+        outcome = rig.start(_move_plan(50))
         self.assertEqual(Status.COMPLETED, outcome.status)
         self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER], _kinds(outcome))
-        self.assertFalse(self.executor.has_plan)
+        self.assertFalse(rig.executor.has_plan)
 
     def test_the_current_step_is_exposed_while_a_plan_runs(self):
-        self.assertIsNone(self.executor.current_step)
-        self.executor.start(_enter_plan(), 80, False)
-        self.assertEqual(CommandKind.OPEN, self.executor.current_step.command)
-        self.executor.on_feedback(100, False)
-        self.assertEqual(36, self.executor.current_step.target)
+        rig = _Rig(80)
+        self.assertIsNone(rig.executor.current_step)
+        rig.start(_enter_plan())
+        self.assertEqual(CommandKind.OPEN, rig.executor.current_step.command)
+        rig.report(100)
+        self.assertEqual(36, rig.executor.current_step.target)
 
     def test_satisfaction_is_exact(self):
         # The actuator reports the whole percent it reached, so arrival is plain equality.
-        self.assertEqual(Status.COMPLETED, self.executor.start(_move_plan(43), 43, False).status)
-        self.assertEqual(Status.RUNNING, Executor(ZONE).start(_move_plan(43), 42, False).status)
+        self.assertEqual(Status.COMPLETED, _Rig(43).start(_move_plan(43)).status)
+        self.assertEqual(Status.RUNNING, _Rig(42).start(_move_plan(43)).status)
 
 
 class TestArrival(unittest.TestCase):
 
     def setUp(self):
-        self.executor = Executor(ZONE)
-        self.executor.start(_enter_plan(), 80, False)  # commanded the full open
+        self.rig = _Rig(80)
+        self.rig.start(_enter_plan())  # commanded the full open
 
     def test_motion_feedback_does_not_advance(self):
-        self.assertEqual(Status.IDLE, self.executor.on_feedback(100, True).status)
+        self.assertEqual(Status.IDLE, self.rig.report(100, True).status)
 
     def test_arrival_issues_the_next_command_and_rearms(self):
-        outcome = self.executor.on_feedback(100, False)
+        outcome = self.rig.report(100)
         self.assertEqual(Status.RUNNING, outcome.status)
         self.assertEqual([ActionKind.MOVE_TO, ActionKind.ARM_SETTLE_TIMER], _kinds(outcome))
         self.assertEqual(36, _of(outcome, ActionKind.MOVE_TO)[0].position)
 
     def test_feedback_short_of_the_target_does_nothing(self):
-        self.assertEqual(Status.IDLE, self.executor.on_feedback(90, False).status)
+        self.assertEqual(Status.IDLE, self.rig.report(90).status)
 
     def test_stale_feedback_at_the_send_time_position_cannot_advance(self):
-        # The step was only commanded because the predicate did not hold at 80, so a duplicate
-        # report of 80 can never complete it -- however small the step.
         for _ in range(3):
-            self.assertEqual(Status.IDLE, self.executor.on_feedback(80, False).status)
-        self.assertTrue(self.executor.has_plan)
+            self.assertEqual(Status.IDLE, self.rig.report(80).status)
+        self.assertTrue(self.rig.executor.has_plan)
 
     def test_duplicate_arrival_after_the_step_completed_is_ignored(self):
-        self.executor.on_feedback(100, False)  # completes step 1, commands the dip to 36
-        self.assertEqual(Status.IDLE, self.executor.on_feedback(100, False).status)
+        self.rig.report(100)  # completes step 1, commands the dip to 36
+        self.assertEqual(Status.IDLE, self.rig.report(100).status)
 
     def test_completion_cancels_the_timer_and_leaves_publishing_to_the_caller(self):
-        self.executor.on_feedback(100, False)
-        self.executor.on_feedback(36, False)
-        outcome = self.executor.on_feedback(UPPER, False)
+        self.rig.report(100)
+        self.rig.report(36)
+        outcome = self.rig.report(UPPER)
         self.assertEqual(Status.COMPLETED, outcome.status)
         self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER], _kinds(outcome))
-        self.assertFalse(self.executor.has_plan)
+        self.assertFalse(self.rig.executor.has_plan)
+        self.assertIsNone(self.rig.actuator.move)
 
-    def test_feedback_without_a_plan_is_idle(self):
-        executor = Executor(ZONE)
-        self.assertEqual(Status.IDLE, executor.on_feedback(50, False).status)
-
-    def test_unreadable_position_does_not_advance(self):
-        self.assertEqual(Status.IDLE, self.executor.on_feedback(None, False).status)
-        self.assertTrue(self.executor.has_plan)
+    def test_no_verdict_without_a_plan(self):
+        self.assertEqual(Status.IDLE, Executor(ZONE, Actuator()).on_verdict(None).status)
 
 
 class TestRiseToAtLeast(unittest.TestCase):
 
     def setUp(self):
-        self.executor = Executor(ZONE)
-        self.plan = Plan("leave", (Step(StepKind.RISE_TO_AT_LEAST, 46), ), Latch.UNLATCHED)
+        self.plan = Plan(PlanKind.LEAVE, (Step(StepKind.RISE_TO_AT_LEAST, 46), ), Latch.UNLATCHED)
 
     def test_resting_past_the_target_satisfies_the_step(self):
-        self.executor.start(self.plan, UPPER, False)
-        outcome = self.executor.on_feedback(47, False)
-        self.assertEqual(Status.COMPLETED, outcome.status)
+        rig = _Rig(UPPER)
+        rig.start(self.plan)
+        self.assertEqual(Status.COMPLETED, rig.report(47).status)
 
     def test_short_of_the_target_does_not(self):
-        self.executor.start(self.plan, UPPER, False)
-        self.assertEqual(Status.IDLE, self.executor.on_feedback(45, False).status)
+        rig = _Rig(UPPER)
+        rig.start(self.plan)
+        self.assertEqual(Status.IDLE, rig.report(45).status)
 
     def test_already_above_is_skipped(self):
-        outcome = self.executor.start(self.plan, 50, False)
-        self.assertEqual(Status.COMPLETED, outcome.status)
+        self.assertEqual(Status.COMPLETED, _Rig(50).start(self.plan).status)
 
 
 class TestCommandDistinctFromTarget(unittest.TestCase):
     """A step may aim past what satisfies it; the command follows the aim, arrival the target."""
 
     def setUp(self):
-        self.executor = Executor(ZONE)
         # The shape the tilt exit uses: satisfied at 46, commanded to 48.
         self.plan = Plan(
-            "leave", (Step(StepKind.RISE_TO_AT_LEAST, 46, CommandKind.POSITION, command_pct=48), ),
+            PlanKind.LEAVE,
+            (Step(StepKind.RISE_TO_AT_LEAST, 46, CommandKind.POSITION, command_pct=48), ),
             Latch.UNLATCHED)
+        self.rig = _Rig(UPPER)
 
     def test_the_command_carries_the_command_position(self):
-        outcome = self.executor.start(self.plan, UPPER, False)
-        self.assertEqual([ActionKind.MOVE_TO, ActionKind.ARM_SETTLE_TIMER], _kinds(outcome))
+        outcome = self.rig.start(self.plan)
         self.assertEqual(48, _of(outcome, ActionKind.MOVE_TO)[0].position)
 
     def test_arrival_is_judged_by_the_target_not_the_command(self):
-        # Settling two percent short of the commanded 48 still clears the 46 the step needs.
-        self.executor.start(self.plan, UPPER, False)
-        outcome = self.executor.on_feedback(46, False)
-        self.assertEqual(Status.COMPLETED, outcome.status)
-
-    def test_short_of_the_target_still_does_not_arrive(self):
-        self.executor.start(self.plan, UPPER, False)
-        self.assertEqual(Status.IDLE, self.executor.on_feedback(45, False).status)
-        self.assertTrue(self.executor.has_plan)
+        self.rig.start(self.plan)
+        self.assertEqual(Status.COMPLETED, self.rig.report(46).status)
 
     def test_activation_skips_on_the_target_not_the_command(self):
-        # Already resting at 46: the step is satisfied, so no command goes out at all.
-        outcome = self.executor.start(self.plan, 46, False)
+        outcome = _Rig(46).start(self.plan)
         self.assertEqual(Status.COMPLETED, outcome.status)
         self.assertEqual([], _of(outcome, ActionKind.MOVE_TO))
 
     def test_the_settle_timer_accepts_on_the_target(self):
-        self.executor.start(self.plan, UPPER, False)
-        self.assertEqual(Status.COMPLETED, self.executor.on_timer(47, False).status)
+        self.rig.start(self.plan)
+        self.assertEqual(Status.COMPLETED, self.rig.timer(47).status)
+
+
+class TestStall(unittest.TestCase):
 
     def test_a_stall_names_the_target_the_step_needed(self):
-        self.executor.start(self.plan, UPPER, False)
-        outcome = self.executor.on_timer(45, False)
+        rig = _Rig(UPPER)
+        rig.start(
+            Plan(PlanKind.LEAVE,
+                 (Step(StepKind.RISE_TO_AT_LEAST, 46, CommandKind.POSITION, command_pct=48), ),
+                 Latch.UNLATCHED))
+        outcome = rig.timer(45)
         self.assertEqual(Status.STALLED, outcome.status)
-        message = _of(outcome, ActionKind.NOTIFY)[0].message
-        self.assertIn("did not reach 46%", message)
-        self.assertIn("45", message)
+        self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER, ActionKind.NOTIFY], _kinds(outcome))
+        notify = _of(outcome, ActionKind.NOTIFY)[0]
+        self.assertEqual(NotifyKind.STALL, notify.notify_kind)
+        self.assertIn("did not reach 46%", notify.message)
+        self.assertIn("45", notify.message)
+        self.assertFalse(rig.executor.has_plan)
+        self.assertIsNone(rig.actuator.move)
 
-    def test_a_move_step_can_carry_a_command_position_too(self):
-        executor = Executor(ZONE)
-        movement = _move_plan(30)
-        movement = Plan(movement.kind,
-                        (Step(StepKind.MOVE_TO, 30, CommandKind.POSITION, command_pct=28), ),
-                        Latch.UNLATCHED)
-        outcome = executor.start(movement, 80, False)
-        self.assertEqual(28, _of(outcome, ActionKind.MOVE_TO)[0].position)
-        # Exact-equality arrival still measures the target, so 28 does not complete it.
-        self.assertEqual(Status.IDLE, executor.on_feedback(28, False).status)
-        self.assertEqual(Status.COMPLETED, executor.on_feedback(30, False).status)
+    def test_an_unreadable_position_stops_then_stalls(self):
+        rig = _Rig(80)
+        rig.start(_move_plan(0, CommandKind.CLOSE))
+        outcome = rig.timer(None)
+        self.assertEqual(Status.STALLED, outcome.status)
+        self.assertEqual([ActionKind.STOP, ActionKind.CANCEL_SETTLE_TIMER, ActionKind.NOTIFY],
+                         _kinds(outcome))
+        self.assertIn("unreadable", _of(outcome, ActionKind.NOTIFY)[0].message)
+
+
+class TestDeviationTolerance(unittest.TestCase):
+    """Which steps may settle a percent or so off target: only height moves clear of the band."""
+
+    def test_an_ordinary_height_move_tolerates_it(self):
+        rig = _Rig(80)
+        rig.start(_move_plan(50))
+        self.assertEqual(Status.COMPLETED, rig.timer(50 + DEVIATION_TOLERANCE_PCT).status)
+
+    def test_a_deviation_accepted_mid_plan_continues(self):
+        rig = _Rig(80)
+        rig.start(_enter_plan())
+        outcome = rig.timer(99)  # a percent short of fully open
+        self.assertEqual(Status.RUNNING, outcome.status)
+        self.assertEqual([ActionKind.MOVE_TO, ActionKind.ARM_SETTLE_TIMER], _kinds(outcome))
+
+    def test_not_for_a_target_in_the_band(self):
+        # A percent short of the release height leaves the mechanism latched; a percent short of
+        # the enter dip never clears the lower edge. Those must land or stall.
+        rig = _Rig(20)
+        rig.start(_move_plan(RELEASE))
+        self.assertEqual(Status.STALLED, rig.timer(RELEASE - 1).status)
+        rig = _Rig(100)
+        rig.start(_enter_plan())  # commanded the dip to 36
+        self.assertEqual(Status.STALLED, rig.timer(38).status)
+
+    def test_not_for_slat_steps(self):
+        # A slat step is smaller than the tolerance: accepting the pre-step position would silently
+        # complete a move that never happened.
+        rig = _Rig(UPPER)
+        rig.start(Plan(PlanKind.SLAT, (Step(StepKind.MOVE_TO, 43), ), Latch.LATCHED))
+        self.assertEqual(Status.STALLED, rig.timer(UPPER).status)
+
+    def test_not_for_rise_steps(self):
+        rig = _Rig(41)
+        rig.start(Plan(PlanKind.LEAVE, (Step(StepKind.RISE_TO_AT_LEAST, 46), ), Latch.UNLATCHED))
+        self.assertEqual(Status.STALLED, rig.timer(45).status)
 
 
 class TestVirtualPosition(unittest.TestCase):
@@ -219,193 +270,26 @@ class TestVirtualPosition(unittest.TestCase):
 
     def test_the_executor_never_publishes(self):
         # Publishing needs the belief, which only the logic holds; the executor reports outcomes.
-        executor = Executor(ZONE)
-        outcomes = [
-            executor.start(_enter_plan(), 80, False),
-            executor.on_feedback(100, False),
-            executor.on_feedback(36, False),
-            executor.on_feedback(UPPER, False)
-        ]
+        rig = _Rig(80)
+        outcomes = [rig.start(_enter_plan()), rig.report(100), rig.report(36), rig.report(UPPER)]
         self.assertEqual([], [a for o in outcomes for a in _of(o, ActionKind.PUBLISH_STATE)])
-
-
-class TestSettledRecheck(unittest.TestCase):
-    """A blind seen moving and then settled short is judged after a short recheck, not 45 s."""
-
-    def setUp(self):
-        self.executor = Executor(ZONE)
-        self.executor.start(_move_plan(30), 80, False)
-
-    def test_settling_short_after_motion_arms_the_recheck(self):
-        self.executor.on_feedback(60, True)
-        outcome = self.executor.on_feedback(41, False)
-        self.assertEqual(Status.RUNNING, outcome.status)
-        self.assertEqual([ActionKind.ARM_SETTLE_TIMER], _kinds(outcome))
-        self.assertEqual(SETTLED_RECHECK_SECONDS, outcome.actions[0].seconds)
-        self.assertTrue(self.executor.has_plan)
-
-    def test_the_recheck_is_armed_once_per_stop(self):
-        self.executor.on_feedback(60, True)
-        self.executor.on_feedback(41, False)
-        self.assertEqual(Status.IDLE, self.executor.on_feedback(41, False).status)
-
-    def test_a_settled_report_before_any_motion_is_not_a_stop(self):
-        # The blind has not started yet; the inactivity timeout keeps waiting for it.
-        self.assertEqual(Status.IDLE, self.executor.on_feedback(80, False).status)
-
-    def test_the_recheck_then_judges_the_stop(self):
-        self.executor.on_feedback(60, True)
-        self.executor.on_feedback(41, False)
-        outcome = self.executor.on_timer(41, False)
-        self.assertEqual(Status.STALLED, outcome.status)
-
-
-class TestSettleTimer(unittest.TestCase):
-
-    def setUp(self):
-        self.executor = Executor(ZONE)
-        self.executor.start(_move_plan(0, CommandKind.CLOSE), 80, False)
-
-    def test_no_plan_means_nothing_to_time(self):
-        executor = Executor(ZONE)
-        self.assertEqual([], executor.on_timer(50, False).actions)
-
-    def test_still_moving_rearms(self):
-        outcome = self.executor.on_timer(40, True)
-        self.assertEqual(Status.RUNNING, outcome.status)
-        self.assertEqual([ActionKind.ARM_SETTLE_TIMER], _kinds(outcome))
-        self.assertTrue(self.executor.has_plan)
-
-    def test_settled_at_the_target_completes(self):
-        # Covers an actuator that reported no intermediate states at all.
-        outcome = self.executor.on_timer(0, False)
-        self.assertEqual(Status.COMPLETED, outcome.status)
-        self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER], _kinds(outcome))
-
-    def test_settled_within_the_deviation_tolerance_is_accepted(self):
-        logged = []
-
-        def log(message, level="INFO"):
-            logged.append((level, message))
-
-        executor = Executor(ZONE, log=log)
-        executor.start(_move_plan(50), 80, False)
-        outcome = executor.on_timer(50 + DEVIATION_TOLERANCE_PCT, False)
-        self.assertEqual(Status.COMPLETED, outcome.status)
-        self.assertIn(("WARNING", "accepting 52 for target 50: settled within 2% of the "
-                       "setpoint"), logged)
-
-    def test_settled_short_stalls_without_stopping_a_blind_that_is_at_rest(self):
-        # There is nothing to stop, and on a KNX actuator with no stop object a stop sent to an
-        # idle blind is a step telegram.
-        outcome = self.executor.on_timer(50, False)
-        self.assertEqual(Status.STALLED, outcome.status)
-        self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER, ActionKind.NOTIFY], _kinds(outcome))
-        self.assertEqual(NotifyKind.STALL, _of(outcome, ActionKind.NOTIFY)[0].notify_kind)
-        self.assertIn("0%", _of(outcome, ActionKind.NOTIFY)[0].message)
-        self.assertFalse(self.executor.has_plan)
-
-    def test_unreadable_position_stalls_and_stops(self):
-        # It may well still be travelling, so this is the one stall that sends a stop.
-        outcome = self.executor.on_timer(None, False)
-        self.assertEqual(Status.STALLED, outcome.status)
-        self.assertEqual([ActionKind.STOP, ActionKind.CANCEL_SETTLE_TIMER, ActionKind.NOTIFY],
-                         _kinds(outcome))
-        self.assertIn("unreadable", _of(outcome, ActionKind.NOTIFY)[0].message)
-        self.assertFalse(self.executor.has_plan)
-
-    def test_deviation_tolerance_does_not_apply_to_a_target_in_the_band(self):
-        # A percent short of the release height leaves the mechanism latched; a percent short of
-        # the enter dip never clears the lower edge. Those must land or stall.
-        executor = Executor(ZONE)
-        executor.start(_move_plan(RELEASE), 20, False)
-        self.assertEqual(Status.STALLED, executor.on_timer(RELEASE - 1, False).status)
-        executor = Executor(ZONE)
-        executor.start(_enter_plan(), 100, False)  # commanded the dip to 36
-        self.assertEqual(Status.STALLED, executor.on_timer(38, False).status)
-
-    def test_deviation_tolerance_does_not_apply_to_slat_steps(self):
-        # A slat step is smaller than the tolerance: accepting the pre-step position would silently
-        # complete a move that never happened.
-        executor = Executor(ZONE)
-        executor.start(Plan(PlanKind.SLAT, (Step(StepKind.MOVE_TO, 43), ), Latch.LATCHED), UPPER,
-                       False)
-        self.assertEqual(Status.STALLED, executor.on_timer(UPPER, False).status)
-
-    def test_a_deviation_accepted_mid_plan_continues(self):
-        executor = Executor(ZONE)
-        executor.start(_enter_plan(), 80, False)
-        outcome = executor.on_timer(99, False)  # a percent short of fully open
-        self.assertEqual(Status.RUNNING, outcome.status)
-        self.assertEqual([ActionKind.MOVE_TO, ActionKind.ARM_SETTLE_TIMER], _kinds(outcome))
-
-    def test_deviation_tolerance_does_not_apply_to_rise_steps(self):
-        executor = Executor(ZONE)
-        executor.start(Plan("leave", (Step(StepKind.RISE_TO_AT_LEAST, 46), ), Latch.UNLATCHED), 41,
-                       False)
-        self.assertEqual(Status.STALLED, executor.on_timer(45, False).status)
-
-
-class TestMayBeTravelling(unittest.TestCase):
-    """
-    Whether a stop has anything to stop. A pending plan alone is not enough: the settled-short
-    recheck keeps one open for seconds after the blind has reported coming to rest.
-    """
-
-    def setUp(self):
-        self.executor = Executor(ZONE)
-
-    def test_idle_with_no_plan(self):
-        self.assertFalse(self.executor.may_be_travelling)
-
-    def test_true_from_the_moment_a_command_goes_out(self):
-        self.executor.start(_move_plan(30), 80, False)
-        self.assertTrue(self.executor.may_be_travelling)
-
-    def test_motion_reports_leave_it_true(self):
-        self.executor.start(_move_plan(30), 80, False)
-        self.executor.on_feedback(60, True)
-        self.assertTrue(self.executor.may_be_travelling)
-
-    def test_a_settled_report_short_of_the_target_answers_the_command(self):
-        self.executor.start(_move_plan(30), 80, False)
-        self.executor.on_feedback(60, True)
-        self.executor.on_feedback(41, False)
-        self.assertTrue(self.executor.has_plan)
-        self.assertFalse(self.executor.may_be_travelling)
-
-    def test_the_next_command_makes_it_true_again(self):
-        self.executor.start(_enter_plan(), 80, False)
-        self.executor.on_feedback(100, False)  # step one arrives, the dip is commanded
-        self.assertTrue(self.executor.may_be_travelling)
-
-    def test_a_finished_plan_has_nothing_to_stop(self):
-        self.executor.start(_move_plan(30), 80, False)
-        self.executor.on_feedback(30, False)
-        self.assertFalse(self.executor.has_plan)
-        self.assertFalse(self.executor.may_be_travelling)
-
-    def test_abandoning_clears_it(self):
-        self.executor.start(_move_plan(30), 80, False)
-        self.executor.abandon()
-        self.assertFalse(self.executor.may_be_travelling)
 
 
 class TestAbandon(unittest.TestCase):
 
     def test_abandon_cancels_the_timer_and_reports_the_plan(self):
-        executor = Executor(ZONE)
+        rig = _Rig(80)
         movement = _enter_plan()
-        executor.start(movement, 80, False)
-        outcome = executor.abandon()
+        rig.start(movement)
+        outcome = rig.executor.abandon()
         self.assertEqual(Status.ABANDONED, outcome.status)
         self.assertIs(movement, outcome.plan)
         self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER], _kinds(outcome))
-        self.assertFalse(executor.has_plan)
+        self.assertFalse(rig.executor.has_plan)
+        self.assertIsNone(rig.actuator.move)
 
     def test_abandoning_nothing_does_nothing(self):
-        executor = Executor(ZONE)
-        outcome = executor.abandon()
+        outcome = Executor(ZONE, Actuator()).abandon()
         self.assertEqual(Status.IDLE, outcome.status)
         self.assertEqual([], outcome.actions)
 

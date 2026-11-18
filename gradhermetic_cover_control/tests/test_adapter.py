@@ -9,7 +9,7 @@ right service call.
 import unittest
 from datetime import datetime, timedelta
 
-from gradhermetic_cover_control.executor import Action, ActionKind, Motion, NotifyKind
+from gradhermetic_cover_control.actions import Action, ActionKind, Motion, NotifyKind
 from gradhermetic_cover_control.gradhermetic_cover_control import (
     COMMAND_EVENT,
     STARTUP_DELAY_SECONDS,

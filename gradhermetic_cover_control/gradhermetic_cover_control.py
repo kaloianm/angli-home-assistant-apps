@@ -12,11 +12,11 @@ from __future__ import annotations
 import traceback
 from typing import Any
 
+from gradhermetic_cover_control.actions import Action, ActionKind, Motion, NotifyKind
+from gradhermetic_cover_control.actuator import Direction
 from gradhermetic_cover_control.config import parse_app_config
-from gradhermetic_cover_control.executor import Action, ActionKind, Motion, NotifyKind
 from gradhermetic_cover_control.geometry import to_whole_pct
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
-from gradhermetic_cover_control.planner import Direction
 from gradhermetic_cover_control.runtime import (
     COMMAND_RATE_LIMIT,
     COMMAND_RATE_WINDOW_SECONDS,
@@ -163,18 +163,6 @@ class GradhermeticCoverControl(hass.Hass):
         except Exception as exc:
             self._report_error(f"_on_real_cover_state(entity={entity!r})", exc)
 
-    def _on_settle(self, kwargs: dict[str, Any]) -> None:
-        """
-        Hand a settle-timer firing to the logic, with the controller state read fresh, since the
-        timer exists for the case where a state update never arrived.
-        """
-        try:
-            self._runtime.settle_timer_handle = None
-            position, is_moving, direction = self._read_real_position()
-            self._apply_actions(self._runtime.logic.on_settle_timer(position, is_moving, direction))
-        except Exception as exc:
-            self._report_error("_on_settle", exc)
-
     # -- Action dispatch ---------------------------------------------------------------------------
 
     def _apply_actions(self, actions: list[Action]) -> None:
@@ -278,6 +266,18 @@ class GradhermeticCoverControl(hass.Hass):
         if runtime.settle_timer_handle is not None:
             self.cancel_timer(runtime.settle_timer_handle)
             runtime.settle_timer_handle = None
+
+    def _on_settle(self, kwargs: dict[str, Any]) -> None:
+        """
+        Hand a settle-timer firing to the logic, with the controller state read fresh, since the
+        timer exists for the case where a state update never arrived.
+        """
+        try:
+            self._runtime.settle_timer_handle = None
+            position, is_moving, direction = self._read_real_position()
+            self._apply_actions(self._runtime.logic.on_settle_timer(position, is_moving, direction))
+        except Exception as exc:
+            self._report_error("_on_settle", exc)
 
     # -- Safety ------------------------------------------------------------------------------------
 

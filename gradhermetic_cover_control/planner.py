@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from gradhermetic_cover_control.actuator import CommandKind, Direction, Move
 from gradhermetic_cover_control.geometry import Zone
 
 # -- Latch belief ----------------------------------------------------------------------------------
@@ -39,11 +40,6 @@ class Latch(StrEnum):
     UNKNOWN = "unknown"
 
 
-class Direction(StrEnum):
-    UP = "up"
-    DOWN = "down"
-
-
 # -- Steps -----------------------------------------------------------------------------------------
 
 
@@ -52,17 +48,6 @@ class StepKind(StrEnum):
     MOVE_TO = "move_to"
     # Reach at least this reported position (the tilt exit).
     RISE_TO_AT_LEAST = "rise_to_at_least"
-
-
-class CommandKind(StrEnum):
-    """
-    Which real-cover service carries a step. ``OPEN``/``CLOSE`` send the commands rather than a
-    position so the actuator drives against its own limit switch.
-    """
-
-    POSITION = "position"
-    OPEN = "open"
-    CLOSE = "close"
 
 
 # -- Plans -----------------------------------------------------------------------------------------
@@ -136,14 +121,18 @@ class Step:
             return self.target
         return self.command_pct
 
+    def move(self, tolerance_pct: int = 0) -> Move:
+        """
+        The actuator move that carries out this step.
+        """
+        return Move(self.command, self.command_position, self.target,
+                    at_least=self.kind == StepKind.RISE_TO_AT_LEAST, tolerance_pct=tolerance_pct)
+
     def satisfied_by(self, position: int) -> bool:
         """
-        Whether a reported real position satisfies this step. The actuator reports the whole
-        percent it reached, so ``move_to`` uses exact equality.
+        Whether a reported real position satisfies this step.
         """
-        if self.kind == StepKind.RISE_TO_AT_LEAST:
-            return position >= self.target
-        return position == self.target
+        return self.move().arrived(position)
 
 
 @dataclass(frozen=True)
