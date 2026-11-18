@@ -27,6 +27,8 @@ def _config(**overrides):
         "tilt_zone_epsilon_pct": EPSILON,
         "tilt_zone_release_pct": RELEASE,
         "tilt_step_pct": STEP,
+        "tilt_zone_enter_pct": UPPER,
+        "height_step_pct": 2,
     }
     args.update(overrides)
     return Zone(**args)

@@ -57,8 +57,8 @@ def parse_app_config(args: dict[str, Any]) -> GradhermeticConfig:
         tilt_zone_epsilon_pct=_parse_positive_whole(args, "tilt_zone_epsilon_pct"),
         tilt_zone_release_pct=_parse_percentage(args, "tilt_zone_release_pct"),
         tilt_step_pct=_parse_positive_whole(args, "tilt_step_pct"),
-        tilt_zone_enter_pct=_optional_percentage(args, "tilt_zone_enter_pct"),
-        **_optional_field(args, "height_step_pct", _parse_positive_whole),
+        tilt_zone_enter_pct=_parse_percentage(args, "tilt_zone_enter_pct"),
+        height_step_pct=_parse_positive_whole(args, "height_step_pct"),
     )
 
     return GradhermeticConfig(
@@ -87,25 +87,6 @@ def _parse_percentage(source: dict[str, Any], key: str) -> int:
     if value < 0 or value > 100:
         raise ValueError(f"{key} must be between 0 and 100")
     return value
-
-
-def _optional_percentage(source: dict[str, Any], key: str) -> int | None:
-    """
-    Read an optional whole-number field, enforcing 0 <= value <= 100 when it is present.
-    """
-    if source.get(key) is None:
-        return None
-    return _parse_percentage(source, key)
-
-
-def _optional_field(source: dict[str, Any], key: str, parse: Any) -> dict[str, int]:
-    """
-    Read an optional numeric field as keyword arguments: empty when absent, so the dataclass
-    default applies, else ``{key: parsed value}``.
-    """
-    if source.get(key) is None:
-        return {}
-    return {key: parse(source, key)}
 
 
 def _parse_positive_whole(source: dict[str, Any], key: str) -> int:

@@ -41,7 +41,8 @@ DIP = LOWER - EPSILON
 RELEASE = 46
 
 ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-            tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP)
+            tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=UPPER,
+            height_step_pct=2)
 
 # The same mechanism on a blind whose latch only genuinely lets go well above the zone,
 # and whose slats are not visible until a little way open (real 42, i.e. virtual 33). Band =
@@ -50,7 +51,8 @@ CUSTOM_RELEASE = 55
 CUSTOM_LANDING = 42
 CUSTOM_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
                    tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
-                   tilt_zone_release_pct=CUSTOM_RELEASE, tilt_zone_enter_pct=CUSTOM_LANDING)
+                   tilt_zone_release_pct=CUSTOM_RELEASE, tilt_zone_enter_pct=CUSTOM_LANDING,
+                   height_step_pct=2)
 
 # Enough ticks for the longest sequence (a full open plus a dip plus a rise) with room to spare.
 MAX_TICKS = 1000
@@ -520,13 +522,15 @@ class TestAlternateGeometries(ModelTestCase):
         # Releases just above the zone, but the slats have to end wide open (the lower edge).
         ("landing_only",
          Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=LOWER)),
+              tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=LOWER,
+              height_step_pct=2)),
         # A low zone that needs almost the whole remaining travel to release. Band [18, 95]. The
         # 3% step does not divide this 10%-wide zone evenly, so the last step clamps to an edge,
         # and the landing is its mid-point.
         ("release_far_above_the_zone",
          Zone(tilt_zone_upper_pct=30, tilt_zone_lower_pct=20, tilt_zone_epsilon_pct=2,
-              tilt_step_pct=3, tilt_zone_release_pct=95, tilt_zone_enter_pct=25)),
+              tilt_step_pct=3, tilt_zone_release_pct=95, tilt_zone_enter_pct=25,
+              height_step_pct=2)),
     ]
 
     POSITIONS = (0, 10, 19, 20, 25, 30, 36, 38, 41, 44, 46, 50, 55, 56, 80, 95, 96, 100)

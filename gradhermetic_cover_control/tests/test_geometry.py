@@ -1,7 +1,6 @@
 import unittest
 
 from gradhermetic_cover_control.geometry import (
-    DEFAULT_HEIGHT_STEP_PCT,
     Zone,
     clamp_pct,
     to_whole_pct,
@@ -24,6 +23,8 @@ def _zone(**overrides):
         "tilt_zone_epsilon_pct": EPSILON,
         "tilt_zone_release_pct": RELEASE,
         "tilt_step_pct": STEP,
+        "tilt_zone_enter_pct": UPPER,
+        "height_step_pct": 2,
     }
     args.update(overrides)
     return Zone(**args)
@@ -52,12 +53,6 @@ class TestLandmarks(unittest.TestCase):
         self.assertEqual(RELEASE, zone.release_target)
         self.assertEqual(RELEASE, zone.band_high)
 
-    def test_landing_defaults_to_the_closed_edge(self):
-        self.assertIsNone(self.zone.tilt_zone_enter_pct)
-        self.assertEqual(UPPER, self.zone.enter_landing_real)
-        # Virtual 0 is the closed edge, which is where the latching rise already ends.
-        self.assertEqual(0, self.zone.enter_landing_virtual)
-
     def test_every_landmark_is_a_whole_percent(self):
         zone = _zone(tilt_zone_enter_pct=41)
         for value in (zone.upper, zone.lower, zone.epsilon, zone.span, zone.dip_target,
@@ -70,8 +65,7 @@ class TestLandmarks(unittest.TestCase):
         self.assertEqual(41, zone.enter_landing_real)
         self.assertEqual(50, zone.enter_landing_virtual)
 
-    def test_the_height_step_defaults_and_is_configurable(self):
-        self.assertEqual(DEFAULT_HEIGHT_STEP_PCT, self.zone.height_step_pct)
+    def test_the_height_step_is_configurable(self):
         self.assertEqual(5, _zone(height_step_pct=5).height_step_pct)
 
 
@@ -161,7 +155,7 @@ class TestMapping(unittest.TestCase):
             for upper in range(lower + 1, 98, 5):
                 zone = _zone(tilt_zone_lower_pct=lower, tilt_zone_upper_pct=upper,
                              tilt_zone_epsilon_pct=1, tilt_zone_release_pct=upper + 1,
-                             tilt_step_pct=1, height_step_pct=1)
+                             tilt_step_pct=1, tilt_zone_enter_pct=upper, height_step_pct=1)
                 for real in range(lower, upper + 1):
                     self.assertEqual(real, zone.virtual_to_real(zone.real_to_virtual(real)))
 
@@ -303,7 +297,8 @@ class TestValidation(unittest.TestCase):
                     _zone(tilt_zone_lower_pct=lower, tilt_zone_upper_pct=10)
 
     def test_dip_target_just_above_zero_is_accepted(self):
-        zone = _zone(tilt_zone_lower_pct=EPSILON + 1, tilt_zone_upper_pct=10)
+        zone = _zone(tilt_zone_lower_pct=EPSILON + 1, tilt_zone_upper_pct=10,
+                     tilt_zone_enter_pct=10)
         self.assertEqual(1, zone.dip_target)
 
     def test_release_not_above_the_upper_edge_raises(self):
@@ -322,7 +317,8 @@ class TestValidation(unittest.TestCase):
 
     def test_a_zone_near_the_top_limit_only_needs_room_for_the_release(self):
         # Epsilon no longer pads the upper edge, so it does not limit how high the zone may sit.
-        zone = _zone(tilt_zone_upper_pct=98, tilt_zone_lower_pct=92, tilt_zone_release_pct=99)
+        zone = _zone(tilt_zone_upper_pct=98, tilt_zone_lower_pct=92, tilt_zone_release_pct=99,
+                     tilt_zone_enter_pct=98)
         self.assertEqual(99, zone.band_high)
 
     def test_release_at_or_above_a_hundred_raises(self):

@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, fields
-# Default real travel of one height step: a short nudge on a ~15 s full travel.
-DEFAULT_HEIGHT_STEP_PCT = 2
 
 
 def clamp_pct(value: int) -> int:
@@ -55,8 +53,8 @@ class Zone:
     tilt_zone_epsilon_pct: int
     tilt_zone_release_pct: int
     tilt_step_pct: int
-    tilt_zone_enter_pct: int | None = None
-    height_step_pct: int = DEFAULT_HEIGHT_STEP_PCT
+    tilt_zone_enter_pct: int
+    height_step_pct: int
 
     def __post_init__(self) -> None:
         """
@@ -70,7 +68,7 @@ class Zone:
         """
         for field in fields(self):
             value = getattr(self, field.name)
-            if value is not None and not _is_whole(value):
+            if not _is_whole(value):
                 raise ValueError(f"{field.name} must be a whole percent, not {value!r}")
         if not 0 <= self.tilt_zone_lower_pct <= 100:
             raise ValueError("tilt_zone_lower_pct must be between 0 and 100")
@@ -91,11 +89,9 @@ class Zone:
         if self.tilt_zone_release_pct >= 100:
             raise ValueError("tilt_zone_release_pct must be < 100 so the ambiguity band stops "
                              "short of the fully open position")
-        landing = self.tilt_zone_enter_pct
-        if landing is not None:
-            if not self.tilt_zone_lower_pct <= landing <= self.tilt_zone_upper_pct:
-                raise ValueError("tilt_zone_enter_pct must be between tilt_zone_lower_pct and "
-                                 "tilt_zone_upper_pct")
+        if not self.tilt_zone_lower_pct <= self.tilt_zone_enter_pct <= self.tilt_zone_upper_pct:
+            raise ValueError("tilt_zone_enter_pct must be between tilt_zone_lower_pct and "
+                             "tilt_zone_upper_pct")
         if self.tilt_step_pct < 1:
             raise ValueError("tilt_step_pct must be >= 1 so one step moves the actuator")
         if self.tilt_step_pct > self.span:
@@ -153,11 +149,9 @@ class Zone:
     @property
     def enter_landing_real(self) -> int:
         """
-        Real travel position the entry sequence finishes on; defaults to the upper (closed) edge.
+        Real travel position the entry sequence finishes on.
         """
-        if self.tilt_zone_enter_pct is not None:
-            return self.tilt_zone_enter_pct
-        return self.upper
+        return self.tilt_zone_enter_pct
 
     @property
     def enter_landing_virtual(self) -> int:

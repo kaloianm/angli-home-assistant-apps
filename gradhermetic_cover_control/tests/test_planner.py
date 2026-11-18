@@ -28,7 +28,8 @@ DIP = LOWER - EPSILON
 RELEASE = 46
 
 ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-            tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP)
+            tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=UPPER,
+            height_step_pct=2)
 
 # The same zone with a measured release height well above the zone, and an entry that
 # finishes at a slightly-open slat angle (real 42, i.e. virtual 33) instead of the closed edge.
@@ -37,7 +38,8 @@ CUSTOM_RELEASE = 55
 CUSTOM_LANDING = 42
 CUSTOM_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
                    tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
-                   tilt_zone_release_pct=CUSTOM_RELEASE, tilt_zone_enter_pct=CUSTOM_LANDING)
+                   tilt_zone_release_pct=CUSTOM_RELEASE, tilt_zone_enter_pct=CUSTOM_LANDING,
+                   height_step_pct=2)
 
 # Representative starts: above, at the band edges, inside the zone, below, and unknown.
 STARTS = (100, 80, 47, RELEASE, 45, UPPER, 41, LOWER, DIP, 30, 0, None)
@@ -305,7 +307,7 @@ class TestHeightStep(unittest.TestCase):
         self.assertEqual([8], _targets(self._step(10, Direction.DOWN)))
         wide = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
                     tilt_zone_epsilon_pct=EPSILON, tilt_zone_release_pct=RELEASE,
-                    tilt_step_pct=STEP, height_step_pct=5)
+                    tilt_step_pct=STEP, height_step_pct=5, tilt_zone_enter_pct=UPPER)
         self.assertEqual([75], _targets(self._step(80, Direction.DOWN, zone=wide)))
 
     def test_a_step_is_a_normal_plan_that_commits_a_release(self):
@@ -388,7 +390,8 @@ class TestInvariantsHoldForEveryPlan(unittest.TestCase):
         ("custom_release_and_landing", CUSTOM_ZONE),
         ("release_just_below_full_travel",
          Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_step_pct=STEP, tilt_zone_release_pct=99, tilt_zone_enter_pct=LOWER)),
+              tilt_step_pct=STEP, tilt_zone_release_pct=99, tilt_zone_enter_pct=LOWER,
+              height_step_pct=2)),
     ]
 
     @staticmethod

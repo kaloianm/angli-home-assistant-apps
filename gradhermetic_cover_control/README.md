@@ -68,7 +68,7 @@ the tilt zone is only a few percent wide. So entry always starts from the top:
 1. Open fully with `open_cover`, which re-references the actuator. Skipped if already at 100%.
 2. Move down to `tilt_zone_lower_pct - tilt_zone_epsilon_pct`, just below the zone.
 3. Move up to `tilt_zone_upper_pct`. Crossing the lower edge upward latches, with the slats closed.
-4. Move to `tilt_zone_enter_pct` if it is set and differs from the upper edge.
+4. Move to `tilt_zone_enter_pct` if it differs from the upper edge.
 
 Leaving tilt mode opens the blind fully. It counts as released once the blind passes
 `tilt_zone_release_pct`.
@@ -96,8 +96,8 @@ read as released. Keep direct controls of the real cover off everyday dashboards
 
 ## Configuration
 
-All percentages are whole numbers of real blind travel. Fractions such as `38.5` are rejected at
-startup.
+Every setting is required. All percentages are whole numbers of real blind travel. Fractions such
+as `38.5` are rejected at startup.
 
 ```yaml
 gradhermetic_living_room:
@@ -115,17 +115,17 @@ gradhermetic_living_room:
   # How far below the lower edge the entry dips. >= 1.
   tilt_zone_epsilon_pct: 2
 
-  # Required. Measured height at which the latch releases; > upper, < 100. Also the top of the
+  # Measured height at which the latch releases; > upper, < 100. Also the top of the
   # ambiguity band.
   tilt_zone_release_pct: 50
 
-  # Optional. Where entry finishes, inside [lower, upper]. Defaults to upper (closed).
+  # Where entry finishes, inside [lower, upper].
   tilt_zone_enter_pct: 42
 
   # Slat step, 1 .. (upper - lower).
   tilt_step_pct: 2
 
-  # Optional. Height step outside tilt mode, 1 .. 100. Defaults to 2.
+  # Height step outside tilt mode, 1 .. 100.
   height_step_pct: 2
 ```
 

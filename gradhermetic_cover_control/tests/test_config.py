@@ -15,6 +15,8 @@ def _valid_args(**overrides):
         "tilt_zone_epsilon_pct": 2,
         "tilt_zone_release_pct": 46,
         "tilt_step_pct": 2,
+        "tilt_zone_enter_pct": 44,
+        "height_step_pct": 2,
     }
     args.update(overrides)
     return args
@@ -29,13 +31,6 @@ class TestConfigParsing(unittest.TestCase):
         self.assertEqual("Living Room Blind", config.virtual_name)
         self.assertEqual(44, config.zone.tilt_zone_upper_pct)
         self.assertEqual(38, config.zone.tilt_zone_lower_pct)
-
-    def test_the_landing_key_is_optional(self):
-        # Absent means "keep the geometric default": the closed edge.
-        config = parse_app_config(_valid_args())
-        self.assertIsNone(config.zone.tilt_zone_enter_pct)
-        self.assertEqual(44, config.zone.enter_landing_real)
-        self.assertEqual(0, config.zone.enter_landing_virtual)
 
     def test_release_and_landing_are_parsed(self):
         # Both are real travel positions; the landing has to lie inside the zone.
@@ -83,8 +78,7 @@ class TestConfigParsing(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, f"{key} must be a whole percent"):
                         parse_app_config(_valid_args(**{key: value}))
 
-    def test_the_height_step_is_optional_and_parsed(self):
-        self.assertEqual(2, parse_app_config(_valid_args()).zone.height_step_pct)
+    def test_the_height_step_is_parsed(self):
         config = parse_app_config(_valid_args(height_step_pct="5"))
         self.assertEqual(5, config.zone.height_step_pct)
         self.assertIn("height_step_pct=5", str(config))
@@ -93,18 +87,17 @@ class TestConfigParsing(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "height_step_pct must be > 0"):
             parse_app_config(_valid_args(height_step_pct=0))
 
-    def test_an_explicitly_null_landing_falls_back_to_the_default(self):
-        config = parse_app_config(_valid_args(tilt_zone_enter_pct=None))
-        self.assertEqual(44, config.zone.enter_landing_real)
-
-    def test_the_release_height_is_required(self):
-        # It can only be measured on the blind, so there is no geometric default to fall back to.
-        args = _valid_args()
-        del args["tilt_zone_release_pct"]
-        with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct is required"):
-            parse_app_config(args)
-        with self.assertRaisesRegex(ValueError, "tilt_zone_release_pct is required"):
-            parse_app_config(_valid_args(tilt_zone_release_pct=None))
+    def test_every_zone_setting_is_required(self):
+        for key in ("tilt_zone_upper_pct", "tilt_zone_lower_pct", "tilt_zone_epsilon_pct",
+                    "tilt_zone_release_pct", "tilt_step_pct", "tilt_zone_enter_pct",
+                    "height_step_pct"):
+            with self.subTest(key=key):
+                args = _valid_args()
+                del args[key]
+                with self.assertRaisesRegex(ValueError, f"{key} is required"):
+                    parse_app_config(args)
+                with self.assertRaisesRegex(ValueError, f"{key} is required"):
+                    parse_app_config(_valid_args(**{key: None}))
 
     def test_the_summary_shows_the_configured_release_height(self):
         self.assertIn("tilt_zone_release_pct=46", str(parse_app_config(_valid_args())))
