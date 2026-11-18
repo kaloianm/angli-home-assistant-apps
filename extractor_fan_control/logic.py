@@ -8,18 +8,22 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from enum import Enum
+from enum import Enum, StrEnum
 
-ACTION_FAN_ON = "fan_on"
-ACTION_FAN_OFF = "fan_off"
-ACTION_START_KEEPALIVE = "start_keepalive"
-ACTION_STOP_KEEPALIVE = "stop_keepalive"
-ACTION_SET_TIMER = "set_timer"
-ACTION_CANCEL_TIMER = "cancel_timer"
-ACTION_SET_OFF_DEADLINE = "set_off_deadline"
 
-TIMER_ACTIVATION = "activation"
-TIMER_DEADLINE = "deadline"
+class ActionKind(StrEnum):
+    FAN_ON = "fan_on"
+    FAN_OFF = "fan_off"
+    START_KEEPALIVE = "start_keepalive"
+    STOP_KEEPALIVE = "stop_keepalive"
+    SET_TIMER = "set_timer"
+    CANCEL_TIMER = "cancel_timer"
+    SET_OFF_DEADLINE = "set_off_deadline"
+
+
+class TimerName(StrEnum):
+    ACTIVATION = "activation"
+    DEADLINE = "deadline"
 
 
 class PairState(Enum):
@@ -73,8 +77,8 @@ class Action:
     Declarative action produced by the logic engine.
     """
 
-    kind: str
-    timer_name: str | None = None
+    kind: ActionKind
+    timer_name: TimerName | None = None
     at: datetime | None = None
 
 
@@ -107,8 +111,8 @@ class ExtractorFanPairLogic:
         self._fan_output_on = False
         self._keepalive_output_on = False
         self._timer_outputs: dict[str, datetime | None] = {
-            TIMER_ACTIVATION: None,
-            TIMER_DEADLINE: None,
+            TimerName.ACTIVATION: None,
+            TimerName.DEADLINE: None,
         }
         self._off_deadline_output: datetime | None = None
 
@@ -140,8 +144,8 @@ class ExtractorFanPairLogic:
         return self._emit_transitions({
             "fan_on": False,
             "keepalive_on": False,
-            TIMER_ACTIVATION: None,
-            TIMER_DEADLINE: None,
+            TimerName.ACTIVATION: None,
+            TimerName.DEADLINE: None,
             "off_deadline": None,
         })
 
@@ -246,18 +250,19 @@ class ExtractorFanPairLogic:
             until = f" until {off_deadline.isoformat()}" if off_deadline is not None else ""
             self._log(f"state {previous_state.value} -> {current_state.value}{until}")
         for action in actions:
-            if action.kind == ACTION_SET_TIMER:
-                self._log(
-                    f"action {action.kind} {action.timer_name} at "
-                    f"{action.at.isoformat() if action.at else None}", level="DEBUG")
-            elif action.kind == ACTION_CANCEL_TIMER:
-                self._log(f"action {action.kind} {action.timer_name}", level="DEBUG")
-            elif action.kind == ACTION_SET_OFF_DEADLINE:
-                self._log(
-                    f"action {action.kind} at "
-                    f"{action.at.isoformat() if action.at else None}", level="DEBUG")
-            else:
-                self._log(f"action {action.kind}", level="DEBUG")
+            match action.kind:
+                case ActionKind.SET_TIMER:
+                    self._log(
+                        f"action {action.kind} {action.timer_name} at "
+                        f"{action.at.isoformat() if action.at else None}", level="DEBUG")
+                case ActionKind.CANCEL_TIMER:
+                    self._log(f"action {action.kind} {action.timer_name}", level="DEBUG")
+                case ActionKind.SET_OFF_DEADLINE:
+                    self._log(
+                        f"action {action.kind} at "
+                        f"{action.at.isoformat() if action.at else None}", level="DEBUG")
+                case _:
+                    self._log(f"action {action.kind}", level="DEBUG")
         return actions
 
     def _advance_time(self, now: datetime) -> None:
@@ -297,8 +302,8 @@ class ExtractorFanPairLogic:
         return {
             "fan_on": target_fan_on,
             "keepalive_on": target_keepalive_on,
-            TIMER_ACTIVATION: activation_timer,
-            TIMER_DEADLINE: deadline_timer,
+            TimerName.ACTIVATION: activation_timer,
+            TimerName.DEADLINE: deadline_timer,
             "off_deadline": self._compute_off_deadline(now),
         }
 
@@ -339,29 +344,31 @@ class ExtractorFanPairLogic:
 
         target_fan_on = bool(target_outputs["fan_on"])
         if target_fan_on != self._fan_output_on:
-            actions.append(Action(ACTION_FAN_ON if target_fan_on else ACTION_FAN_OFF))
+            actions.append(Action(ActionKind.FAN_ON if target_fan_on else ActionKind.FAN_OFF))
             self._fan_output_on = target_fan_on
 
         target_keepalive_on = bool(target_outputs["keepalive_on"])
         if target_keepalive_on != self._keepalive_output_on:
             actions.append(
-                Action(ACTION_START_KEEPALIVE if target_keepalive_on else ACTION_STOP_KEEPALIVE))
+                Action(ActionKind.START_KEEPALIVE if target_keepalive_on else ActionKind.
+                       STOP_KEEPALIVE))
             self._keepalive_output_on = target_keepalive_on
 
-        for timer_name in (TIMER_ACTIVATION, TIMER_DEADLINE):
+        for timer_name in (TimerName.ACTIVATION, TimerName.DEADLINE):
             target_at = target_outputs[timer_name]
             current_at = self._timer_outputs[timer_name]
             if target_at != current_at:
                 if target_at is None:
-                    actions.append(Action(ACTION_CANCEL_TIMER, timer_name=timer_name))
+                    actions.append(Action(ActionKind.CANCEL_TIMER, timer_name=timer_name))
                 else:
-                    actions.append(Action(ACTION_SET_TIMER, timer_name=timer_name, at=target_at))
+                    actions.append(Action(ActionKind.SET_TIMER, timer_name=timer_name,
+                                          at=target_at))
                 self._timer_outputs[timer_name] = target_at
 
         target_off_deadline = target_outputs["off_deadline"]
         if target_off_deadline != self._off_deadline_output:
             # at=None clears the sensor.
-            actions.append(Action(ACTION_SET_OFF_DEADLINE, at=target_off_deadline))
+            actions.append(Action(ActionKind.SET_OFF_DEADLINE, at=target_off_deadline))
             self._off_deadline_output = target_off_deadline
 
         return actions

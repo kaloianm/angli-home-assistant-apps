@@ -10,18 +10,11 @@ from typing import Any
 
 from extractor_fan_control.config import PairConfig, parse_app_config
 from extractor_fan_control.logic import (
-    ACTION_CANCEL_TIMER,
-    ACTION_FAN_OFF,
-    ACTION_FAN_ON,
-    ACTION_SET_OFF_DEADLINE,
-    ACTION_SET_TIMER,
-    ACTION_START_KEEPALIVE,
-    ACTION_STOP_KEEPALIVE,
-    TIMER_ACTIVATION,
-    TIMER_DEADLINE,
     Action,
+    ActionKind,
     ExtractorFanPairLogic,
     LogicConfig,
+    TimerName,
 )
 from extractor_fan_control.runtime import (
     FAN_CMD_RATE_LIMIT,
@@ -156,10 +149,11 @@ class ExtractorFanControl(hass.Hass):
         try:
             runtime = self._runtime_by_name[pair_name]
             timer_name = kwargs["timer_name"]
-            if timer_name == TIMER_ACTIVATION:
-                runtime.activation_timer_handle = None
-            elif timer_name == TIMER_DEADLINE:
-                runtime.deadline_timer_handle = None
+            match timer_name:
+                case TimerName.ACTIVATION:
+                    runtime.activation_timer_handle = None
+                case TimerName.DEADLINE:
+                    runtime.deadline_timer_handle = None
             actions = runtime.logic.on_time_tick(self.datetime())
             self._apply_actions(runtime, actions)
         except Exception as exc:
@@ -186,20 +180,21 @@ class ExtractorFanControl(hass.Hass):
         if runtime.disabled:
             return
         for action in actions:
-            if action.kind == ACTION_FAN_ON:
-                self._turn_fan(runtime, on=True)
-            elif action.kind == ACTION_FAN_OFF:
-                self._turn_fan(runtime, on=False)
-            elif action.kind == ACTION_START_KEEPALIVE:
-                self._start_keepalive(runtime)
-            elif action.kind == ACTION_STOP_KEEPALIVE:
-                self._stop_keepalive(runtime)
-            elif action.kind == ACTION_SET_TIMER:
-                self._set_timer(runtime, action)
-            elif action.kind == ACTION_CANCEL_TIMER:
-                self._cancel_timer(runtime, action.timer_name)
-            elif action.kind == ACTION_SET_OFF_DEADLINE:
-                self._publish_off_deadline(runtime, action.at)
+            match action.kind:
+                case ActionKind.FAN_ON:
+                    self._turn_fan(runtime, on=True)
+                case ActionKind.FAN_OFF:
+                    self._turn_fan(runtime, on=False)
+                case ActionKind.START_KEEPALIVE:
+                    self._start_keepalive(runtime)
+                case ActionKind.STOP_KEEPALIVE:
+                    self._stop_keepalive(runtime)
+                case ActionKind.SET_TIMER:
+                    self._set_timer(runtime, action)
+                case ActionKind.CANCEL_TIMER:
+                    self._cancel_timer(runtime, action.timer_name)
+                case ActionKind.SET_OFF_DEADLINE:
+                    self._publish_off_deadline(runtime, action.at)
 
     def _turn_fan(self, runtime: PairRuntime, *, on: bool, keepalive: bool = False) -> None:
         """
@@ -246,8 +241,8 @@ class ExtractorFanControl(hass.Hass):
         """
         runtime.disabled = True
         runtime.logic.disable()
-        self._cancel_timer(runtime, TIMER_ACTIVATION)
-        self._cancel_timer(runtime, TIMER_DEADLINE)
+        self._cancel_timer(runtime, TimerName.ACTIVATION)
+        self._cancel_timer(runtime, TimerName.DEADLINE)
         self._stop_keepalive(runtime)
         self._publish_off_deadline(runtime, None)
         self.log(
@@ -282,8 +277,8 @@ class ExtractorFanControl(hass.Hass):
             runtime = self._runtime_by_name[pair_name]
             runtime.disabled = True
             runtime.logic.disable()
-            self._cancel_timer(runtime, TIMER_ACTIVATION)
-            self._cancel_timer(runtime, TIMER_DEADLINE)
+            self._cancel_timer(runtime, TimerName.ACTIVATION)
+            self._cancel_timer(runtime, TimerName.DEADLINE)
             self._stop_keepalive(runtime)
             self._publish_off_deadline(runtime, None)
 
@@ -320,7 +315,7 @@ class ExtractorFanControl(hass.Hass):
         """
         Set activation/deadline one-shot timer at the requested timestamp.
         """
-        if action.timer_name not in (TIMER_ACTIVATION, TIMER_DEADLINE) or action.at is None:
+        if action.timer_name not in (TimerName.ACTIVATION, TimerName.DEADLINE) or action.at is None:
             return
         self._cancel_timer(runtime, action.timer_name)
         handle = self.run_at(
@@ -329,7 +324,7 @@ class ExtractorFanControl(hass.Hass):
             pair_name=runtime.config.name,
             timer_name=action.timer_name,
         )
-        if action.timer_name == TIMER_ACTIVATION:
+        if action.timer_name == TimerName.ACTIVATION:
             runtime.activation_timer_handle = handle
         else:
             runtime.deadline_timer_handle = handle
@@ -338,14 +333,15 @@ class ExtractorFanControl(hass.Hass):
         """
         Cancel activation/deadline timer if currently scheduled.
         """
-        if timer_name == TIMER_ACTIVATION:
-            handle = runtime.activation_timer_handle
-            runtime.activation_timer_handle = None
-        elif timer_name == TIMER_DEADLINE:
-            handle = runtime.deadline_timer_handle
-            runtime.deadline_timer_handle = None
-        else:
-            return
+        match timer_name:
+            case TimerName.ACTIVATION:
+                handle = runtime.activation_timer_handle
+                runtime.activation_timer_handle = None
+            case TimerName.DEADLINE:
+                handle = runtime.deadline_timer_handle
+                runtime.deadline_timer_handle = None
+            case _:
+                return
 
         if handle is not None:
             self.cancel_timer(handle)

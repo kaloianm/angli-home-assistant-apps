@@ -9,21 +9,7 @@ right service call.
 import unittest
 from datetime import datetime, timedelta
 
-from gradhermetic_cover_control.executor import (
-    ACTION_ARM_SETTLE_TIMER,
-    ACTION_CANCEL_SETTLE_TIMER,
-    ACTION_CLOSE_FULL,
-    ACTION_MOVE_TO,
-    ACTION_NOTIFY,
-    ACTION_OPEN_FULL,
-    ACTION_PUBLISH_STATE,
-    ACTION_STOP,
-    MOTION_CLOSING,
-    MOTION_IDLE,
-    NOTIFY_INVARIANT,
-    NOTIFY_STALL,
-    Action,
-)
+from gradhermetic_cover_control.executor import Action, ActionKind, Motion, NotifyKind
 from gradhermetic_cover_control.gradhermetic_cover_control import (
     COMMAND_EVENT,
     STARTUP_DELAY_SECONDS,
@@ -350,8 +336,8 @@ class TestActionTranslation(unittest.TestCase):
         self.app._apply_actions(list(actions))  # pylint: disable=protected-access
 
     def test_move_close_open_and_stop(self):
-        self._apply(Action(ACTION_MOVE_TO, position=43), Action(ACTION_OPEN_FULL),
-                    Action(ACTION_CLOSE_FULL), Action(ACTION_STOP))
+        self._apply(Action(ActionKind.MOVE_TO, position=43), Action(ActionKind.OPEN_FULL),
+                    Action(ActionKind.CLOSE_FULL), Action(ActionKind.STOP))
         self.assertEqual([
             ("cover/set_cover_position", {
                 "entity_id": REAL_COVER,
@@ -369,8 +355,8 @@ class TestActionTranslation(unittest.TestCase):
         ], self.app.service_calls)
 
     def test_commands_log_a_short_human_readable_line(self):
-        self._apply(Action(ACTION_MOVE_TO, position=43), Action(ACTION_OPEN_FULL),
-                    Action(ACTION_CLOSE_FULL), Action(ACTION_STOP))
+        self._apply(Action(ActionKind.MOVE_TO, position=43), Action(ActionKind.OPEN_FULL),
+                    Action(ActionKind.CLOSE_FULL), Action(ActionKind.STOP))
         cover_logs = [
             message for level, message in self.app.logs
             if level == "INFO" and message.startswith("Cover ")
@@ -383,66 +369,70 @@ class TestActionTranslation(unittest.TestCase):
         ], cover_logs)
 
     def test_publish_writes_the_position_sensor(self):
-        self._apply(Action(ACTION_PUBLISH_STATE, position=67))
+        self._apply(Action(ActionKind.PUBLISH_STATE, position=67))
         published = self.app.published[POSITION_ENTITY]
         self.assertEqual("67", published["state"])
         self.assertEqual("%", published["attributes"]["unit_of_measurement"])
         self.assertEqual("Living Room Blind Position", published["attributes"]["friendly_name"])
-        self.assertEqual(MOTION_IDLE, published["attributes"]["motion"])
+        self.assertEqual(Motion.IDLE, published["attributes"]["motion"])
 
     def test_publish_writes_the_motion_beside_the_position(self):
         # The template cover's state template reads it to report opening/closing.
-        self._apply(Action(ACTION_PUBLISH_STATE, position=40, in_tilt=False, motion=MOTION_CLOSING))
+        self._apply(
+            Action(ActionKind.PUBLISH_STATE, position=40, in_tilt=False, motion=Motion.CLOSING))
         published = self.app.published[POSITION_ENTITY]
-        self.assertEqual(MOTION_CLOSING, published["attributes"]["motion"])
+        self.assertEqual(Motion.CLOSING, published["attributes"]["motion"])
 
     def test_the_tilt_sensor_is_written_only_when_the_mode_changes(self):
         # The position sensor tracks travel percent by percent; rewriting the mode beside it with
         # the value it already holds on every one of those reports is pure churn.
-        self._apply(Action(ACTION_PUBLISH_STATE, position=40, in_tilt=False))
+        self._apply(Action(ActionKind.PUBLISH_STATE, position=40, in_tilt=False))
         self.app.published.pop(TILT_MODE_ENTITY)
-        self._apply(Action(ACTION_PUBLISH_STATE, position=41, in_tilt=False))
+        self._apply(Action(ActionKind.PUBLISH_STATE, position=41, in_tilt=False))
         self.assertNotIn(TILT_MODE_ENTITY, self.app.published)
         # A real change is written.
-        self._apply(Action(ACTION_PUBLISH_STATE, position=42, in_tilt=True))
+        self._apply(Action(ActionKind.PUBLISH_STATE, position=42, in_tilt=True))
         self.assertEqual("on", self.app.published[TILT_MODE_ENTITY]["state"])
 
     def test_an_unknown_position_publishes_the_sensor_as_unavailable(self):
-        self._apply(Action(ACTION_PUBLISH_STATE, position=None, in_tilt=False, motion=MOTION_IDLE))
+        self._apply(
+            Action(ActionKind.PUBLISH_STATE, position=None, in_tilt=False, motion=Motion.IDLE))
         self.assertEqual("unavailable", self.app.published[POSITION_ENTITY]["state"])
         self.assertEqual("off", self.app.published[TILT_MODE_ENTITY]["state"])
 
     def test_publish_writes_the_tilt_mode_sensor_beside_it(self):
         # Both are written from the one action, so a dashboard can never read a slat angle as a
         # height: whichever scale the position is on, the flag beside it says so.
-        self._apply(Action(ACTION_PUBLISH_STATE, position=67, in_tilt=True))
+        self._apply(Action(ActionKind.PUBLISH_STATE, position=67, in_tilt=True))
         published = self.app.published[TILT_MODE_ENTITY]
         self.assertEqual("on", published["state"])
         self.assertEqual("Living Room Blind Slat Mode", published["attributes"]["friendly_name"])
 
-        self._apply(Action(ACTION_PUBLISH_STATE, position=20, in_tilt=False))
+        self._apply(Action(ActionKind.PUBLISH_STATE, position=20, in_tilt=False))
         self.assertEqual("off", self.app.published[TILT_MODE_ENTITY]["state"])
 
     def test_an_unknown_tilt_mode_publishes_as_off(self):
         # in_tilt is only ever None on an action built without it; "off" is the safe reading, since
         # slat control is offered exactly when the app is confident it is latched.
-        self._apply(Action(ACTION_PUBLISH_STATE, position=67))
+        self._apply(Action(ActionKind.PUBLISH_STATE, position=67))
         self.assertEqual("off", self.app.published[TILT_MODE_ENTITY]["state"])
 
     def test_the_settle_timer_is_armed_and_cancelled(self):
-        self._apply(Action(ACTION_ARM_SETTLE_TIMER, seconds=45))
+        self._apply(Action(ActionKind.ARM_SETTLE_TIMER, seconds=45))
         self.assertEqual([45], [seconds for _, seconds in self.app.timers.values()])
-        self._apply(Action(ACTION_CANCEL_SETTLE_TIMER))
+        self._apply(Action(ActionKind.CANCEL_SETTLE_TIMER))
         self.assertEqual({}, self.app.timers)
 
     def test_arming_twice_replaces_the_timer(self):
-        self._apply(Action(ACTION_ARM_SETTLE_TIMER, seconds=45))
-        self._apply(Action(ACTION_ARM_SETTLE_TIMER, seconds=45))
+        self._apply(Action(ActionKind.ARM_SETTLE_TIMER, seconds=45))
+        self._apply(Action(ActionKind.ARM_SETTLE_TIMER, seconds=45))
         self.assertEqual(1, len(self.app.timers))
 
     def test_notifications_carry_the_right_title(self):
-        self._apply(Action(ACTION_NOTIFY, notify_kind=NOTIFY_STALL, message="did not reach 0%"))
-        self._apply(Action(ACTION_NOTIFY, notify_kind=NOTIFY_INVARIANT, message="failed a check"))
+        self._apply(
+            Action(ActionKind.NOTIFY, notify_kind=NotifyKind.STALL, message="did not reach 0%"))
+        self._apply(
+            Action(ActionKind.NOTIFY, notify_kind=NotifyKind.INVARIANT, message="failed a check"))
         self.assertEqual(["GradhermeticCoverControl stalled", "GradhermeticCoverControl error"],
                          self.app.notify_titles())
         self.assertIn(f"Cover '{VIRTUAL_ID}' did not reach 0%",

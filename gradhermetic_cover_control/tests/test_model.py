@@ -17,30 +17,15 @@ Every run asserts the same properties:
 
 import unittest
 
-from gradhermetic_cover_control.executor import (
-    ACTION_ARM_SETTLE_TIMER,
-    ACTION_CANCEL_SETTLE_TIMER,
-    ACTION_CLOSE_FULL,
-    ACTION_MOVE_TO,
-    ACTION_NOTIFY,
-    ACTION_OPEN_FULL,
-    ACTION_PUBLISH_STATE,
-    ACTION_STOP,
-    virtual_position,
-)
+from gradhermetic_cover_control.executor import ActionKind, virtual_position
 from gradhermetic_cover_control.geometry import Zone
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 from gradhermetic_cover_control.planner import (
-    DIRECTION_DOWN,
-    DIRECTION_UP,
-    INTENT_OPEN,
-    INTENT_SET_POSITION,
-    INTENT_SLAT_STEP,
-    LATCH_LATCHED,
-    LATCH_UNKNOWN,
-    LATCH_UNLATCHED,
     Belief,
+    Direction,
     Intent,
+    IntentKind,
+    Latch,
     check_plan,
     plan,
 )
@@ -159,24 +144,24 @@ class Harness:
         other kind, and the sweeps below are what reach every corner of the planner.
         """
         for action in actions:
-            carries_position = action.kind in (ACTION_MOVE_TO, ACTION_PUBLISH_STATE)
+            carries_position = action.kind in (ActionKind.MOVE_TO, ActionKind.PUBLISH_STATE)
             if carries_position and action.position is not None:
                 if type(action.position) is not int:  # pylint: disable=unidiomatic-typecheck
                     raise AssertionError(f"{action.kind} carried a fractional position "
                                          f"{action.position!r}")
-            if action.kind == ACTION_MOVE_TO:
+            if action.kind == ActionKind.MOVE_TO:
                 self.commands += 1
                 self.sim.set_position(action.position)
-            elif action.kind == ACTION_OPEN_FULL:
+            elif action.kind == ActionKind.OPEN_FULL:
                 self.commands += 1
                 self.sim.open_cover()
-            elif action.kind == ACTION_CLOSE_FULL:
+            elif action.kind == ActionKind.CLOSE_FULL:
                 self.commands += 1
                 self.sim.close_cover()
-            elif action.kind == ACTION_STOP:
+            elif action.kind == ActionKind.STOP:
                 self.commands += 1
                 self.sim.stop_cover()
-            elif action.kind == ACTION_PUBLISH_STATE:
+            elif action.kind == ActionKind.PUBLISH_STATE:
                 # Publishes happen mid-move too now, so the mode is checked against the truth at
                 # every one of them, not only at rest.
                 if action.in_tilt and not self.sim.latched:
@@ -184,11 +169,11 @@ class Harness:
                         f"published slat mode at {action.position} while the mechanism is not "
                         "latched")
                 self.published.append(action.position)
-            elif action.kind == ACTION_ARM_SETTLE_TIMER:
+            elif action.kind == ActionKind.ARM_SETTLE_TIMER:
                 self.timer_armed = True
-            elif action.kind == ACTION_CANCEL_SETTLE_TIMER:
+            elif action.kind == ActionKind.CANCEL_SETTLE_TIMER:
                 self.timer_armed = False
-            elif action.kind == ACTION_NOTIFY:
+            elif action.kind == ActionKind.NOTIFY:
                 self.notifications.append(action)
 
 
@@ -260,8 +245,8 @@ INTENTS = [
     ("stop", lambda logic: logic.on_stop()),
     ("tilt_on", lambda logic: logic.on_set_tilt_mode(True)),
     ("tilt_off", lambda logic: logic.on_set_tilt_mode(False)),
-    ("step_up", lambda logic: logic.on_step(DIRECTION_UP)),
-    ("step_down", lambda logic: logic.on_step(DIRECTION_DOWN)),
+    ("step_up", lambda logic: logic.on_step(Direction.UP)),
+    ("step_down", lambda logic: logic.on_step(Direction.DOWN)),
 ] + [(f"set_position_{value}", (lambda v: lambda logic: logic.on_set_position(v))(value))
      for value in (0, 25, 37, 41, 45, 50, 75, 100)]
 
@@ -284,7 +269,7 @@ class ModelTestCase(unittest.TestCase):
         if harness.logic.in_tilt:
             self.assertTrue(harness.sim.latched,
                             "the app believes it is latched but the mechanism is not")
-        if harness.logic.latch == LATCH_UNLATCHED:
+        if harness.logic.latch == Latch.UNLATCHED:
             self.assertFalse(harness.sim.latched,
                              "the app believes it is released but the mechanism is latched")
 
@@ -364,9 +349,9 @@ class TestInterruptions(ModelTestCase):
         ("guarded_descent", lambda: fresh(41, stride=8), lambda l: l.on_set_position(10)),
         # The tilt exit is a short move, so it needs a finer stride to have interior points at all.
         ("leave_tilt", lambda: latched_at(LOWER, stride=2), lambda l: l.on_set_tilt_mode(False)),
-        ("slat_step", lambda: latched_at(UPPER, stride=0.25), lambda l: l.on_step(DIRECTION_UP)),
+        ("slat_step", lambda: latched_at(UPPER, stride=0.25), lambda l: l.on_step(Direction.UP)),
         ("height_step_through_the_band", lambda: fresh(47, stride=2),
-         lambda l: l.on_step(DIRECTION_DOWN)),
+         lambda l: l.on_step(Direction.DOWN)),
         # The same two sequences on a measured release and a landing mid-zone: a four-step entry
         # that finishes mid-zone, and a much longer exit through a much wider ambiguity band.
         ("enter_custom_zone", lambda: fresh(10, stride=8, zone=CUSTOM_ZONE),
@@ -381,7 +366,7 @@ class TestInterruptions(ModelTestCase):
         ("close", lambda h: h.run(h.logic.on_close())),
         ("tilt_on", lambda h: h.run(h.logic.on_set_tilt_mode(True))),
         ("tilt_off", lambda h: h.run(h.logic.on_set_tilt_mode(False))),
-        ("step_down", lambda h: h.run(h.logic.on_step(DIRECTION_DOWN))),
+        ("step_down", lambda h: h.run(h.logic.on_step(Direction.DOWN))),
         ("tilt_toggle", lambda h: h.run(h.logic.on_toggle_tilt_mode())),
         ("set_position", lambda h: h.run(h.logic.on_set_position(70))),
         ("restart", lambda h: h.restart()),
@@ -422,12 +407,12 @@ class TestInterruptions(ModelTestCase):
          lambda l: l.on_set_tilt_mode(True)),
         ("guarded_close", lambda **kw: fresh(41, stride=8, **kw), lambda l: l.on_close()),
         ("height_step_through_the_band", lambda **kw: fresh(47, stride=2, **kw),
-         lambda l: l.on_step(DIRECTION_DOWN)),
+         lambda l: l.on_step(Direction.DOWN)),
     ]
 
     QUIRK_INTERRUPTIONS = [
         ("stop", lambda h: h.run(h.logic.on_stop())),
-        ("step_up", lambda h: h.run(h.logic.on_step(DIRECTION_UP))),
+        ("step_up", lambda h: h.run(h.logic.on_step(Direction.UP))),
         ("close", lambda h: h.run(h.logic.on_close())),
         ("tilt_toggle", lambda h: h.run(h.logic.on_toggle_tilt_mode())),
     ]
@@ -513,7 +498,7 @@ class TestFeedbackQuirks(ModelTestCase):
                 harness = latched_at(UPPER, quirks=quirks)
                 for _ in range(6):
                     harness.published = []
-                    harness.run(harness.logic.on_step(DIRECTION_UP))
+                    harness.run(harness.logic.on_step(Direction.UP))
                     self.assert_nominal(harness)
                 self.assertEqual(100, harness.logic.current_virtual_position())
                 self.assertEqual(LOWER, harness.sim.reported)
@@ -576,7 +561,7 @@ class TestAlternateGeometries(ModelTestCase):
                 self.assertFalse(harness.sim.latched)
                 self.assertGreaterEqual(harness.sim.physical, zone.release_target)
                 self.assertEqual(100, harness.sim.physical)
-                self.assertEqual(LATCH_UNLATCHED, harness.logic.latch)
+                self.assertEqual(Latch.UNLATCHED, harness.logic.latch)
                 self.assert_nominal(harness)
 
     def test_every_intent_from_every_latched_slat_position(self):
@@ -624,12 +609,12 @@ class TestHeightSteps(ModelTestCase):
         while harness.sim.reported > 0:
             harness.published = []
             harness.commands = 0
-            harness.run(harness.logic.on_step(DIRECTION_DOWN))
+            harness.run(harness.logic.on_step(Direction.DOWN))
             self.assert_nominal(harness)
             self.assertLess(harness.sim.reported, previous, "a step down did not move the blind")
             self.assertFalse(ZONE.band_low < harness.sim.reported < ZONE.band_high)
             previous = harness.sim.reported
-        self.assertEqual([], harness.logic.on_step(DIRECTION_DOWN))
+        self.assertEqual([], harness.logic.on_step(Direction.DOWN))
 
     def test_stepping_up_from_the_bottom_reaches_the_top(self):
         harness = fresh(0)
@@ -637,24 +622,24 @@ class TestHeightSteps(ModelTestCase):
         while harness.sim.reported < 100:
             harness.published = []
             harness.commands = 0
-            harness.run(harness.logic.on_step(DIRECTION_UP))
+            harness.run(harness.logic.on_step(Direction.UP))
             self.assert_nominal(harness)
             self.assertGreater(harness.sim.reported, previous, "a step up did not move the blind")
             self.assertFalse(ZONE.band_low < harness.sim.reported < ZONE.band_high)
             previous = harness.sim.reported
-        self.assertEqual(LATCH_UNLATCHED, harness.logic.latch)
-        self.assertEqual([], harness.logic.on_step(DIRECTION_UP))
+        self.assertEqual(Latch.UNLATCHED, harness.logic.latch)
+        self.assertEqual([], harness.logic.on_step(Direction.UP))
 
     def test_a_step_up_through_the_band_stays_honest_about_the_latch(self):
         harness = fresh(35)
-        harness.run(harness.logic.on_step(DIRECTION_UP))
+        harness.run(harness.logic.on_step(Direction.UP))
         self.assertEqual(RELEASE, harness.sim.reported)
-        self.assertEqual(LATCH_UNKNOWN, harness.logic.latch)
+        self.assertEqual(Latch.UNKNOWN, harness.logic.latch)
         self.assert_nominal(harness)
         # The step back down pays the release it cannot be sure of.
         harness.published = []
         harness.commands = 0
-        harness.run(harness.logic.on_step(DIRECTION_DOWN))
+        harness.run(harness.logic.on_step(Direction.DOWN))
         self.assertEqual(DIP, harness.sim.reported)
         self.assertEqual(2, harness.commands)
         self.assert_nominal(harness)
@@ -662,7 +647,7 @@ class TestHeightSteps(ModelTestCase):
     def test_a_step_mid_move_stops_the_blind(self):
         harness = fresh(80, stride=8)
         harness.run_partial(harness.logic.on_close(), 2)
-        harness.run(harness.logic.on_step(DIRECTION_UP))
+        harness.run(harness.logic.on_step(Direction.UP))
         self.assertFalse(harness.logic.has_pending_plan)
         self.assertGreater(harness.sim.reported, 0)
         self.assert_no_violation(harness)
@@ -724,11 +709,12 @@ class TestTheSlatOpenEdge(ModelTestCase):
         # position the blind can rest at, on each configured geometry.
         for label, zone in TestAlternateGeometries.ZONES + [("default", ZONE)]:
             for position in range(zone.lower, zone.upper + 1):
-                belief = Belief(position=position, latch=LATCH_LATCHED)
-                for name, intent in (("open", Intent(INTENT_OPEN)),
-                                     ("step_up", Intent(INTENT_SLAT_STEP, direction=DIRECTION_UP)),
+                belief = Belief(position=position, latch=Latch.LATCHED)
+                for name, intent in (("open", Intent(IntentKind.OPEN)),
+                                     ("step_up", Intent(IntentKind.SLAT_STEP,
+                                                        direction=Direction.UP)),
                                      ("set_position_100",
-                                      Intent(INTENT_SET_POSITION, virtual_pct=100))):
+                                      Intent(IntentKind.SET_POSITION, virtual_pct=100))):
                     with self.subTest(zone=label, latched_at=position, intent=name):
                         movement = plan(zone, belief, intent)
                         if movement is None:
@@ -774,7 +760,7 @@ class TestCalibrationDrift(ModelTestCase):
         for _ in range(2):
             harness.published = []
             harness.commands = 0
-            harness.run(harness.logic.on_step(DIRECTION_UP))
+            harness.run(harness.logic.on_step(Direction.UP))
             self.assert_nominal(harness)
 
         harness.published = []
@@ -815,7 +801,7 @@ class TestCalibrationDrift(ModelTestCase):
         harness.run(harness.logic.on_set_tilt_mode(False))
         self.assertFalse(harness.sim.latched)
         self.assertGreaterEqual(harness.sim.physical, RELEASE)
-        self.assertEqual(LATCH_UNLATCHED, harness.logic.latch)
+        self.assertEqual(Latch.UNLATCHED, harness.logic.latch)
         self.assert_nominal(harness)
 
     def test_a_rise_to_the_release_height_by_position_never_claims_a_release(self):
@@ -829,7 +815,7 @@ class TestCalibrationDrift(ModelTestCase):
                 harness.run(harness.logic.on_set_position(45))
                 self.assertEqual(RELEASE, harness.sim.reported)
                 self.assert_belief_is_sound(harness)
-                self.assertEqual(LATCH_UNKNOWN, harness.logic.latch)
+                self.assertEqual(Latch.UNKNOWN, harness.logic.latch)
                 harness.published = []
                 harness.commands = 0
                 harness.run(harness.logic.on_close())

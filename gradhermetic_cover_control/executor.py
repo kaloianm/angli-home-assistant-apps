@@ -17,37 +17,41 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from gradhermetic_cover_control.geometry import Zone, clamp_pct
-from gradhermetic_cover_control.planner import (
-    COMMAND_CLOSE,
-    COMMAND_OPEN,
-    LATCH_LATCHED,
-    PLAN_SLAT,
-    STEP_MOVE_TO,
-    Plan,
-    Step,
-)
+from gradhermetic_cover_control.planner import CommandKind, Latch, Plan, PlanKind, Step, StepKind
 
 # -- Actions ---------------------------------------------------------------------------------------
 
-ACTION_MOVE_TO = "move_to"
-ACTION_OPEN_FULL = "open_full"
-ACTION_CLOSE_FULL = "close_full"
-ACTION_STOP = "stop"
-# Position, tilt mode and motion are published together so a slat angle is never read as a height.
-ACTION_PUBLISH_STATE = "publish_state"
-ACTION_ARM_SETTLE_TIMER = "arm_settle_timer"
-ACTION_CANCEL_SETTLE_TIMER = "cancel_settle_timer"
-ACTION_NOTIFY = "notify"
 
-NOTIFY_STALL = "stall"
-NOTIFY_INVARIANT = "invariant"
+class ActionKind(StrEnum):
+    MOVE_TO = "move_to"
+    OPEN_FULL = "open_full"
+    CLOSE_FULL = "close_full"
+    STOP = "stop"
+    # Position, tilt mode and motion are published together so a slat angle is never read as a
+    # height.
+    PUBLISH_STATE = "publish_state"
+    ARM_SETTLE_TIMER = "arm_settle_timer"
+    CANCEL_SETTLE_TIMER = "cancel_settle_timer"
+    NOTIFY = "notify"
 
-# Virtual-scale motion: "opening" means toward more light, in either mode.
-MOTION_OPENING = "opening"
-MOTION_CLOSING = "closing"
-MOTION_IDLE = "idle"
+
+class NotifyKind(StrEnum):
+    STALL = "stall"
+    INVARIANT = "invariant"
+
+
+class Motion(StrEnum):
+    """
+    Virtual-scale motion: ``OPENING`` means toward more light, in either mode.
+    """
+
+    OPENING = "opening"
+    CLOSING = "closing"
+    IDLE = "idle"
+
 
 # How long a step may go without progress before the fallback timer looks at it.
 SETTLE_TIMEOUT_SECONDS = 45
@@ -62,16 +66,20 @@ DEVIATION_TOLERANCE_PCT = 2
 
 # -- Outcomes --------------------------------------------------------------------------------------
 
-# Nothing happened: no plan, or the plan is still waiting for the blind to reach the current step.
-STATUS_IDLE = "idle"
-# A command went out; the plan is waiting on feedback.
-STATUS_RUNNING = "running"
-# Every step is done. The caller commits the plan's terminal latch belief.
-STATUS_COMPLETED = "completed"
-# The blind settled short of its target, or its position became unreadable. The plan was dropped.
-STATUS_STALLED = "stalled"
-# The plan was dropped for a stop or a replacement.
-STATUS_ABANDONED = "abandoned"
+
+class Status(StrEnum):
+    # Nothing happened: no plan, or the plan is still waiting for the blind to reach the current
+    # step.
+    IDLE = "idle"
+    # A command went out; the plan is waiting on feedback.
+    RUNNING = "running"
+    # Every step is done. The caller commits the plan's terminal latch belief.
+    COMPLETED = "completed"
+    # The blind settled short of its target, or its position became unreadable. The plan was
+    # dropped.
+    STALLED = "stalled"
+    # The plan was dropped for a stop or a replacement.
+    ABANDONED = "abandoned"
 
 
 @dataclass(frozen=True)
@@ -80,12 +88,12 @@ class Action:
     Declarative side effect for the adapter to perform.
     """
 
-    kind: str
+    kind: ActionKind
     position: int | None = None
     in_tilt: bool | None = None
-    motion: str | None = None
+    motion: Motion | None = None
     seconds: float | None = None
-    notify_kind: str | None = None
+    notify_kind: NotifyKind | None = None
     message: str | None = None
 
 
@@ -96,7 +104,7 @@ class Outcome:
     """
 
     actions: list[Action] = field(default_factory=list)
-    status: str = STATUS_IDLE
+    status: Status = Status.IDLE
     plan: Plan | None = None
 
 
@@ -186,7 +194,7 @@ class Executor:
             self._log(
                 f"settled at {position} short of {self._step().target}; rechecking in "
                 f"{SETTLED_RECHECK_SECONDS}s", level="DEBUG")
-            return Outcome([_arm(SETTLED_RECHECK_SECONDS)], STATUS_RUNNING, self._plan)
+            return Outcome([_arm(SETTLED_RECHECK_SECONDS)], Status.RUNNING, self._plan)
         return Outcome()
 
     def on_timer(self, position: int | None, is_moving: bool) -> Outcome:
@@ -201,7 +209,7 @@ class Executor:
         if is_moving:
             # An inactivity timeout, not a travel cap: the move is simply long.
             self._log("settle timer fired while still moving; waiting longer", level="DEBUG")
-            return Outcome([_arm()], STATUS_RUNNING, self._plan)
+            return Outcome([_arm()], Status.RUNNING, self._plan)
 
         step = self._step()
         if step.satisfied_by(position):
@@ -225,7 +233,7 @@ class Executor:
         Only an ordinary height move clear of the band qualifies. A slat step is about as small as
         the tolerance, and in the band a percent decides whether the mechanism latched.
         """
-        if step.kind != STEP_MOVE_TO or self._plan.kind == PLAN_SLAT:
+        if step.kind != StepKind.MOVE_TO or self._plan.kind == PlanKind.SLAT:
             return False
         return not self._zone.in_band(step.target)
 
@@ -238,7 +246,7 @@ class Executor:
             return Outcome()
         self._log("plan abandoned", level="DEBUG")
         self._clear()
-        return Outcome([Action(ACTION_CANCEL_SETTLE_TIMER)], STATUS_ABANDONED, movement)
+        return Outcome([Action(ActionKind.CANCEL_SETTLE_TIMER)], Status.ABANDONED, movement)
 
     # -- Internals ---------------------------------------------------------------------------------
 
@@ -273,7 +281,7 @@ class Executor:
                 f"{step.target}) from {position}", level="DEBUG")
             self._saw_motion = False
             self._awaiting_arrival = True
-            return Outcome([_command(step), _arm()], STATUS_RUNNING, self._plan)
+            return Outcome([_command(step), _arm()], Status.RUNNING, self._plan)
         return self._complete(position)
 
     def _complete(self, position: int | None) -> Outcome:
@@ -283,7 +291,7 @@ class Executor:
         movement = self._plan
         self._clear()
         self._log(f"plan complete: latch={movement.final_latch} position={position}")
-        return Outcome([Action(ACTION_CANCEL_SETTLE_TIMER)], STATUS_COMPLETED, movement)
+        return Outcome([Action(ActionKind.CANCEL_SETTLE_TIMER)], Status.COMPLETED, movement)
 
     def _stall(self, reason: str, stop: bool) -> Outcome:
         """
@@ -295,19 +303,19 @@ class Executor:
         message = (f"did not reach {target}% ({reason}) and the move was abandoned. Check the "
                    "blind for a mechanical obstruction or a misconfigured tilt zone.")
         self._log(f"plan stalled short of {target}%: {reason}", level="ERROR")
-        actions = [Action(ACTION_STOP)] if stop else []
+        actions = [Action(ActionKind.STOP)] if stop else []
         actions += [
-            Action(ACTION_CANCEL_SETTLE_TIMER),
-            Action(ACTION_NOTIFY, notify_kind=NOTIFY_STALL, message=message),
+            Action(ActionKind.CANCEL_SETTLE_TIMER),
+            Action(ActionKind.NOTIFY, notify_kind=NotifyKind.STALL, message=message),
         ]
-        return Outcome(actions, STATUS_STALLED, movement)
+        return Outcome(actions, Status.STALLED, movement)
 
 
-def virtual_position(zone: Zone, latch: str, position: int) -> int:
+def virtual_position(zone: Zone, latch: Latch, position: int) -> int:
     """
     Map a real position to the virtual position the user-facing cover shows.
     """
-    if latch == LATCH_LATCHED:
+    if latch == Latch.LATCHED:
         return zone.real_to_virtual(position)
     return clamp_pct(position)
 
@@ -316,15 +324,17 @@ def _command(step: Step) -> Action:
     """
     Translate a step into the real-cover command that starts it.
     """
-    if step.command == COMMAND_OPEN:
-        return Action(ACTION_OPEN_FULL)
-    if step.command == COMMAND_CLOSE:
-        return Action(ACTION_CLOSE_FULL)
-    return Action(ACTION_MOVE_TO, position=step.command_position)
+    match step.command:
+        case CommandKind.OPEN:
+            return Action(ActionKind.OPEN_FULL)
+        case CommandKind.CLOSE:
+            return Action(ActionKind.CLOSE_FULL)
+        case _:
+            return Action(ActionKind.MOVE_TO, position=step.command_position)
 
 
 def _arm(seconds: float = SETTLE_TIMEOUT_SECONDS) -> Action:
     """
     Arm the fallback settle timer for the step just commanded, or a shorter recheck.
     """
-    return Action(ACTION_ARM_SETTLE_TIMER, seconds=seconds)
+    return Action(ActionKind.ARM_SETTLE_TIMER, seconds=seconds)

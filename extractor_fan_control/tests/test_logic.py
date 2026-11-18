@@ -3,18 +3,11 @@ import unittest
 from datetime import datetime, timedelta
 
 from extractor_fan_control.logic import (
-    ACTION_FAN_OFF,
-    ACTION_FAN_ON,
-    ACTION_START_KEEPALIVE,
-    ACTION_STOP_KEEPALIVE,
-    ACTION_SET_TIMER,
-    ACTION_CANCEL_TIMER,
-    ACTION_SET_OFF_DEADLINE,
-    TIMER_ACTIVATION,
-    TIMER_DEADLINE,
+    ActionKind,
     ExtractorFanPairLogic,
     LogicConfig,
     PairState,
+    TimerName,
 )
 
 
@@ -27,7 +20,7 @@ def _timer_actions(actions, kind):
 
 
 def _off_deadlines(actions):
-    return [a.at for a in actions if a.kind == ACTION_SET_OFF_DEADLINE]
+    return [a.at for a in actions if a.kind == ActionKind.SET_OFF_DEADLINE]
 
 
 class TestExtractorFanPairLogic(unittest.TestCase):
@@ -38,28 +31,28 @@ class TestExtractorFanPairLogic(unittest.TestCase):
 
     def test_light_shorter_than_activation_threshold_never_starts_fan(self):
         actions_on = self.logic.on_light_on(self.t0)
-        self.assertIn(ACTION_SET_TIMER, _kinds(actions_on))
-        self.assertEqual(TIMER_ACTIVATION,
-                         _timer_actions(actions_on, ACTION_SET_TIMER)[0].timer_name)
+        self.assertIn(ActionKind.SET_TIMER, _kinds(actions_on))
+        self.assertEqual(TimerName.ACTIVATION,
+                         _timer_actions(actions_on, ActionKind.SET_TIMER)[0].timer_name)
         self.assertEqual(PairState.WAITING_FOR_ACTIVATION, self.logic.state)
 
         actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=10))
-        self.assertIn(ACTION_CANCEL_TIMER, _kinds(actions_off))
-        self.assertEqual(TIMER_ACTIVATION,
-                         _timer_actions(actions_off, ACTION_CANCEL_TIMER)[0].timer_name)
-        self.assertNotIn(ACTION_FAN_ON, _kinds(actions_on + actions_off))
+        self.assertIn(ActionKind.CANCEL_TIMER, _kinds(actions_off))
+        self.assertEqual(TimerName.ACTIVATION,
+                         _timer_actions(actions_off, ActionKind.CANCEL_TIMER)[0].timer_name)
+        self.assertNotIn(ActionKind.FAN_ON, _kinds(actions_on + actions_off))
         self.assertEqual(PairState.IDLE, self.logic.state)
 
     def test_activated_but_short_visit_turns_off_immediately(self):
         self.logic.on_light_on(self.t0)
         actions_activation = self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
-        self.assertIn(ACTION_FAN_ON, _kinds(actions_activation))
-        self.assertIn(ACTION_START_KEEPALIVE, _kinds(actions_activation))
+        self.assertIn(ActionKind.FAN_ON, _kinds(actions_activation))
+        self.assertIn(ActionKind.START_KEEPALIVE, _kinds(actions_activation))
         self.assertEqual(PairState.RUNNING_LIGHT, self.logic.state)
 
         actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=40))
-        self.assertIn(ACTION_FAN_OFF, _kinds(actions_off))
-        self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(actions_off))
+        self.assertIn(ActionKind.FAN_OFF, _kinds(actions_off))
+        self.assertIn(ActionKind.STOP_KEEPALIVE, _kinds(actions_off))
         self.assertEqual(PairState.IDLE, self.logic.state)
 
     def test_long_visit_keeps_fan_for_same_duration_after_light_off(self):
@@ -71,11 +64,11 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         self.assertEqual(PairState.POST_RUN, self.logic.state)
 
         actions_before_deadline = self.logic.on_time_tick(self.t0 + timedelta(seconds=239))
-        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_deadline))
+        self.assertNotIn(ActionKind.FAN_OFF, _kinds(actions_before_deadline))
 
         actions_at_deadline = self.logic.on_time_tick(self.t0 + timedelta(seconds=240))
-        self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_deadline))
-        self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(actions_at_deadline))
+        self.assertIn(ActionKind.FAN_OFF, _kinds(actions_at_deadline))
+        self.assertIn(ActionKind.STOP_KEEPALIVE, _kinds(actions_at_deadline))
         self.assertEqual(PairState.IDLE, self.logic.state)
 
     def test_long_visit_post_run_is_capped_to_ten_minutes_by_default(self):
@@ -87,10 +80,10 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         self.logic.on_light_off(self.t0 + timedelta(seconds=1800))
 
         actions_before_cap = self.logic.on_time_tick(self.t0 + timedelta(seconds=2399))
-        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_cap))
+        self.assertNotIn(ActionKind.FAN_OFF, _kinds(actions_before_cap))
 
         actions_at_cap = self.logic.on_time_tick(self.t0 + timedelta(seconds=2400))
-        self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_cap))
+        self.assertIn(ActionKind.FAN_OFF, _kinds(actions_at_cap))
 
     def test_long_visit_post_run_can_use_higher_configured_cap(self):
         logic = ExtractorFanPairLogic(LogicConfig(max_post_run_seconds=900))
@@ -101,10 +94,10 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         logic.on_light_off(self.t0 + timedelta(seconds=1800))
 
         actions_before_cap = logic.on_time_tick(self.t0 + timedelta(seconds=2699))
-        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_cap))
+        self.assertNotIn(ActionKind.FAN_OFF, _kinds(actions_before_cap))
 
         actions_at_cap = logic.on_time_tick(self.t0 + timedelta(seconds=2700))
-        self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_cap))
+        self.assertIn(ActionKind.FAN_OFF, _kinds(actions_at_cap))
 
     def test_overlap_uses_remaining_schedule_or_capped_post_run(self):
         self.logic.on_light_on(self.t0)
@@ -121,32 +114,32 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         # Remaining schedule at light-off is 700s -> schedule end t+1400.
         # Effective fan end is t+1400.
         actions_before_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=1399))
-        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_end))
+        self.assertNotIn(ActionKind.FAN_OFF, _kinds(actions_before_end))
 
         actions_at_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=1400))
-        self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_end))
+        self.assertIn(ActionKind.FAN_OFF, _kinds(actions_at_end))
 
     def test_schedule_and_occupancy_overlap_uses_latest_end(self):
         schedule_actions = self.logic.on_schedule_started(self.t0, duration_seconds=300)
-        self.assertIn(ACTION_FAN_ON, _kinds(schedule_actions))
+        self.assertIn(ActionKind.FAN_ON, _kinds(schedule_actions))
 
         self.logic.on_light_on(self.t0 + timedelta(seconds=10))
         self.logic.on_time_tick(self.t0 + timedelta(seconds=25))
         self.logic.on_light_off(self.t0 + timedelta(seconds=100))
 
         actions_before_schedule_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=299))
-        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_schedule_end))
+        self.assertNotIn(ActionKind.FAN_OFF, _kinds(actions_before_schedule_end))
 
         actions_schedule_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=300))
-        self.assertIn(ACTION_FAN_OFF, _kinds(actions_schedule_end))
+        self.assertIn(ActionKind.FAN_OFF, _kinds(actions_schedule_end))
 
     def test_light_off_after_short_visit_never_starts_fan(self):
         # Regression for the "fan starts up the moment I turn the light off" symptom.
         # A visit shorter than the activation threshold must never turn the fan on.
         self.logic.on_light_on(self.t0)
         actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=3))
-        self.assertNotIn(ACTION_FAN_ON, _kinds(actions_off))
-        self.assertNotIn(ACTION_START_KEEPALIVE, _kinds(actions_off))
+        self.assertNotIn(ActionKind.FAN_ON, _kinds(actions_off))
+        self.assertNotIn(ActionKind.START_KEEPALIVE, _kinds(actions_off))
         self.assertEqual(PairState.IDLE, self.logic.state)
 
     def test_light_off_from_off_fan_never_emits_fan_on(self):
@@ -161,13 +154,13 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         # A subsequent quick light blip (below activation) must leave the fan off.
         self.logic.on_light_on(self.t0 + timedelta(seconds=100))
         actions_off = self.logic.on_light_off(self.t0 + timedelta(seconds=104))
-        self.assertNotIn(ACTION_FAN_ON, _kinds(actions_off))
+        self.assertNotIn(ActionKind.FAN_ON, _kinds(actions_off))
         self.assertEqual(PairState.IDLE, self.logic.state)
 
     def test_repeated_ticks_are_idempotent(self):
         self.logic.on_light_on(self.t0)
         first = self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
-        self.assertIn(ACTION_FAN_ON, _kinds(first))
+        self.assertIn(ActionKind.FAN_ON, _kinds(first))
 
         second = self.logic.on_time_tick(self.t0 + timedelta(seconds=15))
         self.assertEqual([], second)
@@ -182,7 +175,7 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         timer_set_actions = self.logic.on_time_tick(self.t0 + timedelta(seconds=101))
         deadline_sets = [
             a for a in timer_set_actions
-            if a.kind == ACTION_SET_TIMER and a.timer_name == TIMER_DEADLINE
+            if a.kind == ActionKind.SET_TIMER and a.timer_name == TimerName.DEADLINE
         ]
         self.assertTrue(
             any(a.at == self.t0 + timedelta(seconds=190) for a in deadline_sets)
@@ -194,19 +187,19 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         logic.on_light_on(self.t0)
 
         before_activation = logic.on_time_tick(self.t0 + timedelta(seconds=59))
-        self.assertNotIn(ACTION_FAN_ON, _kinds(before_activation))
+        self.assertNotIn(ActionKind.FAN_ON, _kinds(before_activation))
 
         at_activation = logic.on_time_tick(self.t0 + timedelta(seconds=60))
-        self.assertIn(ACTION_FAN_ON, _kinds(at_activation))
-        self.assertIn(ACTION_START_KEEPALIVE, _kinds(at_activation))
+        self.assertIn(ActionKind.FAN_ON, _kinds(at_activation))
+        self.assertIn(ActionKind.START_KEEPALIVE, _kinds(at_activation))
 
         logic.on_light_off(self.t0 + timedelta(seconds=60))
         before_post_run_end = logic.on_time_tick(self.t0 + timedelta(seconds=119))
-        self.assertNotIn(ACTION_FAN_OFF, _kinds(before_post_run_end))
+        self.assertNotIn(ActionKind.FAN_OFF, _kinds(before_post_run_end))
 
         at_post_run_end = logic.on_time_tick(self.t0 + timedelta(seconds=120))
-        self.assertIn(ACTION_FAN_OFF, _kinds(at_post_run_end))
-        self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(at_post_run_end))
+        self.assertIn(ActionKind.FAN_OFF, _kinds(at_post_run_end))
+        self.assertIn(ActionKind.STOP_KEEPALIVE, _kinds(at_post_run_end))
 
     def test_invalid_threshold_order_is_rejected(self):
         with self.assertRaisesRegex(
@@ -220,8 +213,8 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         logic = ExtractorFanPairLogic(
             LogicConfig(min_light_on_for_fan_seconds=0, short_visit_threshold_seconds=60))
         actions_on = logic.on_light_on(self.t0)
-        self.assertIn(ACTION_FAN_ON, _kinds(actions_on))
-        self.assertIn(ACTION_START_KEEPALIVE, _kinds(actions_on))
+        self.assertIn(ActionKind.FAN_ON, _kinds(actions_on))
+        self.assertIn(ActionKind.START_KEEPALIVE, _kinds(actions_on))
 
     def test_zero_short_visit_threshold_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "short_visit_threshold_seconds must be > 0"):
@@ -230,21 +223,21 @@ class TestExtractorFanPairLogic(unittest.TestCase):
 
     def test_schedule_only_starts_and_stops_fan(self):
         actions_start = self.logic.on_schedule_started(self.t0, duration_seconds=900)
-        self.assertIn(ACTION_FAN_ON, _kinds(actions_start))
-        self.assertIn(ACTION_START_KEEPALIVE, _kinds(actions_start))
+        self.assertIn(ActionKind.FAN_ON, _kinds(actions_start))
+        self.assertIn(ActionKind.START_KEEPALIVE, _kinds(actions_start))
         self.assertEqual(PairState.SCHEDULED_RUN, self.logic.state)
 
-        deadline_sets = _timer_actions(actions_start, ACTION_SET_TIMER)
+        deadline_sets = _timer_actions(actions_start, ActionKind.SET_TIMER)
         self.assertTrue(
-            any(a.timer_name == TIMER_DEADLINE and a.at == self.t0 + timedelta(seconds=900)
+            any(a.timer_name == TimerName.DEADLINE and a.at == self.t0 + timedelta(seconds=900)
                 for a in deadline_sets))
 
         actions_before = self.logic.on_time_tick(self.t0 + timedelta(seconds=899))
-        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before))
+        self.assertNotIn(ActionKind.FAN_OFF, _kinds(actions_before))
 
         actions_at = self.logic.on_time_tick(self.t0 + timedelta(seconds=900))
-        self.assertIn(ACTION_FAN_OFF, _kinds(actions_at))
-        self.assertIn(ACTION_STOP_KEEPALIVE, _kinds(actions_at))
+        self.assertIn(ActionKind.FAN_OFF, _kinds(actions_at))
+        self.assertIn(ActionKind.STOP_KEEPALIVE, _kinds(actions_at))
         self.assertEqual(PairState.IDLE, self.logic.state)
 
     def test_schedule_with_light_uses_later_end(self):
@@ -258,13 +251,13 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         self.logic.on_light_off(self.t0 + timedelta(seconds=200))
 
         actions_at_schedule_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=300))
-        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_at_schedule_end))
+        self.assertNotIn(ActionKind.FAN_OFF, _kinds(actions_at_schedule_end))
 
         actions_before_occ_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=389))
-        self.assertNotIn(ACTION_FAN_OFF, _kinds(actions_before_occ_end))
+        self.assertNotIn(ActionKind.FAN_OFF, _kinds(actions_before_occ_end))
 
         actions_at_occ_end = self.logic.on_time_tick(self.t0 + timedelta(seconds=390))
-        self.assertIn(ACTION_FAN_OFF, _kinds(actions_at_occ_end))
+        self.assertIn(ActionKind.FAN_OFF, _kinds(actions_at_occ_end))
 
     def test_no_off_deadline_while_light_driven_occupancy_is_active(self):
         # While the light is on and activated the off time is genuinely unknown, and the value

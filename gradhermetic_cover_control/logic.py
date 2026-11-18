@@ -31,41 +31,24 @@ from collections.abc import Callable
 
 from gradhermetic_cover_control import planner
 from gradhermetic_cover_control.executor import (
-    ACTION_CANCEL_SETTLE_TIMER,
-    ACTION_NOTIFY,
-    ACTION_PUBLISH_STATE,
-    ACTION_STOP,
-    MOTION_CLOSING,
-    MOTION_IDLE,
-    MOTION_OPENING,
-    NOTIFY_INVARIANT,
-    STATUS_ABANDONED,
-    STATUS_COMPLETED,
-    STATUS_STALLED,
     Action,
+    ActionKind,
     Executor,
+    Motion,
+    NotifyKind,
     Outcome,
+    Status,
     virtual_position,
 )
 from gradhermetic_cover_control.geometry import Zone, clamp_pct
 from gradhermetic_cover_control.planner import (
-    DIRECTION_DOWN,
-    DIRECTION_UP,
-    INTENT_CLOSE,
-    INTENT_ENTER_TILT,
-    INTENT_HEIGHT_STEP,
-    INTENT_LEAVE_TILT,
-    INTENT_OPEN,
-    INTENT_SET_POSITION,
-    INTENT_SLAT_STEP,
-    LATCH_LATCHED,
-    LATCH_UNKNOWN,
-    LATCH_UNLATCHED,
-    PLAN_ENTER,
-    PLAN_LEAVE,
     Belief,
+    Direction,
     Intent,
+    IntentKind,
+    Latch,
     Plan,
+    PlanKind,
 )
 
 # What one publish carries, for deduplication: (virtual position, in tilt, motion).
@@ -93,10 +76,10 @@ class GradhermeticCoverLogic:
         self._disabled = False
 
         self._position: int | None = None
-        self._latch = LATCH_UNKNOWN
+        self._latch = Latch.UNKNOWN
         self._is_moving = False
         # Real direction of travel: from the controller if it says, else from the position trend.
-        self._direction: str | None = None
+        self._direction: Direction | None = None
         # Whether this controller has ever reported motion; see _may_be_travelling.
         self._controller_reports_motion = False
         self._executor = Executor(zone, log)
@@ -112,7 +95,7 @@ class GradhermeticCoverLogic:
         return self._position
 
     @property
-    def latch(self) -> str:
+    def latch(self) -> Latch:
         """
         The latch belief: ``LATCHED``, ``UNLATCHED`` or ``UNKNOWN``.
         """
@@ -123,7 +106,7 @@ class GradhermeticCoverLogic:
         """
         Whether slat control applies. Only a confident latch belief offers it.
         """
-        return self._latch == LATCH_LATCHED
+        return self._latch == Latch.LATCHED
 
     @property
     def is_moving(self) -> bool:
@@ -156,7 +139,7 @@ class GradhermeticCoverLogic:
     # -- Lifecycle ---------------------------------------------------------------------------------
 
     def seed_state(self, last_position: int | None, is_moving: bool = False,
-                   direction: str | None = None) -> None:
+                   direction: Direction | None = None) -> None:
         """
         Establish the belief from a first position reading: unlatched if clear of the band,
         otherwise unknown.
@@ -165,12 +148,12 @@ class GradhermeticCoverLogic:
         self._is_moving = bool(is_moving) and last_position is not None
         self._direction = direction if self._is_moving else None
         if last_position is not None and not self._zone.in_band(last_position):
-            self._latch = LATCH_UNLATCHED
+            self._latch = Latch.UNLATCHED
         else:
-            self._latch = LATCH_UNKNOWN
+            self._latch = Latch.UNKNOWN
 
     def on_startup(self, position: int | None, is_moving: bool = False,
-                   direction: str | None = None) -> list[Action]:
+                   direction: Direction | None = None) -> list[Action]:
         """
         Seed the belief from the first position reading. Startup never moves the blind.
 
@@ -180,7 +163,7 @@ class GradhermeticCoverLogic:
         if self._disabled:
             return []
         self.seed_state(position, is_moving, direction)
-        if self._latch == LATCH_UNKNOWN:
+        if self._latch == Latch.UNKNOWN:
             if position is None:
                 self._log("startup position unreadable; the actuator will be re-referenced by the "
                           "first move that needs it")
@@ -211,7 +194,7 @@ class GradhermeticCoverLogic:
         Outside tilt this opens the blind fully; inside tilt it orients the slats perpendicular
         (virtual 100, the lower edge).
         """
-        return self._run(Intent(INTENT_OPEN))
+        return self._run(Intent(IntentKind.OPEN))
 
     def on_close(self) -> list[Action]:
         """
@@ -220,7 +203,7 @@ class GradhermeticCoverLogic:
         Outside tilt this closes the blind fully; inside tilt it orients the slats parallel
         (virtual 0, the upper edge).
         """
-        return self._run(Intent(INTENT_CLOSE))
+        return self._run(Intent(IntentKind.CLOSE))
 
     def on_stop(self) -> list[Action]:
         """
@@ -232,8 +215,8 @@ class GradhermeticCoverLogic:
             return []
         stopping = self._may_be_travelling()
         self._abandon_plan()
-        actions = [Action(ACTION_STOP)] if stopping else []
-        actions.append(Action(ACTION_CANCEL_SETTLE_TIMER))
+        actions = [Action(ActionKind.STOP)] if stopping else []
+        actions.append(Action(ActionKind.CANCEL_SETTLE_TIMER))
         return actions + self._publish_current()
 
     def on_set_position(self, virtual_pct: int) -> list[Action]:
@@ -243,7 +226,7 @@ class GradhermeticCoverLogic:
         Outside tilt the virtual position is the real position, snapped clear of the ambiguity band;
         inside tilt it interpolates the slat angle between the zone edges.
         """
-        return self._run(Intent(INTENT_SET_POSITION, virtual_pct=clamp_pct(virtual_pct)))
+        return self._run(Intent(IntentKind.SET_POSITION, virtual_pct=clamp_pct(virtual_pct)))
 
     def on_set_tilt_mode(self, enabled: bool) -> list[Action]:
         """
@@ -257,25 +240,25 @@ class GradhermeticCoverLogic:
             return []
         pending = self._executor.plan
         if enabled:
-            if pending is not None and pending.kind == PLAN_LEAVE:
+            if pending is not None and pending.kind == PlanKind.LEAVE:
                 return self.on_stop()
             if self._displayed_in_tilt():
                 self._log("enter tilt does nothing: already in tilt mode")
                 return []
-            if pending is not None and pending.kind == PLAN_ENTER:
+            if pending is not None and pending.kind == PlanKind.ENTER:
                 self._log("enter tilt does nothing: an entry is already in flight")
                 return []
             return self._run(
-                Intent(INTENT_ENTER_TILT, landing_virtual=self._zone.enter_landing_virtual))
-        if pending is not None and pending.kind == PLAN_LEAVE:
+                Intent(IntentKind.ENTER_TILT, landing_virtual=self._zone.enter_landing_virtual))
+        if pending is not None and pending.kind == PlanKind.LEAVE:
             self._log("leave tilt does nothing: an exit is already in flight")
             return []
-        if pending is not None and pending.kind == PLAN_ENTER:
+        if pending is not None and pending.kind == PlanKind.ENTER:
             return self.on_stop()
         if not self._displayed_in_tilt():
             self._log("leave tilt does nothing: no latch belief to leave")
             return []
-        return self._run(Intent(INTENT_LEAVE_TILT))
+        return self._run(Intent(IntentKind.LEAVE_TILT))
 
     def on_toggle_tilt_mode(self) -> list[Action]:
         """
@@ -285,7 +268,7 @@ class GradhermeticCoverLogic:
         if self._disabled:
             return []
         pending = self._executor.plan
-        if pending is not None and pending.kind in (PLAN_ENTER, PLAN_LEAVE):
+        if pending is not None and pending.kind in (PlanKind.ENTER, PlanKind.LEAVE):
             return self.on_stop()
         return self.on_set_tilt_mode(not self._displayed_in_tilt())
 
@@ -307,11 +290,11 @@ class GradhermeticCoverLogic:
         Whether the published mode is tilt. Differs from the raw latch while a plan that leaves
         tilt is still running.
         """
-        return self._belief_after_interrupt().latch == LATCH_LATCHED
+        return self._belief_after_interrupt().latch == Latch.LATCHED
 
     # -- Step events -------------------------------------------------------------------------------
 
-    def on_step(self, direction: str) -> list[Action]:
+    def on_step(self, direction: Direction) -> list[Action]:
         """
         Handle a step, like a KNX stop/step object:
 
@@ -324,9 +307,9 @@ class GradhermeticCoverLogic:
         if self.has_pending_plan or self._is_moving:
             return self.on_stop()
         if self.in_tilt:
-            intent = Intent(INTENT_SLAT_STEP, direction=direction)
+            intent = Intent(IntentKind.SLAT_STEP, direction=direction)
         else:
-            intent = Intent(INTENT_HEIGHT_STEP, direction=direction)
+            intent = Intent(IntentKind.HEIGHT_STEP, direction=direction)
         belief = self.belief()
         movement = planner.plan(self._zone, belief, intent)
         if movement is None:
@@ -334,22 +317,22 @@ class GradhermeticCoverLogic:
             return []
         return self._execute(belief, movement)
 
-    def _describe_step_limit(self, direction: str) -> str:
+    def _describe_step_limit(self, direction: Direction) -> str:
         """
         Why a step has nowhere to go, for the log.
         """
         if self._position is None:
             return "the blind's position is unknown"
         if self.in_tilt:
-            edge = "open" if direction == DIRECTION_UP else "closed"
+            edge = "open" if direction == Direction.UP else "closed"
             return f"the slats are already at the {edge} edge"
-        limit = "top" if direction == DIRECTION_UP else "bottom"
+        limit = "top" if direction == Direction.UP else "bottom"
         return f"the blind is already at the {limit} limit"
 
     # -- Position feedback -------------------------------------------------------------------------
 
     def on_real_position(self, position: int | None, is_moving: bool,
-                         direction: str | None = None) -> list[Action]:
+                         direction: Direction | None = None) -> list[Action]:
         """
         Consume controller position/motion feedback, advancing any plan in progress. A ``None``
         position means the cover became unavailable.
@@ -365,14 +348,14 @@ class GradhermeticCoverLogic:
         if had_plan:
             actions = self._consume(self._executor.on_feedback(position, is_moving))
         elif (was_moving and not is_moving and position is not None and self._zone.in_band(position)
-              and self._latch != LATCH_UNKNOWN):
+              and self._latch != Latch.UNKNOWN):
             # External motion ended in the band; it may have latched on the way.
-            self._latch = LATCH_UNKNOWN
+            self._latch = Latch.UNKNOWN
             self._log("latch belief cleared: external motion ended inside the tilt band")
         return actions + self._publish_current()
 
     def on_settle_timer(self, position: int | None, is_moving: bool,
-                        direction: str | None = None) -> list[Action]:
+                        direction: Direction | None = None) -> list[Action]:
         """
         Consume a settle-timer firing, with the controller state read at the moment it fired.
         """
@@ -414,13 +397,15 @@ class GradhermeticCoverLogic:
         """
         Apply an executor outcome to the latch belief and return its actions.
         """
-        if outcome.status == STATUS_COMPLETED:
-            self._latch = outcome.plan.final_latch
-        elif outcome.status == STATUS_STALLED:
-            self._degrade_latch(outcome.plan)
+        match outcome.status:
+            case Status.COMPLETED:
+                self._latch = outcome.plan.final_latch
+            case Status.STALLED:
+                self._degrade_latch(outcome.plan)
         return outcome.actions
 
-    def _observe(self, position: int | None, is_moving: bool, direction: str | None = None) -> None:
+    def _observe(self, position: int | None, is_moving: bool,
+                 direction: Direction | None = None) -> None:
         """
         Fold a controller reading into the belief. Feedback can only degrade the latch belief.
         """
@@ -432,7 +417,7 @@ class GradhermeticCoverLogic:
             self._position = None
             self._is_moving = False
             self._direction = None
-            self._latch = LATCH_UNKNOWN
+            self._latch = Latch.UNKNOWN
             return
         previous = self._position
         self._position = position
@@ -442,9 +427,9 @@ class GradhermeticCoverLogic:
         elif direction is not None:
             self._direction = direction
         elif previous is not None and position != previous:
-            self._direction = DIRECTION_UP if position > previous else DIRECTION_DOWN
-        if not self._zone.in_band(position) and self._latch != LATCH_UNLATCHED:
-            self._latch = LATCH_UNLATCHED
+            self._direction = Direction.UP if position > previous else Direction.DOWN
+        if not self._zone.in_band(position) and self._latch != Latch.UNLATCHED:
+            self._latch = Latch.UNLATCHED
             self._log(f"latch belief cleared: {position} rests outside the tilt band")
 
     def _abandon_plan(self) -> None:
@@ -454,7 +439,7 @@ class GradhermeticCoverLogic:
         The caller emits its own timer action -- a stop cancels the timer, a replacement re-arms it.
         """
         outcome = self._executor.abandon()
-        if outcome.status == STATUS_ABANDONED:
+        if outcome.status == Status.ABANDONED:
             self._degrade_latch(outcome.plan)
 
     def _belief_after_interrupt(self) -> Belief:
@@ -474,18 +459,18 @@ class GradhermeticCoverLogic:
             self._log(f"latch belief {self._latch} -> {degraded}: {movement.kind} plan interrupted")
             self._latch = degraded
 
-    def _degraded_latch(self, movement: Plan) -> str:
+    def _degraded_latch(self, movement: Plan) -> Latch:
         """
         What the latch belief becomes if ``movement`` is abandoned where the blind is now.
 
         Interrupting a pure slat move keeps a confident latch; anything else may have stopped
         mid-crossing.
         """
-        if self._latch == LATCH_LATCHED and not planner.can_change_latch(self._zone, movement):
-            return LATCH_LATCHED
+        if self._latch == Latch.LATCHED and not planner.can_change_latch(self._zone, movement):
+            return Latch.LATCHED
         if self._position is None or self._zone.in_band(self._position):
-            return LATCH_UNKNOWN
-        return LATCH_UNLATCHED
+            return Latch.UNKNOWN
+        return Latch.UNLATCHED
 
     def _publish_current(self) -> list[Action]:
         """
@@ -493,16 +478,18 @@ class GradhermeticCoverLogic:
         from :meth:`_belief_after_interrupt`, not from the plan's intended outcome.
         """
         display_latch = self._belief_after_interrupt().latch
-        in_tilt = display_latch == LATCH_LATCHED
+        in_tilt = display_latch == Latch.LATCHED
         if self._position is None:
-            state: _Published = (None, False, MOTION_IDLE)
+            state: _Published = (None, False, Motion.IDLE)
         else:
             state = (virtual_position(self._zone, display_latch,
                                       self._position), in_tilt, self._motion(in_tilt))
         if state == self._last_published:
             return []
         self._last_published = state
-        return [Action(ACTION_PUBLISH_STATE, position=state[0], in_tilt=state[1], motion=state[2])]
+        return [
+            Action(ActionKind.PUBLISH_STATE, position=state[0], in_tilt=state[1], motion=state[2])
+        ]
 
     def _motion(self, in_tilt: bool) -> str:
         """
@@ -518,13 +505,13 @@ class GradhermeticCoverLogic:
             commanded = step.command_position
             here = self._position
             if commanded != here:
-                real = DIRECTION_UP if commanded > here else DIRECTION_DOWN
+                real = Direction.UP if commanded > here else Direction.DOWN
         if real is None:
-            return MOTION_IDLE
-        rising = real == DIRECTION_UP
+            return Motion.IDLE
+        rising = real == Direction.UP
         if in_tilt:
             rising = not rising
-        return MOTION_OPENING if rising else MOTION_CLOSING
+        return Motion.OPENING if rising else Motion.CLOSING
 
     def _fail_invariant(self, violation: str) -> list[Action]:
         """
@@ -534,9 +521,9 @@ class GradhermeticCoverLogic:
         self._disabled = True
         self._executor.abandon()
         return [
-            Action(ACTION_CANCEL_SETTLE_TIMER),
+            Action(ActionKind.CANCEL_SETTLE_TIMER),
             Action(
-                ACTION_NOTIFY, notify_kind=NOTIFY_INVARIANT,
+                ActionKind.NOTIFY, notify_kind=NotifyKind.INVARIANT,
                 message=(f"was disabled by a failed safety check: {violation}. This is a bug in "
                          "the movement planner.")),
         ]

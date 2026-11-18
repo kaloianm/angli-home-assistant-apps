@@ -13,22 +13,10 @@ import traceback
 from typing import Any
 
 from gradhermetic_cover_control.config import parse_app_config
-from gradhermetic_cover_control.executor import (
-    ACTION_ARM_SETTLE_TIMER,
-    ACTION_CANCEL_SETTLE_TIMER,
-    ACTION_CLOSE_FULL,
-    ACTION_MOVE_TO,
-    ACTION_NOTIFY,
-    ACTION_OPEN_FULL,
-    ACTION_PUBLISH_STATE,
-    ACTION_STOP,
-    MOTION_IDLE,
-    NOTIFY_STALL,
-    Action,
-)
+from gradhermetic_cover_control.executor import Action, ActionKind, Motion, NotifyKind
 from gradhermetic_cover_control.geometry import to_whole_pct
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
-from gradhermetic_cover_control.planner import DIRECTION_DOWN, DIRECTION_UP
+from gradhermetic_cover_control.planner import Direction
 from gradhermetic_cover_control.runtime import (
     COMMAND_RATE_LIMIT,
     COMMAND_RATE_WINDOW_SECONDS,
@@ -153,10 +141,10 @@ class GradhermeticCoverControl(hass.Hass):
                 return runtime.logic.on_toggle_tilt_mode()
             case "step":
                 direction = data.get("direction")
-                if direction not in (DIRECTION_UP, DIRECTION_DOWN):
+                if direction not in (Direction.UP, Direction.DOWN):
                     self.log(f"Ignoring step with invalid direction {direction!r}", level="WARNING")
                     return []
-                return runtime.logic.on_step(direction)
+                return runtime.logic.on_step(Direction(direction))
             case _:
                 self.log(f"Ignoring unknown command {command!r}", level="WARNING")
                 return []
@@ -198,22 +186,23 @@ class GradhermeticCoverControl(hass.Hass):
         if runtime.disabled:
             return
         for action in actions:
-            if action.kind == ACTION_MOVE_TO:
-                self._command(runtime, "cover/set_cover_position", position=action.position)
-            elif action.kind == ACTION_OPEN_FULL:
-                self._command(runtime, "cover/open_cover")
-            elif action.kind == ACTION_CLOSE_FULL:
-                self._command(runtime, "cover/close_cover")
-            elif action.kind == ACTION_STOP:
-                self._command(runtime, "cover/stop_cover")
-            elif action.kind == ACTION_PUBLISH_STATE:
-                self._publish_virtual(action.position, action.in_tilt, action.motion)
-            elif action.kind == ACTION_ARM_SETTLE_TIMER:
-                self._arm_settle(runtime, action.seconds)
-            elif action.kind == ACTION_CANCEL_SETTLE_TIMER:
-                self._cancel_settle(runtime)
-            elif action.kind == ACTION_NOTIFY:
-                self._notify(runtime, action.notify_kind, action.message)
+            match action.kind:
+                case ActionKind.MOVE_TO:
+                    self._command(runtime, "cover/set_cover_position", position=action.position)
+                case ActionKind.OPEN_FULL:
+                    self._command(runtime, "cover/open_cover")
+                case ActionKind.CLOSE_FULL:
+                    self._command(runtime, "cover/close_cover")
+                case ActionKind.STOP:
+                    self._command(runtime, "cover/stop_cover")
+                case ActionKind.PUBLISH_STATE:
+                    self._publish_virtual(action.position, action.in_tilt, action.motion)
+                case ActionKind.ARM_SETTLE_TIMER:
+                    self._arm_settle(runtime, action.seconds)
+                case ActionKind.CANCEL_SETTLE_TIMER:
+                    self._cancel_settle(runtime)
+                case ActionKind.NOTIFY:
+                    self._notify(runtime, action.notify_kind, action.message)
 
     def _command(self, runtime: CoverRuntime, service: str, **data: Any) -> None:
         """
@@ -227,12 +216,12 @@ class GradhermeticCoverControl(hass.Hass):
         self.log(f"Cover {_describe_command(service, data)}")
         self.call_service(service, entity_id=runtime.config.real_cover, **data)
 
-    def _notify(self, runtime: CoverRuntime, kind: str | None, message: str | None) -> None:
+    def _notify(self, runtime: CoverRuntime, kind: NotifyKind | None, message: str | None) -> None:
         """
         Render a logic notification as a Home Assistant persistent notification.
         """
         title = ("GradhermeticCoverControl stalled"
-                 if kind == NOTIFY_STALL else "GradhermeticCoverControl error")
+                 if kind == NotifyKind.STALL else "GradhermeticCoverControl error")
         self.log(f"{kind}: {message}", level="ERROR")
         self.call_service(
             "persistent_notification/create",
@@ -241,7 +230,7 @@ class GradhermeticCoverControl(hass.Hass):
         )
 
     def _publish_virtual(self, virtual_position: int | None, in_tilt: bool | None,
-                         motion: str | None) -> None:
+                         motion: Motion | None) -> None:
         """
         Write the position sensor (with its ``motion`` attribute) and, if it changed, the tilt-mode
         sensor.
@@ -258,7 +247,7 @@ class GradhermeticCoverControl(hass.Hass):
             attributes={
                 "friendly_name": f"{self._config.virtual_name} Position",
                 "unit_of_measurement": "%",
-                "motion": motion or MOTION_IDLE,
+                "motion": motion or Motion.IDLE,
             },
         )
         tilt_state = "on" if in_tilt else "off"
@@ -365,7 +354,7 @@ def _extract_feedback(state: Any) -> tuple[int | None, bool, str | None]:
         return None, False, None
     raw_position = state.get("attributes", {}).get("current_position")
     cover_state = state.get("state")
-    direction = {"opening": DIRECTION_UP, "closing": DIRECTION_DOWN}.get(cover_state)
+    direction = {"opening": Direction.UP, "closing": Direction.DOWN}.get(cover_state)
     is_moving = direction is not None
     return _parse_pct(raw_position), is_moving, direction
 
