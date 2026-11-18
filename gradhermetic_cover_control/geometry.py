@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, fields
-from typing import Optional
-
 # Default real travel of one height step: a short nudge on a ~15 s full travel.
 DEFAULT_HEIGHT_STEP_PCT = 2
 
@@ -57,7 +55,7 @@ class Zone:
     tilt_zone_epsilon_pct: int
     tilt_zone_release_pct: int
     tilt_step_pct: int
-    tilt_zone_enter_pct: Optional[int] = None
+    tilt_zone_enter_pct: int | None = None
     height_step_pct: int = DEFAULT_HEIGHT_STEP_PCT
 
     def __post_init__(self) -> None:
@@ -220,7 +218,7 @@ class Zone:
         depth = self.upper - real
         return clamp_pct((200 * depth + self.span) // (2 * self.span))
 
-    def snap_normal_target(self, target: int, current: Optional[int] = None) -> int:
+    def snap_normal_target(self, target: int, current: int | None = None) -> int:
         """
         Snap a whole-height target inside the ambiguity band to the nearest band edge, since rising
         into the band would silently latch. Ties rise.

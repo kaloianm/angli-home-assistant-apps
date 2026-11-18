@@ -5,10 +5,10 @@ performs the returned actions.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Callable, Dict, List, Optional
 
 ACTION_FAN_ON = "fan_on"
 ACTION_FAN_OFF = "fan_off"
@@ -74,8 +74,8 @@ class Action:
     """
 
     kind: str
-    timer_name: Optional[str] = None
-    at: Optional[datetime] = None
+    timer_name: str | None = None
+    at: datetime | None = None
 
 
 class ExtractorFanPairLogic:
@@ -97,20 +97,20 @@ class ExtractorFanPairLogic:
         self._disabled = False
 
         self._light_is_on = False
-        self._light_on_since: Optional[datetime] = None
-        self._activation_due_at: Optional[datetime] = None
+        self._light_on_since: datetime | None = None
+        self._activation_due_at: datetime | None = None
         self._occupancy_active_while_light_on = False
-        self._occupancy_run_until: Optional[datetime] = None
-        self._schedule_run_until: Optional[datetime] = None
+        self._occupancy_run_until: datetime | None = None
+        self._schedule_run_until: datetime | None = None
 
         # Last emitted outputs, so only changes produce actions.
         self._fan_output_on = False
         self._keepalive_output_on = False
-        self._timer_outputs: Dict[str, Optional[datetime]] = {
+        self._timer_outputs: dict[str, datetime | None] = {
             TIMER_ACTIVATION: None,
             TIMER_DEADLINE: None,
         }
-        self._off_deadline_output: Optional[datetime] = None
+        self._off_deadline_output: datetime | None = None
 
     @property
     def state(self) -> PairState:
@@ -131,7 +131,7 @@ class ExtractorFanPairLogic:
             return PairState.SCHEDULED_RUN
         return PairState.IDLE
 
-    def disable(self) -> List[Action]:
+    def disable(self) -> list[Action]:
         """
         Permanently stop automation decisions for this pair until restart.
         """
@@ -145,11 +145,11 @@ class ExtractorFanPairLogic:
             "off_deadline": None,
         })
 
-    def on_light_on(self, now: datetime) -> List[Action]:
+    def on_light_on(self, now: datetime) -> list[Action]:
         """
         Handle a light ON event, starting the activation timer.
         """
-        actions: List[Action] = []
+        actions: list[Action] = []
         self._log(f"event light_on at {now.isoformat()}", level="DEBUG")
         if self._light_is_on:
             self._log("ignored duplicate light_on", level="DEBUG")
@@ -162,13 +162,13 @@ class ExtractorFanPairLogic:
 
         return self._reconcile(now, previous_state)
 
-    def on_light_off(self, now: datetime) -> List[Action]:
+    def on_light_off(self, now: datetime) -> list[Action]:
         """
         Handle a light OFF event. After a short visit (or no activation) occupancy demand ends now;
         after a long one the fan keeps running for the light-on duration, capped by
         ``max_post_run_seconds``.
         """
-        actions: List[Action] = []
+        actions: list[Action] = []
         self._log(f"event light_off at {now.isoformat()}", level="DEBUG")
         if not self._light_is_on:
             self._log("ignored duplicate light_off", level="DEBUG")
@@ -199,7 +199,7 @@ class ExtractorFanPairLogic:
         self._occupancy_active_while_light_on = False
         return self._reconcile(now, previous_state)
 
-    def on_schedule_started(self, now: datetime, *, duration_seconds: int) -> List[Action]:
+    def on_schedule_started(self, now: datetime, *, duration_seconds: int) -> list[Action]:
         """
         Start or extend a scheduled fan run; if one is already active, the later end wins.
         """
@@ -216,7 +216,7 @@ class ExtractorFanPairLogic:
 
         return self._reconcile(now, previous_state)
 
-    def on_time_tick(self, now: datetime) -> List[Action]:
+    def on_time_tick(self, now: datetime) -> list[Action]:
         """
         Advance time-dependent state (activation, expiring deadlines) without a device event.
         """
@@ -226,8 +226,8 @@ class ExtractorFanPairLogic:
     def _reconcile(
         self,
         now: datetime,
-        previous_state: Optional[PairState] = None,
-    ) -> List[Action]:
+        previous_state: PairState | None = None,
+    ) -> list[Action]:
         """
         Recompute all outputs at ``now`` and emit actions for the ones that changed.
         """
@@ -278,7 +278,7 @@ class ExtractorFanPairLogic:
             self._schedule_run_until = None
             self._log("schedule demand expired", level="DEBUG")
 
-    def _target_outputs(self, now: datetime) -> Dict[str, Optional[datetime] | bool]:
+    def _target_outputs(self, now: datetime) -> dict[str, datetime | None | bool]:
         """
         Compute target outputs. The fan runs if occupancy or schedule demand is active, and the
         keepalive follows the fan.
@@ -302,11 +302,11 @@ class ExtractorFanPairLogic:
             "off_deadline": self._compute_off_deadline(now),
         }
 
-    def _compute_next_deadline(self, now: datetime) -> Optional[datetime]:
+    def _compute_next_deadline(self, now: datetime) -> datetime | None:
         """
         Return the earliest active demand deadline (the next wake-up), or ``None`` if no demand.
         """
-        candidates: List[datetime] = []
+        candidates: list[datetime] = []
         if self._occupancy_run_until is not None and now < self._occupancy_run_until:
             candidates.append(self._occupancy_run_until)
         if self._schedule_run_until is not None and now < self._schedule_run_until:
@@ -315,14 +315,14 @@ class ExtractorFanPairLogic:
             return None
         return min(candidates)
 
-    def _compute_off_deadline(self, now: datetime) -> Optional[datetime]:
+    def _compute_off_deadline(self, now: datetime) -> datetime | None:
         """
         Return when the fan will turn off: the latest active deadline. ``None`` while the light is
         on with occupancy, since the post-run is only computed at light-off.
         """
         if self._occupancy_active_while_light_on:
             return None
-        candidates: List[datetime] = []
+        candidates: list[datetime] = []
         if self._occupancy_run_until is not None and now < self._occupancy_run_until:
             candidates.append(self._occupancy_run_until)
         if self._schedule_run_until is not None and now < self._schedule_run_until:
@@ -331,12 +331,11 @@ class ExtractorFanPairLogic:
             return None
         return max(candidates)
 
-    def _emit_transitions(self, target_outputs: Dict[str,
-                                                     Optional[datetime] | bool]) -> List[Action]:
+    def _emit_transitions(self, target_outputs: dict[str, datetime | None | bool]) -> list[Action]:
         """
         Emit actions only for outputs that differ from the last emitted ones.
         """
-        actions: List[Action] = []
+        actions: list[Action] = []
 
         target_fan_on = bool(target_outputs["fan_on"])
         if target_fan_on != self._fan_output_on:

@@ -27,7 +27,7 @@ once it latches, an exit drops it at once.
 
 from __future__ import annotations
 
-from typing import Callable, List, Optional, Tuple
+from collections.abc import Callable
 
 from gradhermetic_cover_control import planner
 from gradhermetic_cover_control.executor import (
@@ -69,7 +69,7 @@ from gradhermetic_cover_control.planner import (
 )
 
 # What one publish carries, for deduplication: (virtual position, in tilt, motion).
-_Published = Tuple[Optional[int], bool, str]
+_Published = tuple[int | None, bool, str]
 
 
 class GradhermeticCoverLogic:
@@ -92,20 +92,20 @@ class GradhermeticCoverLogic:
         self._log = log
         self._disabled = False
 
-        self._position: Optional[int] = None
+        self._position: int | None = None
         self._latch = LATCH_UNKNOWN
         self._is_moving = False
         # Real direction of travel: from the controller if it says, else from the position trend.
-        self._direction: Optional[str] = None
+        self._direction: str | None = None
         # Whether this controller has ever reported motion; see _may_be_travelling.
         self._controller_reports_motion = False
         self._executor = Executor(zone, log)
-        self._last_published: Optional[_Published] = None
+        self._last_published: _Published | None = None
 
     # -- Accessors ---------------------------------------------------------------------------------
 
     @property
-    def last_position(self) -> Optional[int]:
+    def last_position(self) -> int | None:
         """
         Most recent real travel position known to the logic.
         """
@@ -139,7 +139,7 @@ class GradhermeticCoverLogic:
         """
         return self._executor.has_plan
 
-    def current_virtual_position(self) -> Optional[int]:
+    def current_virtual_position(self) -> int | None:
         """
         Virtual cover position for the current real position and mode, or None if unknown.
         """
@@ -155,8 +155,8 @@ class GradhermeticCoverLogic:
 
     # -- Lifecycle ---------------------------------------------------------------------------------
 
-    def seed_state(self, last_position: Optional[int], is_moving: bool = False,
-                   direction: Optional[str] = None) -> None:
+    def seed_state(self, last_position: int | None, is_moving: bool = False,
+                   direction: str | None = None) -> None:
         """
         Establish the belief from a first position reading: unlatched if clear of the band,
         otherwise unknown.
@@ -169,8 +169,8 @@ class GradhermeticCoverLogic:
         else:
             self._latch = LATCH_UNKNOWN
 
-    def on_startup(self, position: Optional[int], is_moving: bool = False,
-                   direction: Optional[str] = None) -> List[Action]:
+    def on_startup(self, position: int | None, is_moving: bool = False,
+                   direction: str | None = None) -> list[Action]:
         """
         Seed the belief from the first position reading. Startup never moves the blind.
 
@@ -193,7 +193,7 @@ class GradhermeticCoverLogic:
                       "whole-height control")
         return self._publish_current()
 
-    def disable(self) -> List[Action]:
+    def disable(self) -> list[Action]:
         """
         Permanently stop automation decisions for this blind until restart.
         """
@@ -204,7 +204,7 @@ class GradhermeticCoverLogic:
 
     # -- User / command events ---------------------------------------------------------------------
 
-    def on_open(self) -> List[Action]:
+    def on_open(self) -> list[Action]:
         """
         Handle ``cover.open_cover``: most light.
 
@@ -213,7 +213,7 @@ class GradhermeticCoverLogic:
         """
         return self._run(Intent(INTENT_OPEN))
 
-    def on_close(self) -> List[Action]:
+    def on_close(self) -> list[Action]:
         """
         Handle ``cover.close_cover``: least light.
 
@@ -222,7 +222,7 @@ class GradhermeticCoverLogic:
         """
         return self._run(Intent(INTENT_CLOSE))
 
-    def on_stop(self) -> List[Action]:
+    def on_stop(self) -> list[Action]:
         """
         Handle ``cover.stop_cover``: abandon the current plan, and send a stop only if the blind
         may be travelling (see :attr:`Executor.may_be_travelling` for why an idle blind must not
@@ -236,7 +236,7 @@ class GradhermeticCoverLogic:
         actions.append(Action(ACTION_CANCEL_SETTLE_TIMER))
         return actions + self._publish_current()
 
-    def on_set_position(self, virtual_pct: int) -> List[Action]:
+    def on_set_position(self, virtual_pct: int) -> list[Action]:
         """
         Handle ``cover.set_cover_position`` to an absolute virtual position.
 
@@ -245,7 +245,7 @@ class GradhermeticCoverLogic:
         """
         return self._run(Intent(INTENT_SET_POSITION, virtual_pct=clamp_pct(virtual_pct)))
 
-    def on_set_tilt_mode(self, enabled: bool) -> List[Action]:
+    def on_set_tilt_mode(self, enabled: bool) -> list[Action]:
         """
         Handle the ``set_tilt_mode`` command: enter (landing on ``tilt_zone_enter_pct``) or leave.
 
@@ -277,7 +277,7 @@ class GradhermeticCoverLogic:
             return []
         return self._run(Intent(INTENT_LEAVE_TILT))
 
-    def on_toggle_tilt_mode(self) -> List[Action]:
+    def on_toggle_tilt_mode(self) -> list[Action]:
         """
         Toggle tilt mode. Cancels an entry or exit in flight; otherwise toggles what the dashboard
         shows (:meth:`_displayed_in_tilt`).
@@ -311,7 +311,7 @@ class GradhermeticCoverLogic:
 
     # -- Step events -------------------------------------------------------------------------------
 
-    def on_step(self, direction: str) -> List[Action]:
+    def on_step(self, direction: str) -> list[Action]:
         """
         Handle a step, like a KNX stop/step object:
 
@@ -348,8 +348,8 @@ class GradhermeticCoverLogic:
 
     # -- Position feedback -------------------------------------------------------------------------
 
-    def on_real_position(self, position: Optional[int], is_moving: bool,
-                         direction: Optional[str] = None) -> List[Action]:
+    def on_real_position(self, position: int | None, is_moving: bool,
+                         direction: str | None = None) -> list[Action]:
         """
         Consume controller position/motion feedback, advancing any plan in progress. A ``None``
         position means the cover became unavailable.
@@ -361,7 +361,7 @@ class GradhermeticCoverLogic:
         had_plan = self.has_pending_plan
         self._observe(position, is_moving, direction)
 
-        actions: List[Action] = []
+        actions: list[Action] = []
         if had_plan:
             actions = self._consume(self._executor.on_feedback(position, is_moving))
         elif (was_moving and not is_moving and position is not None and self._zone.in_band(position)
@@ -371,8 +371,8 @@ class GradhermeticCoverLogic:
             self._log("latch belief cleared: external motion ended inside the tilt band")
         return actions + self._publish_current()
 
-    def on_settle_timer(self, position: Optional[int], is_moving: bool,
-                        direction: Optional[str] = None) -> List[Action]:
+    def on_settle_timer(self, position: int | None, is_moving: bool,
+                        direction: str | None = None) -> list[Action]:
         """
         Consume a settle-timer firing, with the controller state read at the moment it fired.
         """
@@ -384,7 +384,7 @@ class GradhermeticCoverLogic:
 
     # -- Internals ---------------------------------------------------------------------------------
 
-    def _run(self, intent: Intent) -> List[Action]:
+    def _run(self, intent: Intent) -> list[Action]:
         """
         Plan an intent from the current belief, check it, and start executing it.
 
@@ -399,7 +399,7 @@ class GradhermeticCoverLogic:
             return []
         return self._execute(belief, movement)
 
-    def _execute(self, belief: Belief, movement: Plan) -> List[Action]:
+    def _execute(self, belief: Belief, movement: Plan) -> list[Action]:
         """
         Safety-check a planned movement and start executing it, replacing any plan in flight.
         """
@@ -410,7 +410,7 @@ class GradhermeticCoverLogic:
         actions = self._consume(self._executor.start(movement, self._position, self._is_moving))
         return actions + self._publish_current()
 
-    def _consume(self, outcome: Outcome) -> List[Action]:
+    def _consume(self, outcome: Outcome) -> list[Action]:
         """
         Apply an executor outcome to the latch belief and return its actions.
         """
@@ -420,8 +420,7 @@ class GradhermeticCoverLogic:
             self._degrade_latch(outcome.plan)
         return outcome.actions
 
-    def _observe(self, position: Optional[int], is_moving: bool,
-                 direction: Optional[str] = None) -> None:
+    def _observe(self, position: int | None, is_moving: bool, direction: str | None = None) -> None:
         """
         Fold a controller reading into the belief. Feedback can only degrade the latch belief.
         """
@@ -488,7 +487,7 @@ class GradhermeticCoverLogic:
             return LATCH_UNKNOWN
         return LATCH_UNLATCHED
 
-    def _publish_current(self) -> List[Action]:
+    def _publish_current(self) -> list[Action]:
         """
         Emit position, mode and motion if they differ from what was last emitted. The mode comes
         from :meth:`_belief_after_interrupt`, not from the plan's intended outcome.
@@ -527,7 +526,7 @@ class GradhermeticCoverLogic:
             rising = not rising
         return MOTION_OPENING if rising else MOTION_CLOSING
 
-    def _fail_invariant(self, violation: str) -> List[Action]:
+    def _fail_invariant(self, violation: str) -> list[Action]:
         """
         Refuse a plan that failed a safety check (a planner bug) and disable the blind.
         """

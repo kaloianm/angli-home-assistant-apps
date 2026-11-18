@@ -15,8 +15,8 @@ motion, and declares a stall only when the blind settled short or its position b
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
 
 from gradhermetic_cover_control.geometry import Zone, clamp_pct
 from gradhermetic_cover_control.planner import (
@@ -81,12 +81,12 @@ class Action:
     """
 
     kind: str
-    position: Optional[int] = None
-    in_tilt: Optional[bool] = None
-    motion: Optional[str] = None
-    seconds: Optional[float] = None
-    notify_kind: Optional[str] = None
-    message: Optional[str] = None
+    position: int | None = None
+    in_tilt: bool | None = None
+    motion: str | None = None
+    seconds: float | None = None
+    notify_kind: str | None = None
+    message: str | None = None
 
 
 @dataclass
@@ -95,9 +95,9 @@ class Outcome:
     What one executor call produced: actions to perform, and what became of the plan.
     """
 
-    actions: List[Action] = field(default_factory=list)
+    actions: list[Action] = field(default_factory=list)
     status: str = STATUS_IDLE
-    plan: Optional[Plan] = None
+    plan: Plan | None = None
 
 
 class Executor:
@@ -115,7 +115,7 @@ class Executor:
         """
         self._zone = zone
         self._log = log
-        self._plan: Optional[Plan] = None
+        self._plan: Plan | None = None
         self._index = 0
         # Whether the blind reported motion since the current step was commanded, so settling short
         # afterwards gets the quick recheck.
@@ -124,7 +124,7 @@ class Executor:
         self._awaiting_arrival = False
 
     @property
-    def plan(self) -> Optional[Plan]:
+    def plan(self) -> Plan | None:
         """
         The plan currently being executed, if any.
         """
@@ -138,7 +138,7 @@ class Executor:
         return self._plan is not None
 
     @property
-    def current_step(self) -> Optional[Step]:
+    def current_step(self) -> Step | None:
         """
         The step the blind is currently being driven toward, if a plan is in progress.
         """
@@ -159,7 +159,7 @@ class Executor:
 
     # -- Events ------------------------------------------------------------------------------------
 
-    def start(self, movement: Plan, position: Optional[int], is_moving: bool) -> Outcome:
+    def start(self, movement: Plan, position: int | None, is_moving: bool) -> Outcome:
         """
         Begin a plan, activating its first unsatisfied step. The caller abandons any previous plan.
         """
@@ -167,7 +167,7 @@ class Executor:
         self._index = 0
         return self._advance(position, is_moving)
 
-    def on_feedback(self, position: Optional[int], is_moving: bool) -> Outcome:
+    def on_feedback(self, position: int | None, is_moving: bool) -> Outcome:
         """
         Consume controller feedback, completing the current step once it has genuinely arrived.
         """
@@ -189,7 +189,7 @@ class Executor:
             return Outcome([_arm(SETTLED_RECHECK_SECONDS)], STATUS_RUNNING, self._plan)
         return Outcome()
 
-    def on_timer(self, position: Optional[int], is_moving: bool) -> Outcome:
+    def on_timer(self, position: int | None, is_moving: bool) -> Outcome:
         """
         Consume a settle-timer firing: keep waiting, accept, or declare a stall.
         """
@@ -257,7 +257,7 @@ class Executor:
         self._saw_motion = False
         self._awaiting_arrival = False
 
-    def _advance(self, position: Optional[int], is_moving: bool) -> Outcome:
+    def _advance(self, position: int | None, is_moving: bool) -> Outcome:
         """
         Skip every already-satisfied step and command the first one that remains.
         """
@@ -276,7 +276,7 @@ class Executor:
             return Outcome([_command(step), _arm()], STATUS_RUNNING, self._plan)
         return self._complete(position)
 
-    def _complete(self, position: Optional[int]) -> Outcome:
+    def _complete(self, position: int | None) -> Outcome:
         """
         Finish the plan and cancel the fallback timer. The caller commits the latch and publishes.
         """

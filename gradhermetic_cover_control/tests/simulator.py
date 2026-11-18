@@ -18,8 +18,6 @@ until the blind reaches the top limit.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
-
 from gradhermetic_cover_control.geometry import Zone, to_whole_pct
 
 # How far the blind travels between two position reports, in real percent. One whole percent is what
@@ -42,7 +40,7 @@ class Report:
     One position update as the controller would publish it.
     """
 
-    position: Optional[int]
+    position: int | None
     is_moving: bool
 
 
@@ -71,7 +69,7 @@ class BlindSimulator:
     """
 
     def __init__(self, zone: Zone, position: float = 100.0, latched: bool = False,
-                 quirks: Optional[Quirks] = None, stride: float = DEFAULT_STRIDE_PCT) -> None:
+                 quirks: Quirks | None = None, stride: float = DEFAULT_STRIDE_PCT) -> None:
         """
         Create a blind resting at ``position``, optionally already latched.
         """
@@ -81,10 +79,10 @@ class BlindSimulator:
         self.physical = float(position)
         self.latched = bool(latched)
         self.drift = 0.0
-        self.violations: List[str] = []
-        self.commands: List[str] = []
-        self._target: Optional[float] = None
-        self._outbox: List[Report] = []
+        self.violations: list[str] = []
+        self.commands: list[str] = []
+        self._target: float | None = None
+        self._outbox: list[Report] = []
 
     # -- Observation -------------------------------------------------------------------------------
 
@@ -155,7 +153,7 @@ class BlindSimulator:
 
     # -- Travel ------------------------------------------------------------------------------------
 
-    def tick(self) -> List[Report]:
+    def tick(self) -> list[Report]:
         """
         Deliver any queued report, else advance travel by one stride.
         """

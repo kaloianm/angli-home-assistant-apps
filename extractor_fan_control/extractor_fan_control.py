@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import traceback
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any
 
 from extractor_fan_control.config import PairConfig, parse_app_config
 from extractor_fan_control.logic import (
@@ -52,7 +52,7 @@ class ExtractorFanControl(hass.Hass):
         # AppDaemon convention initializes instance state in this hook.
         # pylint: disable=attribute-defined-outside-init
         self._config = parse_app_config(self.args or {})
-        self._runtime_by_name: Dict[str, PairRuntime] = {}
+        self._runtime_by_name: dict[str, PairRuntime] = {}
 
         for pair_config in self._config.pairs:
             self.log(f"Processing pair: {pair_config}", level="DEBUG")
@@ -109,7 +109,7 @@ class ExtractorFanControl(hass.Hass):
         attribute: str,
         old: Any,
         new: Any,
-        kwargs: Dict[str, Any],
+        kwargs: dict[str, Any],
     ) -> None:
         """
         Process light ON/OFF state transitions for one pair.
@@ -131,7 +131,7 @@ class ExtractorFanControl(hass.Hass):
         except Exception as exc:
             self._report_error(f"_on_light_state(entity={entity!r}, new={new!r})", exc, pair_name)
 
-    def _on_daily_schedule_start(self, kwargs: Dict[str, Any]) -> None:
+    def _on_daily_schedule_start(self, kwargs: dict[str, Any]) -> None:
         """
         Trigger scheduled run for one pair.
         """
@@ -148,7 +148,7 @@ class ExtractorFanControl(hass.Hass):
         except Exception as exc:
             self._report_error("_on_daily_schedule_start", exc, pair_name)
 
-    def _on_pair_timer(self, kwargs: Dict[str, Any]) -> None:
+    def _on_pair_timer(self, kwargs: dict[str, Any]) -> None:
         """
         Drive logic timer progression for activation/deadline events.
         """
@@ -165,7 +165,7 @@ class ExtractorFanControl(hass.Hass):
         except Exception as exc:
             self._report_error("_on_pair_timer", exc, pair_name)
 
-    def _on_keepalive_tick(self, kwargs: Dict[str, Any]) -> None:
+    def _on_keepalive_tick(self, kwargs: dict[str, Any]) -> None:
         """
         Send periodic ON pulse to keep KNX staircase output alive.
         """
@@ -216,7 +216,7 @@ class ExtractorFanControl(hass.Hass):
                  f"{' (keepalive)' if keepalive else ''}", level="DEBUG" if keepalive else "INFO")
         self.call_service(service, entity_id=runtime.config.fan_switch_entity)
 
-    def _publish_off_deadline(self, runtime: PairRuntime, at: Optional[datetime]) -> None:
+    def _publish_off_deadline(self, runtime: PairRuntime, at: datetime | None) -> None:
         """
         Publish when the fan is going to turn off, or ``unknown``. Not rate-limited: it is a state
         write, not a fan command.
@@ -269,7 +269,7 @@ class ExtractorFanControl(hass.Hass):
         self,
         context: str,
         exc: Exception,
-        pair_name: Optional[str] = None,
+        pair_name: str | None = None,
     ) -> None:
         """
         Log an unhandled callback exception, disable the affected pair, and notify Home Assistant.
@@ -334,7 +334,7 @@ class ExtractorFanControl(hass.Hass):
         else:
             runtime.deadline_timer_handle = handle
 
-    def _cancel_timer(self, runtime: PairRuntime, timer_name: Optional[str]) -> None:
+    def _cancel_timer(self, runtime: PairRuntime, timer_name: str | None) -> None:
         """
         Cancel activation/deadline timer if currently scheduled.
         """

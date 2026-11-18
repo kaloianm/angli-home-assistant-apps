@@ -9,7 +9,7 @@ rejected rather than silently rounding a calibrated edge.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 from gradhermetic_cover_control.geometry import Zone
 
@@ -43,7 +43,7 @@ class GradhermeticConfig:
                 ")")
 
 
-def parse_app_config(args: Dict[str, Any]) -> GradhermeticConfig:
+def parse_app_config(args: dict[str, Any]) -> GradhermeticConfig:
     """
     Parse and validate AppDaemon args for one GradhermeticCoverControl instance.
     """
@@ -69,7 +69,7 @@ def parse_app_config(args: Dict[str, Any]) -> GradhermeticConfig:
     )
 
 
-def _require_non_empty_str(source: Dict[str, Any], key: str) -> str:
+def _require_non_empty_str(source: dict[str, Any], key: str) -> str:
     """
     Read a required non-empty string field.
     """
@@ -79,7 +79,7 @@ def _require_non_empty_str(source: Dict[str, Any], key: str) -> str:
     return str(value).strip()
 
 
-def _parse_percentage(source: Dict[str, Any], key: str) -> int:
+def _parse_percentage(source: dict[str, Any], key: str) -> int:
     """
     Read a whole-number field and enforce 0 <= value <= 100.
     """
@@ -89,7 +89,7 @@ def _parse_percentage(source: Dict[str, Any], key: str) -> int:
     return value
 
 
-def _optional_percentage(source: Dict[str, Any], key: str) -> Optional[int]:
+def _optional_percentage(source: dict[str, Any], key: str) -> int | None:
     """
     Read an optional whole-number field, enforcing 0 <= value <= 100 when it is present.
     """
@@ -98,7 +98,7 @@ def _optional_percentage(source: Dict[str, Any], key: str) -> Optional[int]:
     return _parse_percentage(source, key)
 
 
-def _optional_field(source: Dict[str, Any], key: str, parse: Any) -> Dict[str, int]:
+def _optional_field(source: dict[str, Any], key: str, parse: Any) -> dict[str, int]:
     """
     Read an optional numeric field as keyword arguments: empty when absent, so the dataclass
     default applies, else ``{key: parsed value}``.
@@ -108,7 +108,7 @@ def _optional_field(source: Dict[str, Any], key: str, parse: Any) -> Dict[str, i
     return {key: parse(source, key)}
 
 
-def _parse_positive_whole(source: Dict[str, Any], key: str) -> int:
+def _parse_positive_whole(source: dict[str, Any], key: str) -> int:
     """
     Read a whole-number field and enforce > 0.
     """
@@ -118,7 +118,7 @@ def _parse_positive_whole(source: Dict[str, Any], key: str) -> int:
     return value
 
 
-def _parse_whole(source: Dict[str, Any], key: str) -> int:
+def _parse_whole(source: dict[str, Any], key: str) -> int:
     """
     Read a required numeric field as a whole number.
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -21,8 +21,8 @@ class PairConfig:
     off_at_sensor_entity: str
     min_light_on_for_fan_seconds: int
     short_visit_threshold_seconds: int
-    daily_run_time: Optional[str]
-    daily_run_duration_seconds: Optional[int]
+    daily_run_time: str | None
+    daily_run_duration_seconds: int | None
 
     def __str__(self) -> str:
         """
@@ -51,7 +51,7 @@ class AppConfig:
 
     staircase_interval_seconds: int
     pulse_guard_seconds: int
-    pairs: List[PairConfig]
+    pairs: list[PairConfig]
 
     @property
     def keepalive_pulse_interval_seconds(self) -> int:
@@ -61,7 +61,7 @@ class AppConfig:
         return max(1, self.staircase_interval_seconds - self.pulse_guard_seconds)
 
 
-def parse_app_config(args: Dict[str, Any]) -> AppConfig:
+def parse_app_config(args: dict[str, Any]) -> AppConfig:
     """
     Parse and validate AppDaemon args for ExtractorFanControl.
     """
@@ -75,7 +75,7 @@ def parse_app_config(args: Dict[str, Any]) -> AppConfig:
     if not isinstance(raw_pairs, list) or not raw_pairs:
         raise ValueError("pairs must be a non-empty list")
 
-    pairs: List[PairConfig] = []
+    pairs: list[PairConfig] = []
     seen_names = set()
     for idx, raw_pair in enumerate(raw_pairs):
         if not isinstance(raw_pair, dict):
@@ -93,7 +93,7 @@ def parse_app_config(args: Dict[str, Any]) -> AppConfig:
     )
 
 
-def _parse_pair_config(raw_pair: Dict[str, Any], idx: int) -> PairConfig:
+def _parse_pair_config(raw_pair: dict[str, Any], idx: int) -> PairConfig:
     """
     Parse and validate one pair object from args['pairs'].
     """
@@ -168,7 +168,7 @@ def _validate_daily_time(value: str, idx: int) -> None:
         raise ValueError(f"pairs[{idx}].daily_run_time must be HH:MM") from exc
 
 
-def _require_non_empty_str(source: Dict[str, Any], key: str, idx: Optional[int] = None) -> str:
+def _require_non_empty_str(source: dict[str, Any], key: str, idx: int | None = None) -> str:
     """
     Read a required non-empty string field.
     """
@@ -179,8 +179,8 @@ def _require_non_empty_str(source: Dict[str, Any], key: str, idx: Optional[int] 
     return str(value).strip()
 
 
-def _parse_positive_int(source: Dict[str, Any], key: str, default: Optional[int],
-                        idx: Optional[int] = None) -> int:
+def _parse_positive_int(source: dict[str, Any], key: str, default: int | None,
+                        idx: int | None = None) -> int:
     """
     Read integer field and enforce > 0.
     """
@@ -197,8 +197,8 @@ def _parse_positive_int(source: Dict[str, Any], key: str, default: Optional[int]
     return value_int
 
 
-def _parse_non_negative_int(source: Dict[str, Any], key: str, default: Optional[int],
-                            idx: Optional[int] = None) -> int:
+def _parse_non_negative_int(source: dict[str, Any], key: str, default: int | None,
+                            idx: int | None = None) -> int:
     """
     Read integer field and enforce >= 0.
     """

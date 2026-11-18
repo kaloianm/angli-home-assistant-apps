@@ -10,7 +10,7 @@ See README.md for the Home Assistant contract and IMPLEMENTATION.md for the arch
 from __future__ import annotations
 
 import traceback
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from gradhermetic_cover_control.config import parse_app_config
 from gradhermetic_cover_control.executor import (
@@ -75,7 +75,7 @@ class GradhermeticCoverControl(hass.Hass):
         self._ready = False
 
         # Last state written to the tilt-mode sensor; see _publish_virtual.
-        self._last_tilt_state: Optional[str] = None
+        self._last_tilt_state: str | None = None
 
         logic = GradhermeticCoverLogic(config.zone, log=self.log)
         self._runtime = CoverRuntime(config=config, logic=logic)
@@ -94,7 +94,7 @@ class GradhermeticCoverControl(hass.Hass):
 
     # -- Startup -----------------------------------------------------------------------------------
 
-    def _seed_startup_state(self, kwargs: Dict[str, Any]) -> None:
+    def _seed_startup_state(self, kwargs: dict[str, Any]) -> None:
         """
         Seed the logic's belief from the real cover's first position reading.
         """
@@ -107,7 +107,7 @@ class GradhermeticCoverControl(hass.Hass):
 
     # -- Command events ----------------------------------------------------------------------------
 
-    def _on_command(self, event_name: str, data: Dict[str, Any], kwargs: Dict[str, Any]) -> None:
+    def _on_command(self, event_name: str, data: dict[str, Any], kwargs: dict[str, Any]) -> None:
         """
         Route a ``gradhermetic_command`` event addressed to this blind into the logic engine.
         """
@@ -121,7 +121,7 @@ class GradhermeticCoverControl(hass.Hass):
         except Exception as exc:
             self._report_error(f"_on_command(data={data!r})", exc)
 
-    def _dispatch_command(self, data: Dict[str, Any]) -> List[Action]:
+    def _dispatch_command(self, data: dict[str, Any]) -> list[Action]:
         """
         Translate a command payload into logic events.
         """
@@ -164,7 +164,7 @@ class GradhermeticCoverControl(hass.Hass):
     # -- Real cover feedback -----------------------------------------------------------------------
 
     def _on_real_cover_state(self, entity: str, attribute: str, old: Any, new: Any,
-                             kwargs: Dict[str, Any]) -> None:
+                             kwargs: dict[str, Any]) -> None:
         """
         Feed controller position/motion feedback into the logic engine, including a missing
         position when the cover goes unavailable.
@@ -176,7 +176,7 @@ class GradhermeticCoverControl(hass.Hass):
         except Exception as exc:
             self._report_error(f"_on_real_cover_state(entity={entity!r})", exc)
 
-    def _on_settle(self, kwargs: Dict[str, Any]) -> None:
+    def _on_settle(self, kwargs: dict[str, Any]) -> None:
         """
         Hand a settle-timer firing to the logic, with the controller state read fresh, since the
         timer exists for the case where a state update never arrived.
@@ -190,7 +190,7 @@ class GradhermeticCoverControl(hass.Hass):
 
     # -- Action dispatch ---------------------------------------------------------------------------
 
-    def _apply_actions(self, actions: List[Action]) -> None:
+    def _apply_actions(self, actions: list[Action]) -> None:
         """
         Translate declarative logic actions one-to-one into AppDaemon side effects.
         """
@@ -227,7 +227,7 @@ class GradhermeticCoverControl(hass.Hass):
         self.log(f"Cover {_describe_command(service, data)}")
         self.call_service(service, entity_id=runtime.config.real_cover, **data)
 
-    def _notify(self, runtime: CoverRuntime, kind: Optional[str], message: Optional[str]) -> None:
+    def _notify(self, runtime: CoverRuntime, kind: str | None, message: str | None) -> None:
         """
         Render a logic notification as a Home Assistant persistent notification.
         """
@@ -240,8 +240,8 @@ class GradhermeticCoverControl(hass.Hass):
             message=f"Cover '{runtime.config.virtual_id}' {message}",
         )
 
-    def _publish_virtual(self, virtual_position: Optional[int], in_tilt: Optional[bool],
-                         motion: Optional[str]) -> None:
+    def _publish_virtual(self, virtual_position: int | None, in_tilt: bool | None,
+                         motion: str | None) -> None:
         """
         Write the position sensor (with its ``motion`` attribute) and, if it changed, the tilt-mode
         sensor.
@@ -276,7 +276,7 @@ class GradhermeticCoverControl(hass.Hass):
 
     # -- Settle timer ------------------------------------------------------------------------------
 
-    def _arm_settle(self, runtime: CoverRuntime, seconds: Optional[float]) -> None:
+    def _arm_settle(self, runtime: CoverRuntime, seconds: float | None) -> None:
         """
         (Re)start the settle timer used as a plan-advancement fallback.
         """
@@ -293,7 +293,7 @@ class GradhermeticCoverControl(hass.Hass):
 
     # -- Safety ------------------------------------------------------------------------------------
 
-    def _read_real_position(self) -> Tuple[Optional[int], bool, Optional[str]]:
+    def _read_real_position(self) -> tuple[int | None, bool, str | None]:
         """
         Read the real cover's current position, motion and direction from Home Assistant.
         """
@@ -337,7 +337,7 @@ class GradhermeticCoverControl(hass.Hass):
         )
 
 
-def _describe_command(service: str, data: Dict[str, Any]) -> str:
+def _describe_command(service: str, data: dict[str, Any]) -> str:
     """
     Render a real-cover service call as a short phrase for the log.
     """
@@ -354,7 +354,7 @@ def _describe_command(service: str, data: Dict[str, Any]) -> str:
             return f"{service} {data or ''}".strip()
 
 
-def _extract_feedback(state: Any) -> Tuple[Optional[int], bool, Optional[str]]:
+def _extract_feedback(state: Any) -> tuple[int | None, bool, str | None]:
     """
     Extract (current_position, is_moving, direction) from a full Home Assistant cover state object.
 
@@ -370,7 +370,7 @@ def _extract_feedback(state: Any) -> Tuple[Optional[int], bool, Optional[str]]:
     return _parse_pct(raw_position), is_moving, direction
 
 
-def _parse_pct(raw: Any) -> Optional[int]:
+def _parse_pct(raw: Any) -> int | None:
     """
     Read a percentage arriving from Home Assistant as a whole percent, or None if it is unreadable.
     """

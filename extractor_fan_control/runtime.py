@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Deque, Optional
+from typing import Any
 
 from extractor_fan_control.config import PairConfig
 from extractor_fan_control.logic import ExtractorFanPairLogic
@@ -27,15 +27,15 @@ class PairRuntime:
     config: PairConfig
 
     logic: ExtractorFanPairLogic
-    light_listener_handle: Optional[Any] = None
-    activation_timer_handle: Optional[Any] = None
-    deadline_timer_handle: Optional[Any] = None
-    keepalive_timer_handle: Optional[Any] = None
-    daily_schedule_handle: Optional[Any] = None
+    light_listener_handle: Any | None = None
+    activation_timer_handle: Any | None = None
+    deadline_timer_handle: Any | None = None
+    keepalive_timer_handle: Any | None = None
+    daily_schedule_handle: Any | None = None
 
     disabled: bool = False
 
-    _fan_command_timestamps: Deque[datetime] = field(default_factory=deque)
+    _fan_command_timestamps: deque[datetime] = field(default_factory=deque)
 
     def record_fan_command(self, now: datetime) -> bool:
         """

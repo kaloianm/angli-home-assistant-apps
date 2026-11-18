@@ -17,8 +17,6 @@ Two facts about the mechanism drive the design:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
-
 from gradhermetic_cover_control.geometry import Zone
 
 # -- Latch belief ----------------------------------------------------------------------------------
@@ -72,7 +70,7 @@ class Belief:
     What the app believes about the blind right now.
     """
 
-    position: Optional[int]
+    position: int | None
     latch: str
     is_moving: bool = False
 
@@ -103,7 +101,7 @@ class Step:
     kind: str
     target: int
     command: str = COMMAND_POSITION
-    command_pct: Optional[int] = None
+    command_pct: int | None = None
 
     @property
     def command_position(self) -> int:
@@ -131,7 +129,7 @@ class Plan:
     """
 
     kind: str
-    steps: Tuple[Step, ...]
+    steps: tuple[Step, ...]
     final_latch: str
 
 
@@ -143,12 +141,12 @@ class Intent:
     """
 
     kind: str
-    virtual_pct: Optional[int] = None
-    direction: Optional[str] = None
-    landing_virtual: Optional[int] = None
+    virtual_pct: int | None = None
+    direction: str | None = None
+    landing_virtual: int | None = None
 
 
-def plan(zone: Zone, belief: Belief, intent: Intent) -> Optional[Plan]:
+def plan(zone: Zone, belief: Belief, intent: Intent) -> Plan | None:
     """
     Compile an intent into a movement plan, or None when there is nothing to do.
     """
@@ -200,7 +198,7 @@ def _plan_close(zone: Zone, belief: Belief) -> Plan:
                 LATCH_UNLATCHED)
 
 
-def _plan_set_position(zone: Zone, belief: Belief, virtual_pct: Optional[int]) -> Optional[Plan]:
+def _plan_set_position(zone: Zone, belief: Belief, virtual_pct: int | None) -> Plan | None:
     """
     Move to an absolute virtual position: a slat angle when latched, a height otherwise.
     """
@@ -212,7 +210,7 @@ def _plan_set_position(zone: Zone, belief: Belief, virtual_pct: Optional[int]) -
     return _height_move(zone, belief, zone.snap_normal_target(virtual_pct, belief.position))
 
 
-def _plan_height_step(zone: Zone, belief: Belief, direction: Optional[str]) -> Optional[Plan]:
+def _plan_height_step(zone: Zone, belief: Belief, direction: str | None) -> Plan | None:
     """
     Nudge the blind's height by one ``height_step_pct`` while it is not latched. A step into the
     ambiguity band continues to the band edge ahead of it.
@@ -237,7 +235,7 @@ def _height_move(zone: Zone, belief: Belief, target: int) -> Plan:
     leave it latched, so it commits ``UNKNOWN``.
     """
     position = belief.position
-    steps: Tuple[Step, ...] = (Step(STEP_MOVE_TO, target), )
+    steps: tuple[Step, ...] = (Step(STEP_MOVE_TO, target), )
     if position is None or target < position:
         steps = _guard_descent(belief, steps)
     if steps[0].command == COMMAND_OPEN:
@@ -254,7 +252,7 @@ def _height_move(zone: Zone, belief: Belief, target: int) -> Plan:
     return Plan(PLAN_NORMAL, steps, LATCH_UNLATCHED)
 
 
-def _plan_enter_tilt(zone: Zone, landing_virtual: Optional[int] = None) -> Plan:
+def _plan_enter_tilt(zone: Zone, landing_virtual: int | None = None) -> Plan:
     """
     The latch sequence: open fully (reference), dip below the lower edge, rise to the upper edge
     (latches), then optionally move to the landing slat angle.
@@ -272,7 +270,7 @@ def _plan_enter_tilt(zone: Zone, landing_virtual: Optional[int] = None) -> Plan:
     return Plan(PLAN_ENTER, tuple(steps), LATCH_LATCHED)
 
 
-def _plan_leave_tilt(zone: Zone, belief: Belief) -> Optional[Plan]:
+def _plan_leave_tilt(zone: Zone, belief: Belief) -> Plan | None:
     """
     Release the latch by driving fully open; satisfied once the blind clears ``release_target``.
 
@@ -285,7 +283,7 @@ def _plan_leave_tilt(zone: Zone, belief: Belief) -> Optional[Plan]:
                 LATCH_UNLATCHED)
 
 
-def _plan_slat_step(zone: Zone, belief: Belief, direction: Optional[str]) -> Optional[Plan]:
+def _plan_slat_step(zone: Zone, belief: Belief, direction: str | None) -> Plan | None:
     """
     Step the slats by ``tilt_step_pct`` of real travel, clamped to the zone. Up (more light) is
     real-downward. A step past either slat edge does nothing.
@@ -309,7 +307,7 @@ def _slat_plan(real_target: int) -> Plan:
     return Plan(PLAN_SLAT, (Step(STEP_MOVE_TO, real_target), ), LATCH_LATCHED)
 
 
-def _guard_descent(belief: Belief, steps: Tuple[Step, ...]) -> Tuple[Step, ...]:
+def _guard_descent(belief: Belief, steps: tuple[Step, ...]) -> tuple[Step, ...]:
     """
     Prefix a descent with a full open unless the latch is known to be released.
     """
@@ -321,7 +319,7 @@ def _guard_descent(belief: Belief, steps: Tuple[Step, ...]) -> Tuple[Step, ...]:
 # -- Invariants ------------------------------------------------------------------------------------
 
 
-def check_plan(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]:
+def check_plan(zone: Zone, belief: Belief, movement: Plan) -> str | None:
     """
     Check a plan against the safety invariants, returning the first violation or None. A violation
     is a planner bug.
@@ -332,7 +330,7 @@ def check_plan(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]:
             or _check_release_claims(zone, belief, movement))
 
 
-def _check_normal_targets(zone: Zone, movement: Plan) -> Optional[str]:
+def _check_normal_targets(zone: Zone, movement: Plan) -> str | None:
     """
     N1: in normal mode no target or commanded position lies strictly inside the ambiguity band.
     """
@@ -347,7 +345,7 @@ def _check_normal_targets(zone: Zone, movement: Plan) -> Optional[str]:
     return None
 
 
-def _check_slat_targets(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]:
+def _check_slat_targets(zone: Zone, belief: Belief, movement: Plan) -> str | None:
     """
     T1: slat moves stay within the zone and are only planned from a LATCHED belief.
     """
@@ -362,7 +360,7 @@ def _check_slat_targets(zone: Zone, belief: Belief, movement: Plan) -> Optional[
     return None
 
 
-def _check_descents(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]:
+def _check_descents(zone: Zone, belief: Belief, movement: Plan) -> str | None:
     """
     L1: a descent below the lower edge is preceded by a full open unless the latch is known clear.
     Tracks commanded positions, since that is where the blind travels.
@@ -382,7 +380,7 @@ def _check_descents(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
     return None
 
 
-def _check_latching(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]:
+def _check_latching(zone: Zone, belief: Belief, movement: Plan) -> str | None:
     """
     E1: the latch belief is only established by the canonical enter sequence.
     """
@@ -408,7 +406,7 @@ def _check_latching(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
     return None
 
 
-def _check_releases(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]:
+def _check_releases(zone: Zone, belief: Belief, movement: Plan) -> str | None:
     """
     X1: leaving tilt is a single upward step that drives fully open, planned only from LATCHED.
     """
@@ -426,7 +424,7 @@ def _check_releases(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]
     return None
 
 
-def _check_release_claims(zone: Zone, belief: Belief, movement: Plan) -> Optional[str]:
+def _check_release_claims(zone: Zone, belief: Belief, movement: Plan) -> str | None:
     """
     R1: a normal plan commits ``UNLATCHED`` only if no position-commanded rise in it ends on the
     release height having possibly crossed the lower edge (see :func:`_height_move`).

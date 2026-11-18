@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Deque, Optional
+from typing import Any
 
 from gradhermetic_cover_control.config import GradhermeticConfig
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
@@ -28,11 +28,11 @@ class CoverRuntime:
     config: GradhermeticConfig
     logic: GradhermeticCoverLogic
 
-    settle_timer_handle: Optional[Any] = None
+    settle_timer_handle: Any | None = None
 
     disabled: bool = False
 
-    _command_timestamps: Deque[datetime] = field(default_factory=deque)
+    _command_timestamps: deque[datetime] = field(default_factory=deque)
 
     def record_command(self, now: datetime) -> bool:
         """
