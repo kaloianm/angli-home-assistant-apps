@@ -123,18 +123,19 @@ slat positions. Outside tilt, virtual = real. Inside, the slat window `[lower, l
 positions; `(landing, upper]` is only the end of the latching rise:
 
 ```text
-slat_position[i] = landing - round(i * (landing - lower) / 3)     i = 0..3
+slat_position[i] = landing - floor(i * (landing - lower) / 3)     i = 0..3
 virtual[i]       = round(i * 100 / 3)                             0, 33, 67, 100
 ```
 
 A virtual value maps to the nearest `virtual[i]`, and a real position to the nearest
-`slat_position[i]`; halves go to the more open one. Slat positions round-trip exactly.
+`slat_position[i]`. Positions and halves both round toward more closed. Slat positions round-trip
+exactly.
 
 Example with `upper = 44`, `lower = 38`, `landing = 42`, `epsilon = 2`, `release = 46`. Band =
 `[36, 46]`:
 
-- Slat positions 42, 41, 39, 38 for virtual 0, 33, 67, 100. Real 40 reads as 67; virtual 50 goes
-  to 39.
+- Slat positions 42, 41, 40, 38 for virtual 0, 33, 67, 100. Real 39 reads as 67; virtual 50 goes
+  to 41.
 - Enter dips to 36, rises to 44 (latches), then moves to the landing.
 - Height targets in `(36, 46)` snap to the nearer edge, ties going up. Steps snap in their direction
   of travel.

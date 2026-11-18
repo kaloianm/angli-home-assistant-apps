@@ -149,9 +149,9 @@ class TestMapping(unittest.TestCase):
         self.assertEqual([0, 33, 67, 100],
                          [self.zone.real_to_virtual(real) for real in self.zone.slat_positions])
 
-    def test_an_uneven_window_rounds_halves_up(self):
-        # A 4% window: 4/3 and 8/3 percent below the landing round to 1 and 3.
-        self.assertEqual((42, 41, 39, 38), _zone(tilt_zone_enter_pct=42).slat_positions)
+    def test_an_uneven_window_rounds_toward_closed(self):
+        # A 4% window: 40.67 and 39.33 round up the blind to 41 and 40.
+        self.assertEqual((42, 41, 40, 38), _zone(tilt_zone_enter_pct=42).slat_positions)
 
     def test_a_slat_position_survives_the_round_trip(self):
         # What is published can be sent back without moving the slats.
@@ -170,19 +170,19 @@ class TestMapping(unittest.TestCase):
                     self.assertEqual(real, zone.virtual_to_real(zone.real_to_virtual(real)))
 
     def test_the_slider_snaps_to_the_nearest_position(self):
-        # Positions sit at virtual 0, 33, 67 and 100; halves go to the more open one.
-        for virtual, real in ((16, 44), (17, 42), (49, 42), (50, 40), (83, 40), (84, 38)):
+        # Positions sit at virtual 0, 33, 67 and 100; halves go to the more closed one.
+        for virtual, real in ((16, 44), (17, 42), (50, 42), (51, 40), (83, 40), (84, 38)):
             with self.subTest(virtual=virtual):
                 self.assertEqual(real, self.zone.virtual_to_real(virtual))
         for virtual in range(0, 101):
             self.assertIn(self.zone.virtual_to_real(virtual), self.zone.slat_positions)
 
     def test_a_real_position_between_two_shows_the_nearer(self):
-        # Equidistant ones go to the more open position.
-        for real, virtual in ((43, 33), (41, 67), (39, 100)):
+        # Equidistant ones go to the more closed position.
+        for real, virtual in ((43, 0), (41, 33), (39, 67)):
             with self.subTest(real=real):
                 self.assertEqual(virtual, self.zone.real_to_virtual(real))
-        self.assertEqual(67, _zone(tilt_zone_enter_pct=42).real_to_virtual(40))
+        self.assertEqual(67, _zone(tilt_zone_enter_pct=42).real_to_virtual(39))
 
     def test_mapping_clamps_outside_range(self):
         self.assertEqual(LOWER, self.zone.virtual_to_real(150))

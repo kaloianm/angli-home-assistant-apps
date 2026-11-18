@@ -323,9 +323,9 @@ class TestInsideTilt(unittest.TestCase):
     def test_set_position_snaps_to_the_nearest_slat_position(self):
         actions = self.logic.on_set_position(50)  # halfway between 33 (real 42) and 67 (real 40)
         self.assertEqual(ActionKind.MOVE_TO, _moves(actions)[0].kind)
-        self.assertEqual(40, _moves(actions)[0].position)
+        self.assertEqual(42, _moves(actions)[0].position)
         run_plan(self.logic, actions)
-        self.assertEqual(67, self.logic.current_virtual_position())
+        self.assertEqual(33, self.logic.current_virtual_position())
 
 
 class TestStepWhileLatched(unittest.TestCase):

@@ -260,7 +260,7 @@ class TestSlatMoves(unittest.TestCase):
         movement = plan(ZONE, _belief(UPPER, Latch.LATCHED),
                         Intent(IntentKind.SET_POSITION, virtual_pct=50))
         self.assertEqual(PlanKind.SLAT, movement.kind)
-        self.assertEqual(40, movement.steps[0].target)
+        self.assertEqual(42, movement.steps[0].target)
 
     def test_step_up_moves_toward_the_open_edge(self):
         # Slat positions are (44, 42, 40, 38); up (more light) is real-downward.

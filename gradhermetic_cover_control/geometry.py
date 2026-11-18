@@ -200,27 +200,28 @@ class Zone:
     def slat_positions(self) -> tuple[int, ...]:
         """
         Real travel position of each slat position, from the entry landing (slat 0%) down to the
-        lower edge (100%): evenly spread over the slat window, halves rounding up.
+        lower edge (100%): evenly spread over the slat window, rounded toward more closed (a higher
+        real position).
         """
         last = SLAT_POSITIONS - 1
-        return tuple(self.enter_landing_real - (2 * index * self.slat_span + last) // (2 * last)
+        return tuple(self.enter_landing_real - index * self.slat_span // last
                      for index in range(SLAT_POSITIONS))
 
     def virtual_to_real(self, virtual: int) -> int:
         """
         Map an in-tilt virtual position (0-100) to the real position of the nearest slat position,
-        halves going to the more open one.
+        halves going to the more closed one.
         """
         last = SLAT_POSITIONS - 1
-        return self.slat_positions[(2 * clamp_pct(virtual) * last + 100) // 200]
+        return self.slat_positions[(2 * clamp_pct(virtual) * last + 99) // 200]
 
     def real_to_virtual(self, real: int) -> int:
         """
         Map an in-tilt real travel position to the virtual value of the nearest slat position,
-        halves going to the more open one.
+        halves going to the more closed one.
         """
         positions = self.slat_positions
-        index = min(range(SLAT_POSITIONS), key=lambda i: (abs(positions[i] - real), -i))
+        index = min(range(SLAT_POSITIONS), key=lambda i: (abs(positions[i] - real), i))
         last = SLAT_POSITIONS - 1
         return (200 * index + last) // (2 * last)
 
