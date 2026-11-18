@@ -160,8 +160,8 @@ class Plan:
 @dataclass(frozen=True)
 class Intent:
     """
-    What the user asked for. ``landing_virtual`` is where an enter sequence finishes (default: the
-    closed edge).
+    What the user asked for. ``landing_virtual`` is where an enter sequence finishes (default: slat
+    0%, the entry landing).
     """
 
     kind: IntentKind
@@ -216,10 +216,10 @@ def _plan_open(zone: Zone, belief: Belief) -> Plan:
 
 def _plan_close(zone: Zone, belief: Belief) -> Plan:
     """
-    Least light: slats parallel when latched, otherwise the blind fully closed.
+    Least light: slats at the entry landing when latched, otherwise the blind fully closed.
     """
     if belief.in_tilt:
-        return _slat_plan(zone.upper)
+        return _slat_plan(zone.enter_landing_real)
     return Plan(PlanKind.NORMAL,
                 _guard_descent(belief, (Step(StepKind.MOVE_TO, 0, CommandKind.CLOSE), )),
                 Latch.UNLATCHED)
@@ -314,19 +314,20 @@ def _plan_leave_tilt(zone: Zone, belief: Belief) -> Plan | None:
 
 def _plan_slat_step(zone: Zone, belief: Belief, direction: Direction | None) -> Plan | None:
     """
-    Step the slats by ``tilt_step_pct`` of real travel, clamped to the zone. Up (more light) is
-    real-downward. A step past either slat edge does nothing.
+    Step the slats by ``tilt_step_pct`` of real travel, clamped to the slat window. Up (more light)
+    is real-downward. A step past either end of the window does nothing.
     """
     if not belief.in_tilt or belief.position is None:
         return None
-    current = min(max(belief.position, zone.lower), zone.upper)
+    closed = zone.enter_landing_real
+    current = min(max(belief.position, zone.lower), closed)
     if direction == Direction.UP:
         if current == zone.lower:
             return None
         return _slat_plan(max(zone.lower, current - zone.tilt_step_pct))
-    if current == zone.upper:
+    if current == closed:
         return None
-    return _slat_plan(min(zone.upper, current + zone.tilt_step_pct))
+    return _slat_plan(min(closed, current + zone.tilt_step_pct))
 
 
 def _slat_plan(real_target: int) -> Plan:

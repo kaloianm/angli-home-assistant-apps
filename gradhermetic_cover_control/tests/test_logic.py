@@ -236,14 +236,14 @@ class TestEnterLanding(unittest.TestCase):
         self.assertEqual(0, logic.current_virtual_position())
 
     def test_a_configured_landing_adds_a_final_in_zone_move(self):
-        # Real 41 is the middle of a [38, 44] zone, i.e. virtual 50.
+        # The landing is slat 0%, whatever real position it is configured at.
         logic = GradhermeticCoverLogic(_config(tilt_zone_enter_pct=41))
         logic.seed_state(100)
         actions = run_plan(logic, logic.on_set_tilt_mode(True))
         # Already fully open, so: dip, latching rise to the closed edge, then the landing.
         self.assertEqual([DIP, UPPER, 41], [move.position for move in _moves(actions)])
         self.assertTrue(logic.in_tilt)
-        self.assertEqual(50, logic.current_virtual_position())
+        self.assertEqual(0, logic.current_virtual_position())
 
     def test_a_landing_on_the_closed_edge_adds_no_step(self):
         # The latching rise already ends there: a fourth command would repeat the setpoint.
@@ -266,7 +266,40 @@ class TestEnterLanding(unittest.TestCase):
         logic.seed_state(80)
         actions = run_plan(logic, logic.on_toggle_tilt_mode())
         self.assertEqual(41, _moves(actions)[-1].position)
-        self.assertEqual(50, logic.current_virtual_position())
+        self.assertEqual(0, logic.current_virtual_position())
+
+
+class TestSlatWindow(unittest.TestCase):
+    """
+    The slat scale runs from the entry landing (0%) down to the lower edge (100%). The upper edge
+    above the landing is only where the latching rise ends.
+    """
+
+    LANDING = 41
+
+    def setUp(self):
+        self.logic = GradhermeticCoverLogic(_config(tilt_zone_enter_pct=self.LANDING))
+        self.logic.seed_state(100)
+        run_plan(self.logic, self.logic.on_set_tilt_mode(True))
+        run_plan(self.logic, self.logic.on_open())  # real LOWER, virtual 100.
+
+    def test_close_goes_to_the_landing_not_the_upper_edge(self):
+        actions = run_plan(self.logic, self.logic.on_close())
+        self.assertTrue(self.logic.in_tilt)
+        self.assertEqual(self.LANDING, self.logic.last_position)
+        self.assertEqual(0, _published(actions)[-1].position)
+
+    def test_the_slider_spans_the_window(self):
+        self.assertEqual(self.LANDING, _moves(self.logic.on_set_position(0))[0].position)
+        run_plan(self.logic, self.logic.on_set_position(0))
+        self.assertEqual(LOWER, _moves(self.logic.on_set_position(100))[0].position)
+
+    def test_steps_toward_closed_stop_at_the_landing(self):
+        for _ in range(self.LANDING - LOWER):
+            run_plan(self.logic, self.logic.on_step(Direction.DOWN))
+        self.assertEqual(self.LANDING, self.logic.last_position)
+        self.assertEqual([], self.logic.on_step(Direction.DOWN))
+        self.assertTrue(self.logic.in_tilt)
 
 
 class TestInsideTilt(unittest.TestCase):
@@ -282,7 +315,7 @@ class TestInsideTilt(unittest.TestCase):
         self.assertEqual(LOWER, self.logic.last_position)
         self.assertEqual(100, _published(actions)[-1].position)
 
-    def test_close_orients_slats_to_upper_edge(self):
+    def test_close_orients_slats_to_the_landing(self):
         run_plan(self.logic, self.logic.on_open())  # move off the closed edge first
         actions = run_plan(self.logic, self.logic.on_close())
         self.assertTrue(self.logic.in_tilt)

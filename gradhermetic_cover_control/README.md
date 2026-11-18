@@ -21,8 +21,8 @@ The virtual cover supports `open_cover`, `close_cover`, `stop_cover`, `toggle` a
 | | Outside tilt mode | In tilt mode |
 |---|---|---|
 | `open_cover` | Fully open (100%) | Slats perpendicular, most light (blind at `tilt_zone_lower_pct`) |
-| `close_cover` | Fully closed (0%) | Slats parallel, least light (blind at `tilt_zone_upper_pct`) |
-| `set_cover_position` | Absolute height, snapped out of the ambiguity band (below) | Slat angle: 100% = `tilt_zone_lower_pct`, 0% = `tilt_zone_upper_pct` |
+| `close_cover` | Fully closed (0%) | Slats at the entry landing, least light (blind at `tilt_zone_enter_pct`) |
+| `set_cover_position` | Absolute height, snapped out of the ambiguity band (below) | Slat angle: 100% = `tilt_zone_lower_pct`, 0% = `tilt_zone_enter_pct` |
 
 In tilt mode the slider is inverted relative to the blind: a higher real position means more closed
 slats. This virtual slat scale exists only on the slider. Every number in the configuration is real
@@ -43,7 +43,8 @@ Fire a `gradhermetic_command` event with `virtual_id` and one of:
 - `command: toggle_tilt_mode`: toggles tilt mode, or cancels an entry or exit in progress.
 - `command: step`, `direction: up|down`:
   1. If anything is moving, stop it.
-  2. Otherwise, in tilt mode, step the slats by `tilt_step_pct`, stopping at the zone edges.
+  2. Otherwise, in tilt mode, step the slats by `tilt_step_pct`, stopping at
+     `tilt_zone_enter_pct` and `tilt_zone_lower_pct`.
   3. Otherwise, step the height to the next multiple of `height_step_pct`, e.g. 37 -> 40 up or
      37 -> 35 down with a step of 5. A step into the ambiguity band continues to the band edge
      ahead of it.
@@ -123,7 +124,7 @@ gradhermetic_living_room:
   # Where entry finishes, inside [lower + 3, upper] so the 4 slat positions are distinct.
   tilt_zone_enter_pct: 42
 
-  # Slat step, 1 .. (upper - lower).
+  # Slat step, 1 .. (enter - lower).
   tilt_step_pct: 2
 
   # Height step outside tilt mode, 1 .. 100.
@@ -152,4 +153,5 @@ descent below this edge while latched.
 
 The latching rise ends with the slats closed, and on many blinds they don't visibly open until a
 couple of percent below the upper edge, so an entry there looks like it did nothing. Set this to
-where the slats are as open as you want tilt mode to start.
+where the slats are as open as you want tilt mode to start. It is slat 0%: tilt mode never closes
+the slats further.

@@ -38,7 +38,7 @@ class TestConfigParsing(unittest.TestCase):
         self.assertEqual(52, config.zone.tilt_zone_release_pct)
         self.assertEqual(52, config.zone.release_target)
         self.assertEqual(41, config.zone.enter_landing_real)
-        self.assertEqual(50, config.zone.enter_landing_virtual)
+        self.assertEqual(0, config.zone.enter_landing_virtual)
         # The band follows the release height, so it must be visible in the summary log line.
         self.assertIn("tilt_zone_release_pct=52", str(config))
         self.assertIn("tilt_zone_enter_pct=41", str(config))

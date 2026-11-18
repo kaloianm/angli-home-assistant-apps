@@ -5,8 +5,9 @@ Zone validation, band predicates, latch-sequence targets, and the only real<->vi
 
 - **real** -- the blind's travel position (0-100) as the actuator reports and accepts it. All
   configured numbers are real.
-- **virtual** -- what the user-facing cover shows: equal to real outside tilt; inside tilt, the zone
-  inverted onto 0-100 (100 = lower edge, most light; 0 = upper edge, least light).
+- **virtual** -- what the user-facing cover shows: equal to real outside tilt; inside tilt, the slat
+  window inverted onto 0-100 (100 = lower edge, most light; 0 = entry landing, least light). The
+  upper edge, above the window, is only where the latching rise ends.
 
 All positions are whole percents. Rounding happens only in :func:`to_whole_pct` (values from Home
 Assistant) and the virtual mapping, which round-trips real positions exactly.
@@ -101,9 +102,9 @@ class Zone:
                              "distinct whole percents")
         if self.tilt_step_pct < 1:
             raise ValueError("tilt_step_pct must be >= 1 so one step moves the actuator")
-        if self.tilt_step_pct > self.span:
-            raise ValueError("tilt_step_pct must be <= tilt_zone_upper_pct - tilt_zone_lower_pct, "
-                             "the real travel the whole tilt zone spans")
+        if self.tilt_step_pct > self.slat_span:
+            raise ValueError("tilt_step_pct must be <= tilt_zone_enter_pct - tilt_zone_lower_pct, "
+                             "the real travel the slat window spans")
         if self.height_step_pct < 1:
             raise ValueError("height_step_pct must be >= 1 so one step moves the actuator")
         if self.height_step_pct > 100:
@@ -133,11 +134,11 @@ class Zone:
         return self.tilt_zone_epsilon_pct
 
     @property
-    def span(self) -> int:
+    def slat_span(self) -> int:
         """
-        Real travel percent between the two zone edges.
+        Real travel percent of the slat window, from the entry landing down to the lower edge.
         """
-        return self.tilt_zone_upper_pct - self.tilt_zone_lower_pct
+        return self.tilt_zone_enter_pct - self.tilt_zone_lower_pct
 
     @property
     def dip_target(self) -> int:
@@ -156,7 +157,8 @@ class Zone:
     @property
     def enter_landing_real(self) -> int:
         """
-        Real travel position the entry sequence finishes on.
+        Real travel position the entry sequence finishes on: slat 0%, the least light tilt mode
+        offers.
         """
         return self.tilt_zone_enter_pct
 
@@ -201,23 +203,24 @@ class Zone:
 
     def virtual_to_real(self, virtual: int) -> int:
         """
-        Map an in-tilt virtual position (0-100) to the nearest real travel position within the zone.
+        Map an in-tilt virtual position (0-100) to the nearest real travel position in the slat
+        window.
 
-        Integer arithmetic with halves rounding up: the offset below the upper edge is
-        ``virtual * span / 100``, rounded.
+        Integer arithmetic with halves rounding up: the offset below the entry landing is
+        ``virtual * slat_span / 100``, rounded.
         """
-        offset = (2 * clamp_pct(virtual) * self.span + 100) // 200
-        return self.upper - offset
+        offset = (2 * clamp_pct(virtual) * self.slat_span + 100) // 200
+        return self.enter_landing_real - offset
 
     def real_to_virtual(self, real: int) -> int:
         """
         Map an in-tilt real travel position to the nearest virtual position (0-100).
 
-        The inverse of :meth:`virtual_to_real`, rounded the same way. Positions outside the zone
-        clamp to the nearer end of the slat scale.
+        The inverse of :meth:`virtual_to_real`, rounded the same way. Positions outside the slat
+        window clamp to the nearer end of the slat scale.
         """
-        depth = self.upper - real
-        return clamp_pct((200 * depth + self.span) // (2 * self.span))
+        depth = self.enter_landing_real - real
+        return clamp_pct((200 * depth + self.slat_span) // (2 * self.slat_span))
 
     def snap_normal_target(self, target: int, current: int | None = None) -> int:
         """

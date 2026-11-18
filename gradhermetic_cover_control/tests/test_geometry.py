@@ -36,7 +36,7 @@ class TestLandmarks(unittest.TestCase):
         self.zone = _zone()
 
     def test_named_targets(self):
-        self.assertEqual(6, self.zone.span)
+        self.assertEqual(6, self.zone.slat_span)
         self.assertEqual(LOWER - EPSILON, self.zone.dip_target)
         self.assertEqual(RELEASE, self.zone.release_target)
         self.assertEqual(self.zone.dip_target, self.zone.band_low)
@@ -55,7 +55,7 @@ class TestLandmarks(unittest.TestCase):
 
     def test_every_landmark_is_a_whole_percent(self):
         zone = _zone(tilt_zone_enter_pct=41)
-        for value in (zone.upper, zone.lower, zone.epsilon, zone.span, zone.dip_target,
+        for value in (zone.upper, zone.lower, zone.epsilon, zone.slat_span, zone.dip_target,
                       zone.release_target, zone.enter_landing_real, zone.enter_landing_virtual,
                       zone.band_low, zone.band_high):
             self.assertIs(int, type(value))
@@ -63,7 +63,17 @@ class TestLandmarks(unittest.TestCase):
     def test_a_configured_landing_is_a_real_position(self):
         zone = _zone(tilt_zone_enter_pct=41)
         self.assertEqual(41, zone.enter_landing_real)
-        self.assertEqual(50, zone.enter_landing_virtual)
+        self.assertEqual(0, zone.enter_landing_virtual)
+
+    def test_the_slat_scale_runs_from_the_landing_to_the_lower_edge(self):
+        zone = _zone(tilt_zone_enter_pct=41)
+        self.assertEqual(3, zone.slat_span)
+        self.assertEqual(41, zone.virtual_to_real(0))
+        self.assertEqual(LOWER, zone.virtual_to_real(100))
+        # Between the landing and the upper edge is only the latching rise: it reads as slat 0%.
+        for real in (42, UPPER):
+            with self.subTest(real=real):
+                self.assertEqual(0, zone.real_to_virtual(real))
 
     def test_the_height_step_is_configurable(self):
         self.assertEqual(5, _zone(height_step_pct=5).height_step_pct)
@@ -271,9 +281,13 @@ class TestValidation(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "tilt_step_pct must be <="):
                     _zone(tilt_step_pct=step)
 
-    def test_a_step_spanning_the_whole_zone_is_accepted(self):
+    def test_a_step_spanning_the_whole_slat_window_is_accepted(self):
         zone = _zone(tilt_step_pct=UPPER - LOWER)
-        self.assertEqual(zone.span, zone.tilt_step_pct)
+        self.assertEqual(zone.slat_span, zone.tilt_step_pct)
+
+    def test_a_step_wider_than_the_slat_window_raises(self):
+        with self.assertRaisesRegex(ValueError, "tilt_step_pct must be <= tilt_zone_enter_pct"):
+            _zone(tilt_zone_enter_pct=41, tilt_step_pct=4)
 
     def test_step_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "tilt_step_pct must be >= 1"):
@@ -346,7 +360,7 @@ class TestValidation(unittest.TestCase):
         self.assertEqual(0, closed.enter_landing_virtual)
         opened = _zone(tilt_zone_enter_pct=LOWER + 3)
         self.assertEqual(LOWER + 3, opened.enter_landing_real)
-        self.assertEqual(50, opened.enter_landing_virtual)
+        self.assertEqual(0, opened.enter_landing_virtual)
 
     def test_a_landing_too_close_to_the_lower_edge_raises(self):
         # Four slat positions from the landing down to the lower edge need three percent of travel.

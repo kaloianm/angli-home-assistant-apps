@@ -200,8 +200,8 @@ class GradhermeticCoverLogic:
         """
         Handle ``cover.close_cover``: least light.
 
-        Outside tilt this closes the blind fully; inside tilt it orients the slats parallel
-        (virtual 0, the upper edge).
+        Outside tilt this closes the blind fully; inside tilt it moves the slats to the entry landing
+        (virtual 0).
         """
         return self._run(Intent(IntentKind.CLOSE))
 
