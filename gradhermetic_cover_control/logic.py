@@ -279,8 +279,8 @@ class GradhermeticCoverLogic:
 
     def on_toggle_tilt_mode(self) -> List[Action]:
         """
-        Toggle tilt mode (dashboard tilt helper). Cancels an entry or exit in
-        flight; otherwise toggles what the dashboard shows (:meth:`_displayed_in_tilt`).
+        Toggle tilt mode. Cancels an entry or exit in flight; otherwise toggles what the dashboard
+        shows (:meth:`_displayed_in_tilt`).
         """
         if self._disabled:
             return []
@@ -336,7 +336,7 @@ class GradhermeticCoverLogic:
 
     def _describe_step_limit(self, direction: str) -> str:
         """
-        Why a step press has nowhere to go, for the log.
+        Why a step has nowhere to go, for the log.
         """
         if self._position is None:
             return "the blind's position is unknown"

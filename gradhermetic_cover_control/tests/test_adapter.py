@@ -119,14 +119,6 @@ class FakeApp(GradhermeticCoverControl):
         payload.update(data)
         self._deliver_event(COMMAND_EVENT, payload)
 
-    def press(self, entity, old="2026-04-15T11:00:00+00:00", new="2026-04-15T12:00:00+00:00"):
-        """
-        Deliver an ``input_button`` state change to the adapter.
-        """
-        for watched, callback in self.state_listeners:
-            if watched == entity:
-                callback(entity, "state", old, new, {})
-
     def report(self, position, state="open"):
         """
         Deliver a real-cover state update, updating what ``get_state`` would return too.
@@ -187,11 +179,7 @@ class TestInitialize(unittest.TestCase):
 
     def test_wires_every_listener(self):
         app = FakeApp().start(seed_startup_state=False)
-        watched = [entity for entity, _ in app.state_listeners]
-        self.assertIn(REAL_COVER, watched)
-        self.assertIn(f"input_button.gradhermetic_{VIRTUAL_ID}_step_up", watched)
-        self.assertIn(f"input_button.gradhermetic_{VIRTUAL_ID}_step_down", watched)
-        self.assertIn(f"input_button.gradhermetic_{VIRTUAL_ID}_tilt", watched)
+        self.assertEqual([REAL_COVER], [entity for entity, _ in app.state_listeners])
         self.assertEqual([COMMAND_EVENT], [e for e, _ in app.event_listeners])
         self.assertEqual([STARTUP_DELAY_SECONDS], [s for _, s in app.timers.values()])
 
@@ -229,7 +217,8 @@ class TestStartupSeed(unittest.TestCase):
     def test_commands_before_the_state_is_seeded_are_ignored(self):
         app = FakeApp(state=cover_state(80)).start(seed_startup_state=False)
         app.command_event(command="close")
-        app.press(f"input_button.gradhermetic_{VIRTUAL_ID}_tilt")
+        app.command_event(command="toggle_tilt_mode")
+        app.command_event(command="step", direction="up")
         self.assertEqual([], app.service_calls)
 
     def test_a_failing_startup_seed_disables_and_notifies(self):
@@ -308,53 +297,47 @@ class TestCommandEvents(unittest.TestCase):
         self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
 
 
-class TestButtonPresses(unittest.TestCase):
+class TestStepAndToggleCommands(unittest.TestCase):
 
     def setUp(self):
         self.app = FakeApp(state=cover_state(80)).start()
-        self.tilt = f"input_button.gradhermetic_{VIRTUAL_ID}_tilt"
-        self.step_up = f"input_button.gradhermetic_{VIRTUAL_ID}_step_up"
 
-    def test_the_tilt_button_toggles_tilt_mode(self):
-        self.app.press(self.tilt)
+    def test_toggle_tilt_mode_enters_tilt(self):
+        self.app.command_event(command="toggle_tilt_mode")
         self.assertEqual(1, len(self.app.calls_to("cover/open_cover")))
 
-    def test_a_transition_out_of_unknown_is_not_a_press(self):
-        self.app.press(self.tilt, old="unknown")
-        self.app.press(self.tilt, old=None)
-        self.app.press(self.tilt, new="unavailable")
-        self.assertEqual([], self.app.service_calls)
-
-    def test_an_unchanged_timestamp_is_not_a_press(self):
-        stamp = "2026-04-15T12:00:00+00:00"
-        self.app.press(self.tilt, old=stamp, new=stamp)
-        self.assertEqual([], self.app.service_calls)
-
-    def test_a_step_press_nudges_the_height_when_not_latched(self):
-        self.app.press(self.step_up)
+    def test_a_step_nudges_the_height_when_not_latched(self):
+        self.app.command_event(command="step", direction="up")
         self.assertEqual([{
             "entity_id": REAL_COVER,
             "position": 82
         }], self.app.calls_to("cover/set_cover_position"))
         self.app.report(82)
-        self.app.press(f"input_button.gradhermetic_{VIRTUAL_ID}_step_down")
+        self.app.command_event(command="step", direction="down")
         self.assertEqual({
             "entity_id": REAL_COVER,
             "position": 80
         },
                          self.app.calls_to("cover/set_cover_position")[-1])
 
-    def test_a_step_press_never_enters_tilt(self):
-        self.app.press(f"input_button.gradhermetic_{VIRTUAL_ID}_step_down")
+    def test_a_step_never_enters_tilt(self):
+        self.app.command_event(command="step", direction="down")
         self.assertEqual([], self.app.calls_to("cover/open_cover"))
         self.assertFalse(self.app._runtime.logic.in_tilt)  # pylint: disable=protected-access
 
-    def test_a_step_press_while_moving_stops_the_blind(self):
+    def test_a_step_while_moving_stops_the_blind(self):
         self.app.command_event(command="close")
         self.app.report(70, state="closing")
-        self.app.press(self.step_up)
+        self.app.command_event(command="step", direction="up")
         self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/stop_cover"))
         self.assertEqual([], self.app.calls_to("cover/set_cover_position"))
+
+    def test_a_step_without_a_valid_direction_is_ignored_not_fatal(self):
+        for direction in (None, "sideways"):
+            with self.subTest(direction=direction):
+                self.app.command_event(command="step", direction=direction)
+                self.assertEqual([], self.app.service_calls)
+                self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
 
 
 class TestActionTranslation(unittest.TestCase):

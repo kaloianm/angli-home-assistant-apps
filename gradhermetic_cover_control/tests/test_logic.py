@@ -286,7 +286,7 @@ class TestEnterLanding(unittest.TestCase):
                     _config(tilt_zone_enter_pct=landing)
 
     def test_the_toggle_lands_on_the_configured_landing_too(self):
-        # The tilt helper goes through the toggle; it is the same entry.
+        # The toggle is the same entry.
         logic = GradhermeticCoverLogic(_config(tilt_zone_enter_pct=41))
         logic.seed_state(80)
         actions = run_plan(logic, logic.on_toggle_tilt_mode())
@@ -320,10 +320,9 @@ class TestInsideTilt(unittest.TestCase):
         self.assertEqual(41, _moves(actions)[0].position)  # 44 - 0.5 * 6
 
 
-class TestStepHelperWhileLatched(unittest.TestCase):
+class TestStepWhileLatched(unittest.TestCase):
     """
-    The ``..._step_up`` / ``..._step_down`` helpers while latched: slat steps clamped at both
-    edges, and a stop whenever anything is moving.
+    Steps while latched: slat steps clamped at both edges, and a stop whenever anything is moving.
     """
 
     def setUp(self):
@@ -369,10 +368,10 @@ class TestStepHelperWhileLatched(unittest.TestCase):
         self.assertEqual(LATCH_LATCHED, self.logic.latch)
 
 
-class TestStepHelperWhileNotLatched(unittest.TestCase):
+class TestStepWhileNotLatched(unittest.TestCase):
     """
-    The same helpers outside tilt step the height by ``height_step_pct``, in either direction,
-    from anywhere -- and stop the blind if it is moving. Entering tilt is the tilt helper's job.
+    Steps outside tilt step the height by ``height_step_pct``, in either direction, from anywhere --
+    and stop the blind if it is moving. Entering tilt is the toggle's job.
     """
 
     def setUp(self):
@@ -775,7 +774,7 @@ class TestConfirmedBugRegressions(unittest.TestCase):
 
     def test_unavailable_clears_motion_belief(self):
         # B3: the position and motion beliefs used to survive the cover going unavailable, so a
-        # short press would "stop" a blind that was not moving and guards reasoned from a stale
+        # step would "stop" a blind that was not moving and guards reasoned from a stale
         # position.
         self.logic.seed_state(80)
         self.logic.on_real_position(70, True)
@@ -980,7 +979,7 @@ class TestPublishing(unittest.TestCase):
 
 
 class TestTiltToggle(unittest.TestCase):
-    """The stateless toggle behind the tilt helper."""
+    """The stateless toggle."""
 
     def setUp(self):
         self.logic = GradhermeticCoverLogic(_config())
@@ -1103,8 +1102,8 @@ class TestStopIsOnlySentWhenSomethingMoves(unittest.TestCase):
         self.logic.on_real_position(60, False)
         self.assertIn(ACTION_STOP, _kinds(self.logic.on_stop()))
 
-    def test_a_step_press_in_the_recheck_window_does_not_nudge_the_blind(self):
-        # The step press routes through on_stop, so it inherits the same rule.
+    def test_a_step_in_the_recheck_window_does_not_nudge_the_blind(self):
+        # The step routes through on_stop, so it inherits the same rule.
         self.logic.on_close()
         self.logic.on_real_position(70, True, DIRECTION_DOWN)
         self.logic.on_real_position(65, False)

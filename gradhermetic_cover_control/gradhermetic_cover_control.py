@@ -1,9 +1,9 @@
 """
 AppDaemon adapter for GradhermeticCoverControl.
 
-Transport only: listens for template-cover command events, step/tilt button presses and real-cover
-state changes, feeds them to the pure core (:mod:`logic`), and translates the resulting
-:class:`Action` values into service calls and ``set_state`` updates. Makes no decisions.
+Transport only: listens for ``gradhermetic_command`` events and real-cover state changes, feeds
+them to the pure core (:mod:`logic`), and translates the resulting :class:`Action` values into
+service calls and ``set_state`` updates. Makes no decisions.
 See README.md for the Home Assistant contract and IMPLEMENTATION.md for the architecture.
 """
 
@@ -69,9 +69,6 @@ class GradhermeticCoverControl(hass.Hass):
         self._config = config
         self._position_entity = f"sensor.gradhermetic_{config.virtual_id}_position"
         self._tilt_mode_entity = f"binary_sensor.gradhermetic_{config.virtual_id}_tilt_mode"
-        self._step_up_button = f"input_button.gradhermetic_{config.virtual_id}_step_up"
-        self._step_down_button = f"input_button.gradhermetic_{config.virtual_id}_step_down"
-        self._tilt_button = f"input_button.gradhermetic_{config.virtual_id}_tilt"
         # Commands are ignored until the first position reading has seeded the belief the safety
         # guards are derived from.
         self._ready = False
@@ -88,11 +85,6 @@ class GradhermeticCoverControl(hass.Hass):
 
         self.listen_state(self._on_real_state, config.real_cover, attribute="all")
         self.listen_event(self._on_command, COMMAND_EVENT)
-
-        # Dashboard step/tilt input_button helpers; each press updates the helper's timestamp state.
-        self.listen_state(self._on_step_button, self._step_up_button)
-        self.listen_state(self._on_step_button, self._step_down_button)
-        self.listen_state(self._on_tilt_button, self._tilt_button)
 
         self.run_in(self._seed_startup_state, STARTUP_DELAY_SECONDS)
 
@@ -154,6 +146,14 @@ class GradhermeticCoverControl(hass.Hass):
                 self.log("Ignoring set_tilt_mode without 'enabled'", level="WARNING")
                 return []
             return runtime.logic.on_set_tilt_mode(_as_bool(data["enabled"]))
+        if command == "toggle_tilt_mode":
+            return runtime.logic.on_toggle_tilt_mode()
+        if command == "step":
+            direction = data.get("direction")
+            if direction not in (DIRECTION_UP, DIRECTION_DOWN):
+                self.log(f"Ignoring step with invalid direction {direction!r}", level="WARNING")
+                return []
+            return runtime.logic.on_step(direction)
         self.log(f"Ignoring unknown command {command!r}", level="WARNING")
         return []
 
@@ -183,53 +183,6 @@ class GradhermeticCoverControl(hass.Hass):
             self._apply_actions(self._runtime.logic.on_settle_timer(position, is_moving, direction))
         except Exception as exc:
             self._report_error("_on_settle", exc)
-
-    # -- Dashboard step/tilt buttons ---------------------------------------------------------------
-
-    def _on_step_button(self, entity: str, attribute: str, old: Any, new: Any,
-                        kwargs: Dict[str, Any]) -> None:
-        """
-        Route an ``input_button`` step press to the step logic, up or down by which helper fired.
-        """
-        try:
-            if not self._is_button_press(old, new):
-                return
-            if not self._ready:
-                self.log("Ignoring step press before startup state is seeded")
-                return
-            direction = DIRECTION_UP if entity == self._step_up_button else DIRECTION_DOWN
-            self._apply_actions(self._runtime.logic.on_step(direction))
-        except Exception as exc:
-            self._report_error(f"_on_step_button(entity={entity!r})", exc)
-
-    def _on_tilt_button(self, entity: str, attribute: str, old: Any, new: Any,
-                        kwargs: Dict[str, Any]) -> None:
-        """
-        Toggle tilt mode from the ``input_button`` tilt helper.
-        """
-        try:
-            if not self._is_button_press(old, new):
-                return
-            if not self._ready:
-                self.log("Ignoring tilt press before startup state is seeded")
-                return
-            self._apply_actions(self._runtime.logic.on_toggle_tilt_mode())
-        except Exception as exc:
-            self._report_error("_on_tilt_button", exc)
-
-    @staticmethod
-    def _is_button_press(old: Any, new: Any) -> bool:
-        """
-        Whether an ``input_button`` state change represents a real press.
-
-        A real press changes one timestamp to another. Transitions into or out of
-        unknown/unavailable/None (startup, helper reload, reconnect) are not presses.
-        """
-        if new in (None, "unknown", "unavailable"):
-            return False
-        if old in (None, "unknown", "unavailable"):
-            return False
-        return new != old
 
     # -- Action dispatch ---------------------------------------------------------------------------
 

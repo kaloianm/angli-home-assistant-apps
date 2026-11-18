@@ -616,7 +616,7 @@ class TestAlternateGeometries(ModelTestCase):
 
 
 class TestHeightSteps(ModelTestCase):
-    """Step presses outside tilt walk the blind through its whole travel, band included."""
+    """Steps outside tilt walk the blind through its whole travel, band included."""
 
     def test_stepping_down_from_the_top_reaches_the_bottom(self):
         harness = fresh(100)
@@ -659,7 +659,7 @@ class TestHeightSteps(ModelTestCase):
         self.assertEqual(2, harness.commands)
         self.assert_nominal(harness)
 
-    def test_a_step_press_mid_move_stops_the_blind(self):
+    def test_a_step_mid_move_stops_the_blind(self):
         harness = fresh(80, stride=8)
         harness.run_partial(harness.logic.on_close(), 2)
         harness.run(harness.logic.on_step(DIRECTION_UP))

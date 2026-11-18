@@ -33,24 +33,21 @@ blind travel.
 silently, so height moves never stop inside it. A target inside snaps to the nearer edge, or to the
 far edge if the blind already rests on the nearer one.
 
-### Tilt mode
+### Tilt mode and steps
 
-Fire a `gradhermetic_command` event with `virtual_id`, `command: set_tilt_mode` and
-`enabled: true|false`. Entering a mode the blind is already in, or already entering, does nothing.
-Asking for the opposite of a sequence in progress stops it where it is.
+Fire a `gradhermetic_command` event with `virtual_id` and one of:
 
-### Dashboard buttons
-
-The app listens to three `input_button` helpers per blind:
-
-- `..._tilt` toggles tilt mode, or cancels an entry or exit in progress.
-- `..._step_up` / `..._step_down`:
+- `command: set_tilt_mode`, `enabled: true|false`. Entering a mode the blind is already in, or
+  already entering, does nothing. Asking for the opposite of a sequence in progress stops it where
+  it is.
+- `command: toggle_tilt_mode`: toggles tilt mode, or cancels an entry or exit in progress.
+- `command: step`, `direction: up|down`:
   1. If anything is moving, stop it.
   2. Otherwise, in tilt mode, step the slats by `tilt_step_pct`, stopping at the zone edges.
   3. Otherwise, step the height by `height_step_pct`. A step into the ambiguity band continues to
      the band edge ahead of it.
 
-A step never enters tilt mode. A step with nowhere to go is logged and ignored.
+  A step never enters tilt mode. A step with nowhere to go is logged and ignored.
 
 ### Published entities
 
@@ -58,7 +55,7 @@ A step never enters tilt mode. A step with nowhere to go is logged and ignored.
   `closing` / `idle`). Updated during travel. `unavailable` when the real position is unreadable.
 - `binary_sensor.gradhermetic_<id>_tilt_mode`: `on` while in tilt mode, which is how you know whether
   the position above is a slat angle or a height. A tilt toggle on a dashboard should read this for
-  its label, since the `..._tilt` button has no state.
+  its label.
 
 During an entry the cover stays in height mode until the mechanism actually latches. An exit switches
 to height mode immediately.

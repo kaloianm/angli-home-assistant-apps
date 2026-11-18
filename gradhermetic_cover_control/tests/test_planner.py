@@ -305,7 +305,7 @@ class TestSlatMoves(unittest.TestCase):
 
 
 class TestHeightStep(unittest.TestCase):
-    """A step press outside tilt nudges the height by ``height_step_pct``, skipping the band."""
+    """A step outside tilt nudges the height by ``height_step_pct``, skipping the band."""
 
     def _step(self, position, direction, latch=LATCH_UNLATCHED, zone=ZONE):
         return plan(zone, _belief(position, latch), Intent(INTENT_HEIGHT_STEP, direction=direction))

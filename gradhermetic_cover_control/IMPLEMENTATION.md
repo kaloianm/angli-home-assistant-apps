@@ -26,8 +26,8 @@ The core returns `Action`s, and the adapter translates them one-to-one:
 | `arm_settle_timer` / `cancel_settle_timer` | `run_in` / `cancel_timer` |
 | `notify` | persistent notification |
 
-The adapter also filters events, decodes button presses, ignores commands until the startup state
-is seeded, applies the rate limit, and wraps callbacks in the error boundary.
+The adapter also filters events, ignores commands until the startup state is seeded, applies the
+rate limit, and wraps callbacks in the error boundary.
 
 ## Belief
 
@@ -175,22 +175,31 @@ The position is sent as a string because AppDaemon drops a falsy `0`.
 
 ## Home Assistant Wiring
 
-No MQTT broker. A template cover forwards commands as `gradhermetic_command` events. The app
-publishes the two entities itself, and `input_button` helpers carry step and tilt presses. All live
-in the private HA config repo.
+No MQTT broker. Every command arrives as a `gradhermetic_command` event: a template cover forwards
+the cover services, and a script lets dashboards send the rest. The app publishes the two entities
+itself. All live in the private HA config repo.
 
-### `input_button` helpers
+### Script
+
+A dashboard can only call actions, not fire events, so one shared script does it for step and
+toggle chips, e.g. `{virtual_id: living_room, command: step, direction: up}`.
 
 ```yaml
-gradhermetic_living_room_step_up:
-  name: Living Room Blind Step Up
-  icon: mdi:chevron-up
-gradhermetic_living_room_step_down:
-  name: Living Room Blind Step Down
-  icon: mdi:chevron-down
-gradhermetic_living_room_tilt:
-  name: Living Room Blind Slat Mode
-  icon: mdi:blinds-horizontal
+gradhermetic_command:
+  alias: "Gradhermetic Command"
+  mode: parallel
+  fields:
+    virtual_id:
+      required: true
+    command:
+      required: true
+    direction: {}
+  sequence:
+    - event: gradhermetic_command
+      event_data:
+        virtual_id: "{{ virtual_id }}"
+        command: "{{ command }}"
+        direction: "{{ direction | default(none) }}"
 ```
 
 ### Template cover
@@ -248,7 +257,7 @@ python3 -m unittest discover -s gradhermetic_cover_control/tests -t . -v
 | `test_executor.py` | Skip-if-satisfied, stale-feedback immunity, every settle-timer path, the recheck |
 | `test_logic.py` | Event surface, belief transitions, replacement, step rule, publishing, tilt toggle, named regressions |
 | `test_config.py`, `test_runtime.py` | `apps.yaml` parsing, rate limiter |
-| `test_adapter.py` | The adapter against a fake `hass.Hass`: wiring, filtering, startup gate, malformed input, button edges, action translation, rate limit, error boundary |
+| `test_adapter.py` | The adapter against a fake `hass.Hass`: wiring, filtering, startup gate, malformed input, action translation, rate limit, error boundary |
 | `simulator.py`, `test_model.py` | Whole-app model tests, below |
 
 `simulator.py` is an independent model of the mechanism, as pessimistic as the hardware allows:
