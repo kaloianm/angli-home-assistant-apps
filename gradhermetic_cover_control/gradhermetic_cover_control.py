@@ -123,8 +123,6 @@ class GradhermeticCoverControl(hass.Hass):
             case "stop":
                 return runtime.logic.on_stop()
             case "set_position":
-                # Any automation can fire this event, so a malformed payload is ignored rather than
-                # raised into _report_error, which would disable the blind.
                 raw_position = data.get("position")
                 position = _parse_pct(raw_position)
                 if position is None:
@@ -133,10 +131,11 @@ class GradhermeticCoverControl(hass.Hass):
                     return []
                 return runtime.logic.on_set_position(position)
             case "set_tilt_mode":
-                if data.get("enabled") is None:
+                enabled = data.get("enabled")
+                if enabled is None:
                     self.log("Ignoring set_tilt_mode without 'enabled'", level="WARNING")
                     return []
-                return runtime.logic.on_set_tilt_mode(_as_bool(data["enabled"]))
+                return runtime.logic.on_set_tilt_mode(_as_bool(enabled))
             case "toggle_tilt_mode":
                 return runtime.logic.on_toggle_tilt_mode()
             case "step":
