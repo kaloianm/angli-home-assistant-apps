@@ -17,8 +17,7 @@ UPPER = 44
 LOWER = 38
 RELEASE = 46
 ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=2,
-            tilt_zone_release_pct=RELEASE, tilt_step_pct=2, tilt_zone_enter_pct=UPPER,
-            height_step_pct=2)
+            tilt_zone_release_pct=RELEASE, tilt_zone_enter_pct=UPPER, height_step_pct=2)
 
 
 def _kinds(outcome):
@@ -215,7 +214,7 @@ class TestVirtualPosition(unittest.TestCase):
         self.assertEqual(41, virtual_position(ZONE, Latch.UNKNOWN, 41))
 
     def test_latched_publishes_the_inverted_zone_mapping(self):
-        self.assertEqual(50, virtual_position(ZONE, Latch.LATCHED, 41))
+        self.assertEqual(67, virtual_position(ZONE, Latch.LATCHED, 40))
         self.assertEqual(ZONE.real_to_virtual(43), virtual_position(ZONE, Latch.LATCHED, 43))
 
     def test_the_executor_never_publishes(self):

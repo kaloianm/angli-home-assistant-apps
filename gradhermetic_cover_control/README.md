@@ -22,11 +22,12 @@ The virtual cover supports `open_cover`, `close_cover`, `stop_cover`, `toggle` a
 |---|---|---|
 | `open_cover` | Fully open (100%) | Slats perpendicular, most light (blind at `tilt_zone_lower_pct`) |
 | `close_cover` | Fully closed (0%) | Slats at the entry landing, least light (blind at `tilt_zone_enter_pct`) |
-| `set_cover_position` | Absolute height, snapped out of the ambiguity band (below) | Slat angle: 100% = `tilt_zone_lower_pct`, 0% = `tilt_zone_enter_pct` |
+| `set_cover_position` | Absolute height, snapped out of the ambiguity band (below) | Nearest slat position (below) |
 
-In tilt mode the slider is inverted relative to the blind: a higher real position means more closed
-slats. This virtual slat scale exists only on the slider. Every number in the configuration is real
-blind travel.
+In tilt mode the slats have 4 positions, spread evenly from `tilt_zone_enter_pct` (0%) down to
+`tilt_zone_lower_pct` (100%) and shown as 0, 33, 67 and 100%. The slider is inverted relative to
+the blind: a higher real position means more closed slats. This virtual slat scale exists only on
+the slider. Every number in the configuration is real blind travel.
 
 **The ambiguity band** runs from `tilt_zone_lower_pct - tilt_zone_epsilon_pct` to
 `tilt_zone_release_pct`. A latched mechanism can rest anywhere in it, and rising into it can latch
@@ -43,8 +44,7 @@ Fire a `gradhermetic_command` event with `virtual_id` and one of:
 - `command: toggle_tilt_mode`: toggles tilt mode, or cancels an entry or exit in progress.
 - `command: step`, `direction: up|down`:
   1. If anything is moving, stop it.
-  2. Otherwise, in tilt mode, step the slats by `tilt_step_pct`, stopping at
-     `tilt_zone_enter_pct` and `tilt_zone_lower_pct`.
+  2. Otherwise, in tilt mode, move the slats to the next slat position.
   3. Otherwise, step the height to the next multiple of `height_step_pct`, e.g. 37 -> 40 up or
      37 -> 35 down with a step of 5. A step into the ambiguity band continues to the band edge
      ahead of it.
@@ -110,25 +110,22 @@ gradhermetic_living_room:
   virtual_id: living_room
   virtual_name: "Living Room Blind"
 
-  # Tilt zone edges: upper = slats closed, lower = slats fully open.
-  tilt_zone_upper_pct: 44
+  # Tilt zone edges: lower = slats fully open, upper = slats closed.
   tilt_zone_lower_pct: 38
+  tilt_zone_upper_pct: 45
 
-  # How far below the lower edge the entry dips. >= 1.
-  tilt_zone_epsilon_pct: 2
+  # Where entry finishes, inside [lower + 3, upper] so the 4 slat positions are distinct.
+  tilt_zone_enter_pct: 41
 
   # Measured height at which the latch releases; > upper, < 100. Also the top of the
   # ambiguity band.
-  tilt_zone_release_pct: 50
-
-  # Where entry finishes, inside [lower + 3, upper] so the 4 slat positions are distinct.
-  tilt_zone_enter_pct: 42
-
-  # Slat step, 1 .. (enter - lower).
-  tilt_step_pct: 2
+  tilt_zone_release_pct: 55
 
   # Height step outside tilt mode, 1 .. 100.
-  height_step_pct: 2
+  height_step_pct: 5
+
+  # How far below the lower edge the entry dips. >= 1.
+  tilt_zone_epsilon_pct: 1
 ```
 
 The band (`lower - epsilon` to `release`) must stay strictly inside 0-100, so a blind resting on an

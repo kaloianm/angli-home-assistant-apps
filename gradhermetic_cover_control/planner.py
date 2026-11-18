@@ -314,20 +314,17 @@ def _plan_leave_tilt(zone: Zone, belief: Belief) -> Plan | None:
 
 def _plan_slat_step(zone: Zone, belief: Belief, direction: Direction | None) -> Plan | None:
     """
-    Step the slats by ``tilt_step_pct`` of real travel, clamped to the slat window. Up (more light)
-    is real-downward. A step past either end of the window does nothing.
+    Move the slats to the next slat position in the step's direction. Up (more light) is
+    real-downward. A step past either end of the slat window does nothing.
     """
-    if not belief.in_tilt or belief.position is None:
+    position = belief.position
+    if not belief.in_tilt or position is None:
         return None
-    closed = zone.enter_landing_real
-    current = min(max(belief.position, zone.lower), closed)
     if direction == Direction.UP:
-        if current == zone.lower:
-            return None
-        return _slat_plan(max(zone.lower, current - zone.tilt_step_pct))
-    if current == closed:
-        return None
-    return _slat_plan(min(closed, current + zone.tilt_step_pct))
+        ahead = [real for real in zone.slat_positions if real < position]
+        return _slat_plan(max(ahead)) if ahead else None
+    ahead = [real for real in zone.slat_positions if real > position]
+    return _slat_plan(min(ahead)) if ahead else None
 
 
 def _slat_plan(real_target: int) -> Plan:

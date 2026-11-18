@@ -6,14 +6,12 @@ from gradhermetic_cover_control.geometry import (
     to_whole_pct,
 )
 
-# Geometry used throughout the suite: zone [38, 44], epsilon 2, release 46, step 2 real travel
-# percent. Span = 6, and the ambiguity band is [36, 46]. Every configured number here -- STEP
-# included -- is a whole percent of real blind travel.
+# Geometry used throughout the suite: zone [38, 44], epsilon 2, release 46. Span = 6, and the
+# ambiguity band is [36, 46]. Every configured number here is a whole percent of real blind travel.
 UPPER = 44
 LOWER = 38
 EPSILON = 2
 RELEASE = 46
-STEP = 2
 
 
 def _zone(**overrides):
@@ -22,7 +20,6 @@ def _zone(**overrides):
         "tilt_zone_lower_pct": LOWER,
         "tilt_zone_epsilon_pct": EPSILON,
         "tilt_zone_release_pct": RELEASE,
-        "tilt_step_pct": STEP,
         "tilt_zone_enter_pct": UPPER,
         "height_step_pct": 2,
     }
@@ -147,35 +144,45 @@ class TestMapping(unittest.TestCase):
         self.assertEqual(100, self.zone.real_to_virtual(LOWER))
         self.assertEqual(0, self.zone.real_to_virtual(UPPER))
 
-    def test_midpoint(self):
-        self.assertEqual(41, self.zone.virtual_to_real(50))
-        self.assertEqual(50, self.zone.real_to_virtual(41))
+    def test_four_positions_spread_evenly_over_the_window(self):
+        self.assertEqual((44, 42, 40, 38), self.zone.slat_positions)
+        self.assertEqual([0, 33, 67, 100],
+                         [self.zone.real_to_virtual(real) for real in self.zone.slat_positions])
 
-    def test_a_real_position_survives_the_round_trip(self):
-        # The slat scale shows a whole percent for every real position, and reading it back lands on
-        # the same real position -- what is published can be sent back without moving the slats.
-        for real in range(LOWER, UPPER + 1):
+    def test_an_uneven_window_rounds_halves_up(self):
+        # A 4% window: 4/3 and 8/3 percent below the landing round to 1 and 3.
+        self.assertEqual((42, 41, 39, 38), _zone(tilt_zone_enter_pct=42).slat_positions)
+
+    def test_a_slat_position_survives_the_round_trip(self):
+        # What is published can be sent back without moving the slats.
+        for real in self.zone.slat_positions:
             with self.subTest(real=real):
                 self.assertEqual(real, self.zone.virtual_to_real(self.zone.real_to_virtual(real)))
 
-    def test_the_round_trip_holds_on_every_zone(self):
-        # The argument: one real percent is at least 100 / span >= 1 virtual percent wide, so a
-        # rounded virtual value is always within half a real percent of where it came from.
+    def test_the_positions_are_distinct_and_round_trip_on_every_window(self):
         for lower in range(2, 98, 7):
-            for upper in range(lower + 3, 98, 5):
-                zone = _zone(tilt_zone_lower_pct=lower, tilt_zone_upper_pct=upper,
-                             tilt_zone_epsilon_pct=1, tilt_zone_release_pct=upper + 1,
-                             tilt_step_pct=1, tilt_zone_enter_pct=upper, height_step_pct=1)
-                for real in range(lower, upper + 1):
+            for enter in range(lower + 3, 98, 5):
+                zone = _zone(tilt_zone_lower_pct=lower, tilt_zone_upper_pct=enter,
+                             tilt_zone_epsilon_pct=1, tilt_zone_release_pct=enter + 1,
+                             tilt_zone_enter_pct=enter, height_step_pct=1)
+                self.assertEqual(4, len(set(zone.slat_positions)))
+                for real in zone.slat_positions:
                     self.assertEqual(real, zone.virtual_to_real(zone.real_to_virtual(real)))
 
-    def test_every_virtual_position_maps_to_the_nearest_real_one(self):
-        # Span 6: each real percent is 16.67 virtual percent wide, halves rounding toward open.
-        self.assertEqual(UPPER, self.zone.virtual_to_real(8))
-        self.assertEqual(UPPER - 1, self.zone.virtual_to_real(9))
-        self.assertEqual(17, self.zone.real_to_virtual(UPPER - 1))
+    def test_the_slider_snaps_to_the_nearest_position(self):
+        # Positions sit at virtual 0, 33, 67 and 100; halves go to the more open one.
+        for virtual, real in ((16, 44), (17, 42), (49, 42), (50, 40), (83, 40), (84, 38)):
+            with self.subTest(virtual=virtual):
+                self.assertEqual(real, self.zone.virtual_to_real(virtual))
         for virtual in range(0, 101):
-            self.assertTrue(self.zone.in_zone(self.zone.virtual_to_real(virtual)))
+            self.assertIn(self.zone.virtual_to_real(virtual), self.zone.slat_positions)
+
+    def test_a_real_position_between_two_shows_the_nearer(self):
+        # Equidistant ones go to the more open position.
+        for real, virtual in ((43, 33), (41, 67), (39, 100)):
+            with self.subTest(real=real):
+                self.assertEqual(virtual, self.zone.real_to_virtual(real))
+        self.assertEqual(67, _zone(tilt_zone_enter_pct=42).real_to_virtual(40))
 
     def test_mapping_clamps_outside_range(self):
         self.assertEqual(LOWER, self.zone.virtual_to_real(150))
@@ -253,8 +260,7 @@ class TestValidation(unittest.TestCase):
     def test_a_fractional_field_raises(self):
         # The actuator speaks whole percent, so the geometry refuses anything else outright.
         for key in ("tilt_zone_upper_pct", "tilt_zone_lower_pct", "tilt_zone_epsilon_pct",
-                    "tilt_zone_release_pct", "tilt_step_pct", "tilt_zone_enter_pct",
-                    "height_step_pct"):
+                    "tilt_zone_release_pct", "tilt_zone_enter_pct", "height_step_pct"):
             for value in (41.5, 2.0, True):
                 with self.subTest(key=key, value=value):
                     with self.assertRaisesRegex(ValueError, f"{key} must be a whole percent"):
@@ -271,27 +277,6 @@ class TestValidation(unittest.TestCase):
     def test_lower_not_below_upper_raises(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_lower_pct must be smaller"):
             _zone(tilt_zone_lower_pct=44)
-
-    def test_the_minimum_step_is_accepted(self):
-        self.assertEqual(1, _zone(tilt_step_pct=1).tilt_step_pct)
-
-    def test_step_wider_than_the_zone_raises(self):
-        for step in (7, 20, 100):
-            with self.subTest(step=step):
-                with self.assertRaisesRegex(ValueError, "tilt_step_pct must be <="):
-                    _zone(tilt_step_pct=step)
-
-    def test_a_step_spanning_the_whole_slat_window_is_accepted(self):
-        zone = _zone(tilt_step_pct=UPPER - LOWER)
-        self.assertEqual(zone.slat_span, zone.tilt_step_pct)
-
-    def test_a_step_wider_than_the_slat_window_raises(self):
-        with self.assertRaisesRegex(ValueError, "tilt_step_pct must be <= tilt_zone_enter_pct"):
-            _zone(tilt_zone_enter_pct=41, tilt_step_pct=4)
-
-    def test_step_must_be_positive(self):
-        with self.assertRaisesRegex(ValueError, "tilt_step_pct must be >= 1"):
-            _zone(tilt_step_pct=0)
 
     def test_height_step_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "height_step_pct must be >= 1"):

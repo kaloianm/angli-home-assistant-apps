@@ -14,7 +14,6 @@ def _valid_args(**overrides):
         "tilt_zone_lower_pct": 38,
         "tilt_zone_epsilon_pct": 2,
         "tilt_zone_release_pct": 46,
-        "tilt_step_pct": 2,
         "tilt_zone_enter_pct": 44,
         "height_step_pct": 2,
     }
@@ -48,21 +47,15 @@ class TestConfigParsing(unittest.TestCase):
         self.assertEqual(52, config.zone.release_target)
         self.assertEqual(41, config.zone.enter_landing_real)
 
-    def test_the_step_is_real_travel(self):
-        # The config states the blind's own movement, in whole percent.
-        config = parse_app_config(_valid_args(tilt_step_pct=3))
-        self.assertEqual(3, config.zone.tilt_step_pct)
-        self.assertIn("tilt_step_pct=3", str(config))
-
     def test_every_number_is_parsed_as_a_whole_percent(self):
         # YAML reads 44.0 as a float and a quoted value as a string; both mean a whole percent.
         config = parse_app_config(
             _valid_args(tilt_zone_upper_pct=44.0, tilt_zone_lower_pct="38",
-                        tilt_zone_release_pct="46.0", tilt_step_pct=2.0, tilt_zone_enter_pct=41.0,
+                        tilt_zone_release_pct="46.0", tilt_zone_enter_pct=41.0,
                         height_step_pct="3"))
         zone = config.zone
         for value in (zone.tilt_zone_upper_pct, zone.tilt_zone_lower_pct,
-                      zone.tilt_zone_epsilon_pct, zone.tilt_zone_release_pct, zone.tilt_step_pct,
+                      zone.tilt_zone_epsilon_pct, zone.tilt_zone_release_pct,
                       zone.tilt_zone_enter_pct, zone.height_step_pct):
             self.assertIs(int, type(value))
         self.assertIn("tilt_zone_upper_pct=44,", str(config))
@@ -71,8 +64,7 @@ class TestConfigParsing(unittest.TestCase):
         # No actuator position corresponds to a fraction, and silently rounding a calibrated edge
         # would hide the mistake.
         for key in ("tilt_zone_upper_pct", "tilt_zone_lower_pct", "tilt_zone_epsilon_pct",
-                    "tilt_zone_release_pct", "tilt_step_pct", "tilt_zone_enter_pct",
-                    "height_step_pct"):
+                    "tilt_zone_release_pct", "tilt_zone_enter_pct", "height_step_pct"):
             for value in (1.5, "40.5"):
                 with self.subTest(key=key, value=value):
                     with self.assertRaisesRegex(ValueError, f"{key} must be a whole percent"):
@@ -89,8 +81,7 @@ class TestConfigParsing(unittest.TestCase):
 
     def test_every_zone_setting_is_required(self):
         for key in ("tilt_zone_upper_pct", "tilt_zone_lower_pct", "tilt_zone_epsilon_pct",
-                    "tilt_zone_release_pct", "tilt_step_pct", "tilt_zone_enter_pct",
-                    "height_step_pct"):
+                    "tilt_zone_release_pct", "tilt_zone_enter_pct", "height_step_pct"):
             with self.subTest(key=key):
                 args = _valid_args()
                 del args[key]
@@ -183,23 +174,6 @@ class TestConfigParsing(unittest.TestCase):
     def test_percentage_out_of_range_raises(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_upper_pct must be between 0 and 100"):
             parse_app_config(_valid_args(tilt_zone_upper_pct=120))
-
-    def test_step_must_be_positive(self):
-        with self.assertRaisesRegex(ValueError, "tilt_step_pct must be > 0"):
-            parse_app_config(_valid_args(tilt_step_pct=0))
-
-    def test_a_step_of_exactly_one_percent_is_accepted(self):
-        config = parse_app_config(_valid_args(tilt_step_pct=1))
-        self.assertEqual(1, config.zone.tilt_step_pct)
-
-    def test_step_wider_than_the_zone_raises(self):
-        # Span is 6, so a step of 20 real percent would jump the whole zone and then some.
-        with self.assertRaisesRegex(ValueError, "tilt_step_pct must be <="):
-            parse_app_config(_valid_args(tilt_step_pct=20))
-
-    def test_a_step_spanning_the_whole_zone_is_accepted(self):
-        config = parse_app_config(_valid_args(tilt_step_pct=6))
-        self.assertEqual(6, config.zone.tilt_step_pct)
 
     def test_non_numeric_percentage_raises(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_upper_pct must be a number"):

@@ -13,7 +13,6 @@ from gradhermetic_cover_control.planner import Direction, Latch, PlanKind
 UPPER = 44
 LOWER = 38
 EPSILON = 2
-STEP = 2
 DIP = LOWER - EPSILON
 RELEASE = 46
 
@@ -26,7 +25,6 @@ def _config(**overrides):
         "tilt_zone_lower_pct": LOWER,
         "tilt_zone_epsilon_pct": EPSILON,
         "tilt_zone_release_pct": RELEASE,
-        "tilt_step_pct": STEP,
         "tilt_zone_enter_pct": UPPER,
         "height_step_pct": 2,
     }
@@ -322,10 +320,12 @@ class TestInsideTilt(unittest.TestCase):
         self.assertEqual(UPPER, self.logic.last_position)
         self.assertEqual(0, _published(actions)[-1].position)
 
-    def test_set_position_interpolates_between_edges(self):
-        actions = self.logic.on_set_position(50)
+    def test_set_position_snaps_to_the_nearest_slat_position(self):
+        actions = self.logic.on_set_position(50)  # halfway between 33 (real 42) and 67 (real 40)
         self.assertEqual(ActionKind.MOVE_TO, _moves(actions)[0].kind)
-        self.assertEqual(41, _moves(actions)[0].position)  # 44 - 0.5 * 6
+        self.assertEqual(40, _moves(actions)[0].position)
+        run_plan(self.logic, actions)
+        self.assertEqual(67, self.logic.current_virtual_position())
 
 
 class TestStepWhileLatched(unittest.TestCase):
@@ -340,14 +340,14 @@ class TestStepWhileLatched(unittest.TestCase):
 
     def test_step_up_moves_toward_open(self):
         actions = self.logic.on_step(Direction.UP)
-        self.assertEqual(UPPER - STEP, _moves(actions)[0].position)
+        self.assertEqual(42, _moves(actions)[0].position)  # the next slat position
         run_plan(self.logic, actions)
         self.assertTrue(self.logic.in_tilt)
 
     def test_step_down_moves_toward_closed(self):
         run_plan(self.logic, self.logic.on_open())  # virtual 100 / real LOWER (fully open).
         actions = self.logic.on_step(Direction.DOWN)
-        self.assertEqual(LOWER + STEP, _moves(actions)[0].position)
+        self.assertEqual(40, _moves(actions)[0].position)
         run_plan(self.logic, actions)
         self.assertTrue(self.logic.in_tilt)
 
@@ -908,9 +908,9 @@ class TestPublishing(unittest.TestCase):
         published = _published(actions)[-1]
         self.assertTrue(published.in_tilt)
         self.assertEqual(Motion.OPENING, published.motion)
-        actions = self.logic.on_real_position(41, True, Direction.DOWN)
+        actions = self.logic.on_real_position(42, True, Direction.DOWN)
         published = _published(actions)[-1]
-        self.assertEqual(50, published.position)
+        self.assertEqual(33, published.position)
         self.assertTrue(published.in_tilt)
         self.assertEqual(Motion.OPENING, published.motion)
 

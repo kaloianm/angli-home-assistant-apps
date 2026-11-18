@@ -36,19 +36,17 @@ from gradhermetic_cover_control.tests.simulator import BlindSimulator, Quirks
 UPPER = 44
 LOWER = 38
 EPSILON = 2
-STEP = 2
 DIP = LOWER - EPSILON
 RELEASE = 46
 
 ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-            tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=UPPER,
-            height_step_pct=2)
+            tilt_zone_release_pct=RELEASE, tilt_zone_enter_pct=UPPER, height_step_pct=2)
 
 # The same zone with a 5% height grid, which leaves the band edges off the grid, so a step from
 # outside can land inside the band.
 COARSE_STEP_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
                         tilt_zone_epsilon_pct=EPSILON, tilt_zone_release_pct=RELEASE,
-                        tilt_step_pct=STEP, tilt_zone_enter_pct=UPPER, height_step_pct=5)
+                        tilt_zone_enter_pct=UPPER, height_step_pct=5)
 
 # The same mechanism on a blind whose latch only genuinely lets go well above the zone,
 # and whose slats are not visible until a little way open (real 42, i.e. virtual 33). Band =
@@ -56,9 +54,8 @@ COARSE_STEP_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
 CUSTOM_RELEASE = 55
 CUSTOM_LANDING = 42
 CUSTOM_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
-                   tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
-                   tilt_zone_release_pct=CUSTOM_RELEASE, tilt_zone_enter_pct=CUSTOM_LANDING,
-                   height_step_pct=2)
+                   tilt_zone_epsilon_pct=EPSILON, tilt_zone_release_pct=CUSTOM_RELEASE,
+                   tilt_zone_enter_pct=CUSTOM_LANDING, height_step_pct=2)
 
 # Enough ticks for the longest sequence (a full open plus a dip plus a rise) with room to spare.
 MAX_TICKS = 1000
@@ -199,7 +196,8 @@ def fresh(position, **kwargs):
 
 def latched_at(position, **kwargs):
     """
-    An app and a blind driven into a genuine latched state with the slats at ``position``.
+    An app and a blind driven into a genuine latched state with the slats at ``position``, which
+    must be one of the zone's slat positions.
     """
     harness = Harness(position=100, **kwargs)
     harness.logic.seed_state(100)
@@ -207,6 +205,7 @@ def latched_at(position, **kwargs):
     # Entry finishes at the configured landing, which is not necessarily the closed edge.
     if position != harness.sim.reported:
         harness.run(harness.logic.on_set_position(harness.zone.real_to_virtual(position)))
+    assert harness.sim.reported == position, f"{position} is not a slat position"
     return harness
 
 
@@ -322,7 +321,7 @@ class TestSingleIntents(ModelTestCase):
                 self._exercise(lambda p=position: fresh(p), name, intent, start=position)
 
     def test_from_every_latched_slat_position(self):
-        for position in range(LOWER, UPPER + 1):
+        for position in ZONE.slat_positions:
             for name, intent in INTENTS:
                 self._exercise(lambda p=position: latched_at(p), name, intent, latched_at=position)
 
@@ -529,15 +528,13 @@ class TestAlternateGeometries(ModelTestCase):
         # Releases just above the zone, but entry lands as far open as allowed.
         ("landing_only",
          Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=LOWER + 3,
-              height_step_pct=2)),
+              tilt_zone_release_pct=RELEASE, tilt_zone_enter_pct=LOWER + 3, height_step_pct=2)),
         # A low zone that needs almost the whole remaining travel to release. Band [18, 95]. The
         # 3% step does not divide this 10%-wide zone evenly, so the last step clamps to an edge,
         # and the landing is its mid-point.
         ("release_far_above_the_zone",
          Zone(tilt_zone_upper_pct=30, tilt_zone_lower_pct=20, tilt_zone_epsilon_pct=2,
-              tilt_step_pct=3, tilt_zone_release_pct=95, tilt_zone_enter_pct=25,
-              height_step_pct=2)),
+              tilt_zone_release_pct=95, tilt_zone_enter_pct=25, height_step_pct=2)),
     ]
 
     POSITIONS = (0, 10, 19, 20, 25, 30, 36, 38, 41, 44, 46, 50, 55, 56, 80, 95, 96, 100)
@@ -577,7 +574,7 @@ class TestAlternateGeometries(ModelTestCase):
 
     def test_every_intent_from_every_latched_slat_position(self):
         for label, zone in self.ZONES:
-            for position in range(zone.lower, zone.upper + 1):
+            for position in zone.slat_positions:
                 for name, intent in INTENTS:
                     with self.subTest(zone=label, latched_at=position, intent=name):
                         harness = latched_at(position, zone=zone)

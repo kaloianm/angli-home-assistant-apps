@@ -90,7 +90,7 @@ interruption. An intent that plans nothing leaves the running plan alone.
   `may_be_latched`.
 - **Height move** (`set_position` or a step): snapped out of the band, then one `MoveTo`, guarded if
   it descends.
-- **Slat move:** one `MoveTo` inside `[lower, landing]`.
+- **Slat move:** one `MoveTo` to a slat position.
 
 ```text
         enter: open fully, down to (lower - epsilon), up to upper, then to the landing
@@ -119,20 +119,22 @@ N1, T1, L1 and `can_change_latch` check both the target and the commanded positi
 ## Tilt-Zone Math
 
 All positions are `int`. Rounding happens only on values from Home Assistant (halves up) and in the
-virtual mapping. Outside tilt, virtual = real. Inside, the slat window `[lower, landing]` is
-inverted; `(landing, upper]` is only the end of the latching rise and reads as virtual 0:
+slat positions. Outside tilt, virtual = real. Inside, the slat window `[lower, landing]` holds 4 slat
+positions; `(landing, upper]` is only the end of the latching rise:
 
 ```text
-real    = landing - round(virtual * (landing - lower) / 100)
-virtual = round((landing - real) * 100 / (landing - lower))
+slat_position[i] = landing - round(i * (landing - lower) / 3)     i = 0..3
+virtual[i]       = round(i * 100 / 3)                             0, 33, 67, 100
 ```
 
-Real positions round-trip exactly, because one real percent is wider than one virtual percent.
+A virtual value maps to the nearest `virtual[i]`, and a real position to the nearest
+`slat_position[i]`; halves go to the more open one. Slat positions round-trip exactly.
 
-Example with `upper = 44`, `lower = 38`, `landing = 41`, `epsilon = 2`, `release = 46`. Band =
+Example with `upper = 44`, `lower = 38`, `landing = 42`, `epsilon = 2`, `release = 46`. Band =
 `[36, 46]`:
 
-- virtual 100 → real 38 (open), virtual 0 → real 41 (the landing), virtual 33 → real 40.
+- Slat positions 42, 41, 39, 38 for virtual 0, 33, 67, 100. Real 40 reads as 67; virtual 50 goes
+  to 39.
 - Enter dips to 36, rises to 44 (latches), then moves to the landing.
 - Height targets in `(36, 46)` snap to the nearer edge, ties going up. Steps snap in their direction
   of travel.

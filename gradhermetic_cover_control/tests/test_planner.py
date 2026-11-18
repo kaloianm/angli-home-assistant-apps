@@ -23,19 +23,17 @@ from gradhermetic_cover_control.planner import (
 UPPER = 44
 LOWER = 38
 EPSILON = 2
-STEP = 2
 DIP = LOWER - EPSILON
 RELEASE = 46
 
 ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-            tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=UPPER,
-            height_step_pct=2)
+            tilt_zone_release_pct=RELEASE, tilt_zone_enter_pct=UPPER, height_step_pct=2)
 
 # The same zone with a 5% height grid, which leaves the band edges off the grid, so a step from
 # outside can land inside the band.
 COARSE_STEP_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
                         tilt_zone_epsilon_pct=EPSILON, tilt_zone_release_pct=RELEASE,
-                        tilt_step_pct=STEP, tilt_zone_enter_pct=UPPER, height_step_pct=5)
+                        tilt_zone_enter_pct=UPPER, height_step_pct=5)
 
 # The same zone with a measured release height well above the zone, and an entry that
 # finishes at a slightly-open slat angle (real 42, i.e. virtual 33) instead of the closed edge.
@@ -43,9 +41,8 @@ COARSE_STEP_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
 CUSTOM_RELEASE = 55
 CUSTOM_LANDING = 42
 CUSTOM_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
-                   tilt_zone_epsilon_pct=EPSILON, tilt_step_pct=STEP,
-                   tilt_zone_release_pct=CUSTOM_RELEASE, tilt_zone_enter_pct=CUSTOM_LANDING,
-                   height_step_pct=2)
+                   tilt_zone_epsilon_pct=EPSILON, tilt_zone_release_pct=CUSTOM_RELEASE,
+                   tilt_zone_enter_pct=CUSTOM_LANDING, height_step_pct=2)
 
 # Representative starts: above, at the band edges, inside the zone, below, and unknown.
 STARTS = (100, 80, 47, RELEASE, 45, UPPER, 41, LOWER, DIP, 30, 0, None)
@@ -97,18 +94,17 @@ class TestEnterTilt(unittest.TestCase):
         self.assertEqual([100, DIP, UPPER], _targets(movement))
 
     def test_a_mid_zone_landing_adds_one_in_zone_step(self):
-        movement = plan(ZONE, _belief(80), Intent(IntentKind.ENTER_TILT, landing_virtual=50))
-        self.assertEqual([100, DIP, UPPER, 41], _targets(movement))
+        movement = plan(ZONE, _belief(80), Intent(IntentKind.ENTER_TILT, landing_virtual=67))
+        self.assertEqual([100, DIP, UPPER, 40], _targets(movement))
         self.assertEqual(
             [CommandKind.OPEN, CommandKind.POSITION, CommandKind.POSITION, CommandKind.POSITION],
             _commands(movement))
         self.assertEqual(Latch.LATCHED, movement.final_latch)
         self.assertTrue(ZONE.in_zone(movement.steps[3].target))
 
-    def test_a_landing_that_rounds_to_the_upper_edge_adds_nothing(self):
-        # 6% of travel per 100 virtual percent, so virtual 5 is 0.3 real percent -- the upper edge
-        # to the nearest whole percent, which the rise already reached. A command that moves
-        # nothing is not worth sending.
+    def test_a_landing_that_snaps_to_the_upper_edge_adds_nothing(self):
+        # Virtual 5 snaps to slat 0%, here the upper edge, which the rise already reached. A
+        # command that moves nothing is not worth sending.
         movement = plan(ZONE, _belief(80), Intent(IntentKind.ENTER_TILT, landing_virtual=5))
         self.assertEqual([100, DIP, UPPER], _targets(movement))
 
@@ -260,22 +256,29 @@ class TestSlatMoves(unittest.TestCase):
         self.assertEqual([UPPER], _targets(plan(ZONE, latched, Intent(IntentKind.CLOSE))))
         self.assertEqual(PlanKind.SLAT, plan(ZONE, latched, Intent(IntentKind.OPEN)).kind)
 
-    def test_set_position_interpolates_between_the_edges(self):
+    def test_set_position_snaps_to_the_nearest_slat_position(self):
         movement = plan(ZONE, _belief(UPPER, Latch.LATCHED),
                         Intent(IntentKind.SET_POSITION, virtual_pct=50))
         self.assertEqual(PlanKind.SLAT, movement.kind)
-        self.assertEqual(41, movement.steps[0].target)
+        self.assertEqual(40, movement.steps[0].target)
 
     def test_step_up_moves_toward_the_open_edge(self):
-        # The configured step is real travel, so an up step is exactly that far down the blind.
+        # Slat positions are (44, 42, 40, 38); up (more light) is real-downward.
         movement = plan(ZONE, _belief(UPPER, Latch.LATCHED),
                         Intent(IntentKind.SLAT_STEP, direction=Direction.UP))
-        self.assertEqual(UPPER - STEP, movement.steps[0].target)
+        self.assertEqual(42, movement.steps[0].target)
 
     def test_step_down_moves_toward_the_closed_edge(self):
         movement = plan(ZONE, _belief(LOWER, Latch.LATCHED),
                         Intent(IntentKind.SLAT_STEP, direction=Direction.DOWN))
-        self.assertEqual(LOWER + STEP, movement.steps[0].target)
+        self.assertEqual(40, movement.steps[0].target)
+
+    def test_a_step_from_between_positions_goes_to_the_next_one_ahead(self):
+        for direction, expected in ((Direction.UP, 40), (Direction.DOWN, 42)):
+            with self.subTest(direction=direction):
+                movement = plan(ZONE, _belief(41, Latch.LATCHED),
+                                Intent(IntentKind.SLAT_STEP, direction=direction))
+                self.assertEqual(expected, movement.steps[0].target)
 
     def test_step_down_at_the_closed_edge_clamps(self):
         self.assertIsNone(
@@ -408,8 +411,7 @@ class TestInvariantsHoldForEveryPlan(unittest.TestCase):
         ("custom_release_and_landing", CUSTOM_ZONE),
         ("release_just_below_full_travel",
          Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_step_pct=STEP, tilt_zone_release_pct=99, tilt_zone_enter_pct=LOWER + 3,
-              height_step_pct=2)),
+              tilt_zone_release_pct=99, tilt_zone_enter_pct=LOWER + 3, height_step_pct=2)),
     ]
 
     @staticmethod

@@ -5,12 +5,13 @@ Zone validation, band predicates, latch-sequence targets, and the only real<->vi
 
 - **real** -- the blind's travel position (0-100) as the actuator reports and accepts it. All
   configured numbers are real.
-- **virtual** -- what the user-facing cover shows: equal to real outside tilt; inside tilt, the slat
-  window inverted onto 0-100 (100 = lower edge, most light; 0 = entry landing, least light). The
-  upper edge, above the window, is only where the latching rise ends.
+- **virtual** -- what the user-facing cover shows: equal to real outside tilt; inside tilt, one of
+  :data:`SLAT_POSITIONS` fixed slat positions spread evenly over the slat window, shown as 0, 33,
+  67 and 100 (0 = entry landing, least light; 100 = lower edge, most light). The upper edge, above
+  the window, is only where the latching rise ends.
 
 All positions are whole percents. Rounding happens only in :func:`to_whole_pct` (values from Home
-Assistant) and the virtual mapping, which round-trips real positions exactly.
+Assistant) and the slat positions.
 """
 
 from __future__ import annotations
@@ -56,7 +57,6 @@ class Zone:
     tilt_zone_lower_pct: int
     tilt_zone_epsilon_pct: int
     tilt_zone_release_pct: int
-    tilt_step_pct: int
     tilt_zone_enter_pct: int
     height_step_pct: int
 
@@ -100,11 +100,6 @@ class Zone:
             raise ValueError(f"tilt_zone_enter_pct - tilt_zone_lower_pct must be >= "
                              f"{SLAT_POSITIONS - 1} so the {SLAT_POSITIONS} slat positions are "
                              "distinct whole percents")
-        if self.tilt_step_pct < 1:
-            raise ValueError("tilt_step_pct must be >= 1 so one step moves the actuator")
-        if self.tilt_step_pct > self.slat_span:
-            raise ValueError("tilt_step_pct must be <= tilt_zone_enter_pct - tilt_zone_lower_pct, "
-                             "the real travel the slat window spans")
         if self.height_step_pct < 1:
             raise ValueError("height_step_pct must be >= 1 so one step moves the actuator")
         if self.height_step_pct > 100:
@@ -201,26 +196,33 @@ class Zone:
 
     # -- Mapping -----------------------------------------------------------------------------------
 
+    @property
+    def slat_positions(self) -> tuple[int, ...]:
+        """
+        Real travel position of each slat position, from the entry landing (slat 0%) down to the
+        lower edge (100%): evenly spread over the slat window, halves rounding up.
+        """
+        last = SLAT_POSITIONS - 1
+        return tuple(self.enter_landing_real - (2 * index * self.slat_span + last) // (2 * last)
+                     for index in range(SLAT_POSITIONS))
+
     def virtual_to_real(self, virtual: int) -> int:
         """
-        Map an in-tilt virtual position (0-100) to the nearest real travel position in the slat
-        window.
-
-        Integer arithmetic with halves rounding up: the offset below the entry landing is
-        ``virtual * slat_span / 100``, rounded.
+        Map an in-tilt virtual position (0-100) to the real position of the nearest slat position,
+        halves going to the more open one.
         """
-        offset = (2 * clamp_pct(virtual) * self.slat_span + 100) // 200
-        return self.enter_landing_real - offset
+        last = SLAT_POSITIONS - 1
+        return self.slat_positions[(2 * clamp_pct(virtual) * last + 100) // 200]
 
     def real_to_virtual(self, real: int) -> int:
         """
-        Map an in-tilt real travel position to the nearest virtual position (0-100).
-
-        The inverse of :meth:`virtual_to_real`, rounded the same way. Positions outside the slat
-        window clamp to the nearer end of the slat scale.
+        Map an in-tilt real travel position to the virtual value of the nearest slat position,
+        halves going to the more open one.
         """
-        depth = self.enter_landing_real - real
-        return clamp_pct((200 * depth + self.slat_span) // (2 * self.slat_span))
+        positions = self.slat_positions
+        index = min(range(SLAT_POSITIONS), key=lambda i: (abs(positions[i] - real), -i))
+        last = SLAT_POSITIONS - 1
+        return (200 * index + last) // (2 * last)
 
     def snap_normal_target(self, target: int, current: int | None = None) -> int:
         """

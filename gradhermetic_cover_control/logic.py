@@ -299,7 +299,7 @@ class GradhermeticCoverLogic:
         Handle a step, like a KNX stop/step object:
 
         1. If anything is moving, stop it.
-        2. If latched, step the slats by ``tilt_step_pct``.
+        2. If latched, move the slats to the next slat position.
         3. Otherwise step the height to the next multiple of ``height_step_pct``, skipping over
            the ambiguity band.
         """

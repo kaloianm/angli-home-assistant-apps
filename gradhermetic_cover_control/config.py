@@ -38,7 +38,6 @@ class GradhermeticConfig:
                 f"tilt_zone_epsilon_pct={self.zone.tilt_zone_epsilon_pct}, "
                 f"tilt_zone_release_pct={self.zone.tilt_zone_release_pct}, "
                 f"tilt_zone_enter_pct={self.zone.enter_landing_real}, "
-                f"tilt_step_pct={self.zone.tilt_step_pct}, "
                 f"height_step_pct={self.zone.height_step_pct}"
                 ")")
 
@@ -56,7 +55,6 @@ def parse_app_config(args: dict[str, Any]) -> GradhermeticConfig:
         tilt_zone_lower_pct=_parse_percentage(args, "tilt_zone_lower_pct"),
         tilt_zone_epsilon_pct=_parse_positive_whole(args, "tilt_zone_epsilon_pct"),
         tilt_zone_release_pct=_parse_percentage(args, "tilt_zone_release_pct"),
-        tilt_step_pct=_parse_positive_whole(args, "tilt_step_pct"),
         tilt_zone_enter_pct=_parse_percentage(args, "tilt_zone_enter_pct"),
         height_step_pct=_parse_positive_whole(args, "height_step_pct"),
     )

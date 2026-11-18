@@ -30,7 +30,6 @@ ARGS = {
     "tilt_zone_lower_pct": 38,
     "tilt_zone_epsilon_pct": 2,
     "tilt_zone_release_pct": 46,
-    "tilt_step_pct": 2,
     "tilt_zone_enter_pct": 44,
     "height_step_pct": 2,
 }
