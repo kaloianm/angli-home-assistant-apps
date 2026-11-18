@@ -239,14 +239,15 @@ def _plan_set_position(zone: Zone, belief: Belief, virtual_pct: int | None) -> P
 
 def _plan_height_step(zone: Zone, belief: Belief, direction: Direction | None) -> Plan | None:
     """
-    Nudge the blind's height by one ``height_step_pct`` while it is not latched. A step into the
-    ambiguity band continues to the band edge ahead of it.
+    Move the blind's height to the next multiple of ``height_step_pct`` in the step's direction
+    while it is not latched. A step into the ambiguity band continues to the band edge ahead of it.
     """
     position = belief.position
     if belief.in_tilt or position is None:
         return None
     rising = direction == Direction.UP
-    target = position + zone.height_step_pct if rising else position - zone.height_step_pct
+    grid = zone.height_step_pct
+    target = (position // grid + 1) * grid if rising else (position - 1) // grid * grid
     target = zone.snap_step_target(target, rising)
     if target == position:
         return None

@@ -44,6 +44,12 @@ ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsi
             tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=UPPER,
             height_step_pct=2)
 
+# The same zone with a 5% height grid, which leaves the band edges off the grid, so a step from
+# outside can land inside the band.
+COARSE_STEP_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
+                        tilt_zone_epsilon_pct=EPSILON, tilt_zone_release_pct=RELEASE,
+                        tilt_step_pct=STEP, tilt_zone_enter_pct=UPPER, height_step_pct=5)
+
 # The same mechanism on a blind whose latch only genuinely lets go well above the zone,
 # and whose slats are not visible until a little way open (real 42, i.e. virtual 33). Band =
 # [36, 55].
@@ -352,7 +358,7 @@ class TestInterruptions(ModelTestCase):
         # The tilt exit is a short move, so it needs a finer stride to have interior points at all.
         ("leave_tilt", lambda: latched_at(LOWER, stride=2), lambda l: l.on_set_tilt_mode(False)),
         ("slat_step", lambda: latched_at(UPPER, stride=0.25), lambda l: l.on_step(Direction.UP)),
-        ("height_step_through_the_band", lambda: fresh(47, stride=2),
+        ("height_step_through_the_band", lambda: fresh(50, stride=2, zone=COARSE_STEP_ZONE),
          lambda l: l.on_step(Direction.DOWN)),
         # The same two sequences on a measured release and a landing mid-zone: a four-step entry
         # that finishes mid-zone, and a much longer exit through a much wider ambiguity band.
@@ -408,7 +414,8 @@ class TestInterruptions(ModelTestCase):
         ("enter_from_above", lambda **kw: fresh(80, stride=8, **kw),
          lambda l: l.on_set_tilt_mode(True)),
         ("guarded_close", lambda **kw: fresh(41, stride=8, **kw), lambda l: l.on_close()),
-        ("height_step_through_the_band", lambda **kw: fresh(47, stride=2, **kw),
+        ("height_step_through_the_band",
+         lambda **kw: fresh(50, stride=2, zone=COARSE_STEP_ZONE, **kw),
          lambda l: l.on_step(Direction.DOWN)),
     ]
 
@@ -635,7 +642,7 @@ class TestHeightSteps(ModelTestCase):
         self.assertEqual([], harness.logic.on_step(Direction.UP))
 
     def test_a_step_up_through_the_band_stays_honest_about_the_latch(self):
-        harness = fresh(35)
+        harness = fresh(35, zone=COARSE_STEP_ZONE)
         harness.run(harness.logic.on_step(Direction.UP))
         self.assertEqual(RELEASE, harness.sim.reported)
         self.assertEqual(Latch.UNKNOWN, harness.logic.latch)

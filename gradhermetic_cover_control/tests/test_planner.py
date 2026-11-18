@@ -31,6 +31,12 @@ ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsi
             tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=UPPER,
             height_step_pct=2)
 
+# The same zone with a 5% height grid, which leaves the band edges off the grid, so a step from
+# outside can land inside the band.
+COARSE_STEP_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
+                        tilt_zone_epsilon_pct=EPSILON, tilt_zone_release_pct=RELEASE,
+                        tilt_step_pct=STEP, tilt_zone_enter_pct=UPPER, height_step_pct=5)
+
 # The same zone with a measured release height well above the zone, and an entry that
 # finishes at a slightly-open slat angle (real 42, i.e. virtual 33) instead of the closed edge.
 # Band = [36, 55].
@@ -294,7 +300,8 @@ class TestSlatMoves(unittest.TestCase):
 
 
 class TestHeightStep(unittest.TestCase):
-    """A step outside tilt nudges the height by ``height_step_pct``, skipping the band."""
+    """A step outside tilt moves the height to the next multiple of ``height_step_pct``, skipping
+    the band."""
 
     def _step(self, position, direction, latch=Latch.UNLATCHED, zone=ZONE):
         return plan(zone, _belief(position, latch),
@@ -305,10 +312,17 @@ class TestHeightStep(unittest.TestCase):
         self.assertEqual([78], _targets(self._step(80, Direction.DOWN)))
         self.assertEqual([12], _targets(self._step(10, Direction.UP)))
         self.assertEqual([8], _targets(self._step(10, Direction.DOWN)))
-        wide = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
-                    tilt_zone_epsilon_pct=EPSILON, tilt_zone_release_pct=RELEASE,
-                    tilt_step_pct=STEP, height_step_pct=5, tilt_zone_enter_pct=UPPER)
-        self.assertEqual([75], _targets(self._step(80, Direction.DOWN, zone=wide)))
+        self.assertEqual([75], _targets(self._step(80, Direction.DOWN, zone=COARSE_STEP_ZONE)))
+
+    def test_a_step_from_off_the_grid_lands_on_the_next_multiple(self):
+        cases = ((67, Direction.UP, 70), (67, Direction.DOWN, 65), (65, Direction.DOWN, 60),
+                 (65, Direction.UP, 70), (98, Direction.UP, 100), (3, Direction.DOWN, 0))
+        for start, direction, expected in cases:
+            with self.subTest(start=start, direction=direction):
+                self.assertEqual([expected],
+                                 _targets(self._step(start, direction, zone=COARSE_STEP_ZONE)))
+        self.assertEqual([82], _targets(self._step(81, Direction.UP)))
+        self.assertEqual([80], _targets(self._step(81, Direction.DOWN)))
 
     def test_a_step_is_a_normal_plan_that_commits_a_release(self):
         movement = self._step(80, Direction.DOWN)
@@ -322,10 +336,13 @@ class TestHeightStep(unittest.TestCase):
         self.assertEqual([0], _targets(self._step(1, Direction.DOWN)))
 
     def test_a_step_into_the_band_continues_to_the_edge_ahead(self):
-        # Down from just above the band: 47 - 2 = 45 is inside, so the step lands on the bottom.
-        self.assertEqual([DIP], _targets(self._step(47, Direction.DOWN)))
-        # Up from just below: 35 + 2 = 37 is inside, so the step lands on the top.
-        self.assertEqual([RELEASE], _targets(self._step(35, Direction.UP)))
+        # Down from above the band: 45 is inside, so the step lands on the bottom.
+        self.assertEqual([DIP], _targets(self._step(50, Direction.DOWN, zone=COARSE_STEP_ZONE)))
+        # Up from below: 40 is inside, so the step lands on the top.
+        self.assertEqual([RELEASE], _targets(self._step(35, Direction.UP, zone=COARSE_STEP_ZONE)))
+        # A band edge on the grid is an ordinary landing.
+        self.assertEqual([RELEASE], _targets(self._step(47, Direction.DOWN)))
+        self.assertEqual([DIP], _targets(self._step(35, Direction.UP)))
         # From the band edges themselves, the next step crosses the whole band.
         self.assertEqual([RELEASE], _targets(self._step(DIP, Direction.UP)))
         self.assertEqual([DIP], _targets(self._step(RELEASE, Direction.DOWN)))
@@ -333,7 +350,8 @@ class TestHeightStep(unittest.TestCase):
     def test_a_step_up_that_crosses_the_lower_edge_commits_no_release(self):
         # Rising from below the lower edge to exactly the release height may leave the mechanism
         # latched; only a step that provably stayed above the lower edge keeps a known release.
-        self.assertEqual(Latch.UNKNOWN, self._step(35, Direction.UP).final_latch)
+        self.assertEqual(Latch.UNKNOWN,
+                         self._step(35, Direction.UP, zone=COARSE_STEP_ZONE).final_latch)
         self.assertEqual(Latch.UNKNOWN, self._step(DIP, Direction.UP).final_latch)
         self.assertEqual(Latch.UNKNOWN,
                          self._step(41, Direction.UP, latch=Latch.UNKNOWN).final_latch)

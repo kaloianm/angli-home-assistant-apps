@@ -44,8 +44,9 @@ Fire a `gradhermetic_command` event with `virtual_id` and one of:
 - `command: step`, `direction: up|down`:
   1. If anything is moving, stop it.
   2. Otherwise, in tilt mode, step the slats by `tilt_step_pct`, stopping at the zone edges.
-  3. Otherwise, step the height by `height_step_pct`. A step into the ambiguity band continues to
-     the band edge ahead of it.
+  3. Otherwise, step the height to the next multiple of `height_step_pct`, e.g. 37 -> 40 up or
+     37 -> 35 down with a step of 5. A step into the ambiguity band continues to the band edge
+     ahead of it.
 
   A step never enters tilt mode. A step with nowhere to go is logged and ignored.
 

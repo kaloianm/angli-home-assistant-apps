@@ -352,7 +352,8 @@ class TestStepWhileLatched(unittest.TestCase):
 
 class TestStepWhileNotLatched(unittest.TestCase):
     """
-    Steps outside tilt step the height by ``height_step_pct``, in either direction, from anywhere --
+    Steps outside tilt move the height to the next multiple of ``height_step_pct``, in either
+    direction, from anywhere --
     and stop the blind if it is moving. Entering tilt is the toggle's job.
     """
 
@@ -378,6 +379,13 @@ class TestStepWhileNotLatched(unittest.TestCase):
         logic.seed_state(80)
         self.assertEqual(75, _moves(logic.on_step(Direction.DOWN))[0].position)
 
+    def test_a_step_from_off_the_grid_lands_on_the_next_multiple(self):
+        for direction, expected in ((Direction.UP, 70), (Direction.DOWN, 65)):
+            with self.subTest(direction=direction):
+                logic = GradhermeticCoverLogic(_config(height_step_pct=5))
+                logic.seed_state(67)
+                self.assertEqual(expected, _moves(logic.on_step(direction))[0].position)
+
     def test_a_step_at_a_travel_limit_does_nothing_and_says_so(self):
         entries = []
         logic = GradhermeticCoverLogic(_config(), log=lambda m, level="INFO": entries.append(m))
@@ -389,7 +397,9 @@ class TestStepWhileNotLatched(unittest.TestCase):
         self.assertTrue(any("bottom limit" in m for m in entries))
 
     def test_a_step_into_the_band_crosses_to_the_far_edge(self):
-        self.logic.seed_state(47)
+        # A 5% grid leaves the band edges off the grid, so 50 -> 45 lands inside the band.
+        self.logic = GradhermeticCoverLogic(_config(height_step_pct=5))
+        self.logic.seed_state(50)
         actions = run_plan(self.logic, self.logic.on_step(Direction.DOWN))
         self.assertEqual(DIP, _moves(actions)[0].position)
         self.assertEqual(Latch.UNLATCHED, self.logic.latch)
@@ -400,7 +410,7 @@ class TestStepWhileNotLatched(unittest.TestCase):
         self.assertEqual(Latch.UNKNOWN, self.logic.latch)
         # ...and clears itself the moment the blind rests clear of the band.
         actions = run_plan(self.logic, self.logic.on_step(Direction.UP))
-        self.assertEqual(RELEASE + 2, _moves(actions)[0].position)
+        self.assertEqual(50, _moves(actions)[0].position)
         self.assertEqual(Latch.UNLATCHED, self.logic.latch)
 
     def test_a_step_down_from_the_band_with_no_latch_belief_releases_first(self):

@@ -300,7 +300,8 @@ class GradhermeticCoverLogic:
 
         1. If anything is moving, stop it.
         2. If latched, step the slats by ``tilt_step_pct``.
-        3. Otherwise step the height by ``height_step_pct``, skipping over the ambiguity band.
+        3. Otherwise step the height to the next multiple of ``height_step_pct``, skipping over
+           the ambiguity band.
         """
         if self._disabled:
             return []
