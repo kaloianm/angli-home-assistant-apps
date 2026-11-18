@@ -83,7 +83,7 @@ class GradhermeticCoverControl(hass.Hass):
                 f"Configured real_cover '{config.real_cover}' does not exist in Home "
                 "Assistant.", level="ERROR")
 
-        self.listen_state(self._on_real_state, config.real_cover, attribute="all")
+        self.listen_state(self._on_real_cover_state, config.real_cover, attribute="all")
         self.listen_event(self._on_command, COMMAND_EVENT)
 
         self.run_in(self._seed_startup_state, STARTUP_DELAY_SECONDS)
@@ -159,8 +159,8 @@ class GradhermeticCoverControl(hass.Hass):
 
     # -- Real cover feedback -----------------------------------------------------------------------
 
-    def _on_real_state(self, entity: str, attribute: str, old: Any, new: Any,
-                       kwargs: Dict[str, Any]) -> None:
+    def _on_real_cover_state(self, entity: str, attribute: str, old: Any, new: Any,
+                             kwargs: Dict[str, Any]) -> None:
         """
         Feed controller position/motion feedback into the logic engine, including a missing
         position when the cover goes unavailable.
@@ -170,7 +170,7 @@ class GradhermeticCoverControl(hass.Hass):
             self._apply_actions(self._runtime.logic.on_real_position(position, is_moving,
                                                                      direction))
         except Exception as exc:
-            self._report_error(f"_on_real_state(entity={entity!r})", exc)
+            self._report_error(f"_on_real_cover_state(entity={entity!r})", exc)
 
     def _on_settle(self, kwargs: Dict[str, Any]) -> None:
         """
