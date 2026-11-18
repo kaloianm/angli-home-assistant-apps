@@ -151,5 +151,4 @@ descent below this edge while latched.
 
 The latching rise ends with the slats closed, and on many blinds they don't visibly open until a
 couple of percent below the upper edge, so an entry there looks like it did nothing. Set this to
-where the slats are as open as you want tilt mode to start. On a `[29, 34]` zone, `32` is slightly
-open.
+where the slats are as open as you want tilt mode to start.
