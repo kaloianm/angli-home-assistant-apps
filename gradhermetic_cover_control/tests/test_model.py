@@ -526,10 +526,10 @@ class TestAlternateGeometries(ModelTestCase):
     ZONES = [
         # Releases high up, entry lands slightly open. Band [36, 55].
         ("custom_release_and_landing", CUSTOM_ZONE),
-        # Releases just above the zone, but the slats have to end wide open (the lower edge).
+        # Releases just above the zone, but entry lands as far open as allowed.
         ("landing_only",
          Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=LOWER,
+              tilt_zone_release_pct=RELEASE, tilt_step_pct=STEP, tilt_zone_enter_pct=LOWER + 3,
               height_step_pct=2)),
         # A low zone that needs almost the whole remaining travel to release. Band [18, 95]. The
         # 3% step does not divide this 10%-wide zone evenly, so the last step clamps to an edge,

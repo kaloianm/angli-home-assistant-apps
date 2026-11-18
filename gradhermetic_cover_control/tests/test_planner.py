@@ -408,7 +408,7 @@ class TestInvariantsHoldForEveryPlan(unittest.TestCase):
         ("custom_release_and_landing", CUSTOM_ZONE),
         ("release_just_below_full_travel",
          Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER, tilt_zone_epsilon_pct=EPSILON,
-              tilt_step_pct=STEP, tilt_zone_release_pct=99, tilt_zone_enter_pct=LOWER,
+              tilt_step_pct=STEP, tilt_zone_release_pct=99, tilt_zone_enter_pct=LOWER + 3,
               height_step_pct=2)),
     ]
 

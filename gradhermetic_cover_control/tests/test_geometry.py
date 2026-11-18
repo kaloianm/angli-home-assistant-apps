@@ -152,7 +152,7 @@ class TestMapping(unittest.TestCase):
         # The argument: one real percent is at least 100 / span >= 1 virtual percent wide, so a
         # rounded virtual value is always within half a real percent of where it came from.
         for lower in range(2, 98, 7):
-            for upper in range(lower + 1, 98, 5):
+            for upper in range(lower + 3, 98, 5):
                 zone = _zone(tilt_zone_lower_pct=lower, tilt_zone_upper_pct=upper,
                              tilt_zone_epsilon_pct=1, tilt_zone_release_pct=upper + 1,
                              tilt_step_pct=1, tilt_zone_enter_pct=upper, height_step_pct=1)
@@ -340,13 +340,21 @@ class TestValidation(unittest.TestCase):
                         ValueError, "tilt_zone_enter_pct must be between tilt_zone_lower_pct"):
                     _zone(tilt_zone_enter_pct=landing)
 
-    def test_landing_at_either_zone_edge_is_accepted(self):
+    def test_landing_from_the_closed_edge_to_three_above_the_lower_edge_is_accepted(self):
         closed = _zone(tilt_zone_enter_pct=UPPER)
         self.assertEqual(UPPER, closed.enter_landing_real)
         self.assertEqual(0, closed.enter_landing_virtual)
-        opened = _zone(tilt_zone_enter_pct=LOWER)
-        self.assertEqual(LOWER, opened.enter_landing_real)
-        self.assertEqual(100, opened.enter_landing_virtual)
+        opened = _zone(tilt_zone_enter_pct=LOWER + 3)
+        self.assertEqual(LOWER + 3, opened.enter_landing_real)
+        self.assertEqual(50, opened.enter_landing_virtual)
+
+    def test_a_landing_too_close_to_the_lower_edge_raises(self):
+        # Four slat positions from the landing down to the lower edge need three percent of travel.
+        for landing in (LOWER, LOWER + 1, LOWER + 2):
+            with self.subTest(landing=landing):
+                with self.assertRaisesRegex(
+                        ValueError, "tilt_zone_enter_pct - tilt_zone_lower_pct must be >= 3"):
+                    _zone(tilt_zone_enter_pct=landing)
 
     def test_percentages_must_be_in_range(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_upper_pct must be between 0 and 100"):

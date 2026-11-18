@@ -141,11 +141,16 @@ class TestConfigParsing(unittest.TestCase):
                         ValueError, "tilt_zone_enter_pct must be between tilt_zone_lower_pct"):
                     parse_app_config(_valid_args(tilt_zone_enter_pct=landing))
 
-    def test_landing_at_either_zone_edge_is_accepted(self):
-        for landing in (38, 44):
+    def test_landing_from_the_closed_edge_to_three_above_the_lower_edge_is_accepted(self):
+        for landing in (41, 44):
             with self.subTest(landing=landing):
                 config = parse_app_config(_valid_args(tilt_zone_enter_pct=landing))
                 self.assertEqual(landing, config.zone.enter_landing_real)
+
+    def test_a_landing_too_close_to_the_lower_edge_raises(self):
+        with self.assertRaisesRegex(ValueError,
+                                    "tilt_zone_enter_pct - tilt_zone_lower_pct must be >= 3"):
+            parse_app_config(_valid_args(tilt_zone_enter_pct=40))
 
     def test_non_numeric_landing_raises(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_enter_pct must be a number"):

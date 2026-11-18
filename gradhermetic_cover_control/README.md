@@ -120,7 +120,7 @@ gradhermetic_living_room:
   # ambiguity band.
   tilt_zone_release_pct: 50
 
-  # Where entry finishes, inside [lower, upper].
+  # Where entry finishes, inside [lower + 3, upper] so the 4 slat positions are distinct.
   tilt_zone_enter_pct: 42
 
   # Slat step, 1 .. (upper - lower).

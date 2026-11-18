@@ -17,6 +17,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, fields
 
+# Slat positions offered in tilt mode, spread from the entry landing down to the lower edge.
+SLAT_POSITIONS = 4
+
 
 def clamp_pct(value: int) -> int:
     """
@@ -92,6 +95,10 @@ class Zone:
         if not self.tilt_zone_lower_pct <= self.tilt_zone_enter_pct <= self.tilt_zone_upper_pct:
             raise ValueError("tilt_zone_enter_pct must be between tilt_zone_lower_pct and "
                              "tilt_zone_upper_pct")
+        if self.tilt_zone_enter_pct - self.tilt_zone_lower_pct < SLAT_POSITIONS - 1:
+            raise ValueError(f"tilt_zone_enter_pct - tilt_zone_lower_pct must be >= "
+                             f"{SLAT_POSITIONS - 1} so the {SLAT_POSITIONS} slat positions are "
+                             "distinct whole percents")
         if self.tilt_step_pct < 1:
             raise ValueError("tilt_step_pct must be >= 1 so one step moves the actuator")
         if self.tilt_step_pct > self.span:

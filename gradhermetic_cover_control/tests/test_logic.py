@@ -245,13 +245,6 @@ class TestEnterLanding(unittest.TestCase):
         self.assertTrue(logic.in_tilt)
         self.assertEqual(50, logic.current_virtual_position())
 
-    def test_a_landing_at_the_lower_edge_lands_the_slats_wide_open(self):
-        logic = GradhermeticCoverLogic(_config(tilt_zone_enter_pct=LOWER))
-        logic.seed_state(100)
-        actions = run_plan(logic, logic.on_set_tilt_mode(True))
-        self.assertEqual(LOWER, _moves(actions)[-1].position)
-        self.assertEqual(100, logic.current_virtual_position())
-
     def test_a_landing_on_the_closed_edge_adds_no_step(self):
         # The latching rise already ends there: a fourth command would repeat the setpoint.
         logic = GradhermeticCoverLogic(_config(tilt_zone_enter_pct=UPPER))
