@@ -69,9 +69,11 @@ class GradhermeticCoverControl(hass.Hass):
         self._config = config
         self._position_entity = f"sensor.gradhermetic_{config.virtual_id}_position"
         self._tilt_mode_entity = f"binary_sensor.gradhermetic_{config.virtual_id}_tilt_mode"
+
         # Commands are ignored until the first position reading has seeded the belief the safety
         # guards are derived from.
         self._ready = False
+
         # Last state written to the tilt-mode sensor; see _publish_virtual.
         self._last_tilt_state: Optional[str] = None
 
@@ -88,7 +90,7 @@ class GradhermeticCoverControl(hass.Hass):
 
         self.run_in(self._seed_startup_state, STARTUP_DELAY_SECONDS)
 
-        self.log(f"Initialized for '{config.virtual_id}' wrapping {config.real_cover}.")
+        self.log(f"Initialized '{config.virtual_id}' wrapping {config.real_cover}")
 
     # -- Startup -----------------------------------------------------------------------------------
 
@@ -125,37 +127,39 @@ class GradhermeticCoverControl(hass.Hass):
         """
         runtime = self._runtime
         command = data.get("command")
-        if command == "open":
-            return runtime.logic.on_open()
-        if command == "close":
-            return runtime.logic.on_close()
-        if command == "stop":
-            return runtime.logic.on_stop()
-        if command == "set_position":
-            # Any automation can fire this event, so a malformed payload is ignored rather than
-            # raised into _report_error, which would disable the blind.
-            raw_position = data.get("position")
-            position = _parse_pct(raw_position)
-            if position is None:
-                self.log(f"Ignoring set_position with invalid position {raw_position!r}",
-                         level="WARNING")
+        match command:
+            case "open":
+                return runtime.logic.on_open()
+            case "close":
+                return runtime.logic.on_close()
+            case "stop":
+                return runtime.logic.on_stop()
+            case "set_position":
+                # Any automation can fire this event, so a malformed payload is ignored rather than
+                # raised into _report_error, which would disable the blind.
+                raw_position = data.get("position")
+                position = _parse_pct(raw_position)
+                if position is None:
+                    self.log(f"Ignoring set_position with invalid position {raw_position!r}",
+                             level="WARNING")
+                    return []
+                return runtime.logic.on_set_position(position)
+            case "set_tilt_mode":
+                if data.get("enabled") is None:
+                    self.log("Ignoring set_tilt_mode without 'enabled'", level="WARNING")
+                    return []
+                return runtime.logic.on_set_tilt_mode(_as_bool(data["enabled"]))
+            case "toggle_tilt_mode":
+                return runtime.logic.on_toggle_tilt_mode()
+            case "step":
+                direction = data.get("direction")
+                if direction not in (DIRECTION_UP, DIRECTION_DOWN):
+                    self.log(f"Ignoring step with invalid direction {direction!r}", level="WARNING")
+                    return []
+                return runtime.logic.on_step(direction)
+            case _:
+                self.log(f"Ignoring unknown command {command!r}", level="WARNING")
                 return []
-            return runtime.logic.on_set_position(position)
-        if command == "set_tilt_mode":
-            if data.get("enabled") is None:
-                self.log("Ignoring set_tilt_mode without 'enabled'", level="WARNING")
-                return []
-            return runtime.logic.on_set_tilt_mode(_as_bool(data["enabled"]))
-        if command == "toggle_tilt_mode":
-            return runtime.logic.on_toggle_tilt_mode()
-        if command == "step":
-            direction = data.get("direction")
-            if direction not in (DIRECTION_UP, DIRECTION_DOWN):
-                self.log(f"Ignoring step with invalid direction {direction!r}", level="WARNING")
-                return []
-            return runtime.logic.on_step(direction)
-        self.log(f"Ignoring unknown command {command!r}", level="WARNING")
-        return []
 
     # -- Real cover feedback -----------------------------------------------------------------------
 
@@ -337,15 +341,17 @@ def _describe_command(service: str, data: Dict[str, Any]) -> str:
     """
     Render a real-cover service call as a short phrase for the log.
     """
-    if service == "cover/set_cover_position":
-        return f"move to {data.get('position')}%"
-    if service == "cover/open_cover":
-        return "open fully"
-    if service == "cover/close_cover":
-        return "close fully"
-    if service == "cover/stop_cover":
-        return "stop"
-    return f"{service} {data or ''}".strip()
+    match service:
+        case "cover/set_cover_position":
+            return f"move to {data.get('position')}%"
+        case "cover/open_cover":
+            return "open fully"
+        case "cover/close_cover":
+            return "close fully"
+        case "cover/stop_cover":
+            return "stop"
+        case _:
+            return f"{service} {data or ''}".strip()
 
 
 def _extract_feedback(state: Any) -> Tuple[Optional[int], bool, Optional[str]]:
