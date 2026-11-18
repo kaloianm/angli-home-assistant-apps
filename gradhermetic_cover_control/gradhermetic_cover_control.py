@@ -51,7 +51,7 @@ COMMAND_EVENT = "gradhermetic_command"
 
 # Seconds to wait after startup before reading the real cover's position, letting entity state
 # settle.
-STARTUP_DELAY_SECONDS = 3
+STARTUP_DELAY_SECONDS = 5
 
 
 class GradhermeticCoverControl(hass.Hass):
