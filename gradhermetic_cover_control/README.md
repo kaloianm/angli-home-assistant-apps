@@ -52,21 +52,6 @@ The app listens to three `input_button` helpers per blind:
 
 A step never enters tilt mode. A step with nowhere to go is logged and ignored.
 
-### KNX wall buttons
-
-A two-button KNX switch (short and long press per button) can drive the app through three group
-addresses. **Nothing else may listen on them**, in particular not the actuator: a button wired
-directly to the actuator bypasses the app.
-
-- `knx_move_address` (long press): up opens fully, leaving tilt mode if it is engaged. Down closes
-  fully.
-- `knx_step_address` (short press): the dashboard step rule, except that an up step at the open slat
-  edge leaves tilt mode, since a two-button switch has no other way out.
-- `knx_tilt_address`: toggles tilt mode, like the `..._tilt` button. It acts on `1` and ignores
-  `0`, so configure the button to send ON only.
-
-Telegram value `0` = up, `1` = down.
-
 ### Published entities
 
 - `sensor.gradhermetic_<id>_position`: the virtual position, with a `motion` attribute (`opening` /
@@ -145,11 +130,6 @@ gradhermetic_living_room:
 
   # Optional. Height step outside tilt mode, 1 .. 100. Defaults to 2.
   height_step_pct: 2
-
-  # Optional KNX wall-button group addresses.
-  knx_move_address: "1/2/3"
-  knx_step_address: "1/2/4"
-  knx_tilt_address: "1/2/5"
 ```
 
 The band (`lower - epsilon` to `release`) must stay strictly inside 0-100, so a blind resting on an

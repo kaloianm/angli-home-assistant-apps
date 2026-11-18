@@ -29,16 +29,12 @@ from gradhermetic_cover_control.gradhermetic_cover_control import (
     STARTUP_DELAY_SECONDS,
     GradhermeticCoverControl,
 )
-from gradhermetic_cover_control.planner import LATCH_LATCHED, LATCH_UNLATCHED
 from gradhermetic_cover_control.runtime import COMMAND_RATE_LIMIT
 
 REAL_COVER = "cover.living_room_blind"
 VIRTUAL_ID = "living_room"
 POSITION_ENTITY = f"sensor.gradhermetic_{VIRTUAL_ID}_position"
 TILT_MODE_ENTITY = f"binary_sensor.gradhermetic_{VIRTUAL_ID}_tilt_mode"
-MOVE_ADDRESS = "2/6/0"
-STEP_ADDRESS = "2/6/1"
-TILT_ADDRESS = "2/6/2"
 
 ARGS = {
     "real_cover": REAL_COVER,
@@ -49,9 +45,6 @@ ARGS = {
     "tilt_zone_epsilon_pct": 2,
     "tilt_zone_release_pct": 46,
     "tilt_step_pct": 2,
-    "knx_move_address": MOVE_ADDRESS,
-    "knx_step_address": STEP_ADDRESS,
-    "knx_tilt_address": TILT_ADDRESS,
 }
 
 # Distinguishes "the test did not care" from "the entity does not exist".
@@ -126,12 +119,6 @@ class FakeApp(GradhermeticCoverControl):
         payload.update(data)
         self._deliver_event(COMMAND_EVENT, payload)
 
-    def knx_event(self, destination, value):
-        """
-        Deliver a KNX telegram to the adapter.
-        """
-        self._deliver_event("knx_event", {"destination": destination, "data": value})
-
     def press(self, entity, old="2026-04-15T11:00:00+00:00", new="2026-04-15T12:00:00+00:00"):
         """
         Deliver an ``input_button`` state change to the adapter.
@@ -205,16 +192,8 @@ class TestInitialize(unittest.TestCase):
         self.assertIn(f"input_button.gradhermetic_{VIRTUAL_ID}_step_up", watched)
         self.assertIn(f"input_button.gradhermetic_{VIRTUAL_ID}_step_down", watched)
         self.assertIn(f"input_button.gradhermetic_{VIRTUAL_ID}_tilt", watched)
-        self.assertEqual([COMMAND_EVENT, "knx_event"], [e for e, _ in app.event_listeners])
-        self.assertEqual([STARTUP_DELAY_SECONDS], [s for _, s in app.timers.values()])
-
-    def test_no_knx_listener_without_addresses(self):
-        args = dict(ARGS)
-        del args["knx_move_address"]
-        del args["knx_step_address"]
-        del args["knx_tilt_address"]
-        app = FakeApp(args).start(seed_startup_state=False)
         self.assertEqual([COMMAND_EVENT], [e for e, _ in app.event_listeners])
+        self.assertEqual([STARTUP_DELAY_SECONDS], [s for _, s in app.timers.values()])
 
     def test_missing_real_cover_is_reported(self):
         app = FakeApp(state=None).start(seed_startup_state=False)
@@ -250,7 +229,6 @@ class TestStartupSeed(unittest.TestCase):
     def test_commands_before_the_state_is_seeded_are_ignored(self):
         app = FakeApp(state=cover_state(80)).start(seed_startup_state=False)
         app.command_event(command="close")
-        app.knx_event(MOVE_ADDRESS, 1)
         app.press(f"input_button.gradhermetic_{VIRTUAL_ID}_tilt")
         self.assertEqual([], app.service_calls)
 
@@ -328,81 +306,6 @@ class TestCommandEvents(unittest.TestCase):
         self.app.command_event(command="fly")
         self.assertEqual([], self.app.service_calls)
         self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
-
-
-class TestKnxTelegrams(unittest.TestCase):
-
-    def setUp(self):
-        self.app = FakeApp(state=cover_state(80)).start()
-
-    def test_a_long_press_uses_the_move_address(self):
-        self.app.knx_event(MOVE_ADDRESS, 1)  # 1 = down = less light
-        self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/close_cover"))
-
-    def test_a_short_press_uses_the_step_address(self):
-        self.app.knx_event(STEP_ADDRESS, 1)  # 1 = down: one height step from 80
-        self.assertEqual([{
-            "entity_id": REAL_COVER,
-            "position": 78
-        }], self.app.calls_to("cover/set_cover_position"))
-
-    def test_telegrams_for_other_addresses_are_ignored(self):
-        self.app.knx_event("9/9/9", 1)
-        self.assertEqual([], self.app.service_calls)
-
-    def test_a_telegram_without_a_destination_is_ignored(self):
-        self.app._deliver_event("knx_event", {"data": 1})  # pylint: disable=protected-access
-        self.assertEqual([], self.app.service_calls)
-
-    def test_a_malformed_payload_is_ignored_not_fatal(self):
-        self.app.knx_event(MOVE_ADDRESS, "sideways")
-        self.assertEqual([], self.app.service_calls)
-        self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
-
-    def test_a_list_payload_is_decoded(self):
-        self.app.knx_event(MOVE_ADDRESS, [1])
-        self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/close_cover"))
-
-    def test_a_tilt_telegram_enters_tilt_mode(self):
-        # Resting at 80 and not latched, so the toggle means "enter" -- which begins by
-        # re-referencing at the top limit.
-        self.app.knx_event(TILT_ADDRESS, 1)
-        self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/open_cover"))
-        self.assertEqual(LATCH_LATCHED, self._pending_final_latch())
-
-    def test_a_tilt_telegram_leaves_tilt_mode_when_latched(self):
-        # The tilt object carries no mode of its own: what it does is read off the app's own latch
-        # belief, exactly as the dashboard tilt helper does.
-        self._latch_in_zone()
-        self.app.knx_event(TILT_ADDRESS, 1)
-        self.assertEqual([{"entity_id": REAL_COVER}], self.app.calls_to("cover/open_cover"))
-        self.assertEqual(LATCH_UNLATCHED, self._pending_final_latch())
-
-    def test_a_tilt_release_telegram_is_ignored(self):
-        # A momentary pushbutton parameterized as a switch sends 1 on press and 0 on release. Acting
-        # on both edges would cancel out to nothing per press, so only the 1 is a trigger.
-        self.app.knx_event(TILT_ADDRESS, 0)
-        self.assertEqual([], self.app.service_calls)
-
-    def test_a_malformed_tilt_payload_is_ignored_not_fatal(self):
-        self.app.knx_event(TILT_ADDRESS, "maybe")
-        self.assertEqual([], self.app.service_calls)
-        self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
-
-    # pylint: disable=protected-access
-    def _latch_in_zone(self):
-        """
-        Put the logic in the belief it holds after a completed enter sequence.
-        """
-        logic = self.app._runtime.logic
-        logic._latch = LATCH_LATCHED
-        logic._position = 41
-
-    def _pending_final_latch(self):
-        """
-        The latch belief the plan now in flight will commit when it completes.
-        """
-        return self.app._runtime.logic._executor.plan.final_latch
 
 
 class TestButtonPresses(unittest.TestCase):
@@ -512,8 +415,7 @@ class TestActionTranslation(unittest.TestCase):
 
     def test_the_tilt_sensor_is_written_only_when_the_mode_changes(self):
         # The position sensor tracks travel percent by percent; rewriting the mode beside it with
-        # the value it already holds on every one of those reports is pure churn, and it is
-        # mirrored onto the KNX bus by an expose.
+        # the value it already holds on every one of those reports is pure churn.
         self._apply(Action(ACTION_PUBLISH_STATE, position=40, in_tilt=False))
         self.app.published.pop(TILT_MODE_ENTITY)
         self._apply(Action(ACTION_PUBLISH_STATE, position=41, in_tilt=False))

@@ -262,10 +262,6 @@ INTENTS = [
     ("tilt_off", lambda logic: logic.on_set_tilt_mode(False)),
     ("step_up", lambda logic: logic.on_step(DIRECTION_UP)),
     ("step_down", lambda logic: logic.on_step(DIRECTION_DOWN)),
-    ("short_up", lambda logic: logic.on_knx_short(DIRECTION_UP)),
-    ("short_down", lambda logic: logic.on_knx_short(DIRECTION_DOWN)),
-    ("long_up", lambda logic: logic.on_knx_long(DIRECTION_UP)),
-    ("long_down", lambda logic: logic.on_knx_long(DIRECTION_DOWN)),
 ] + [(f"set_position_{value}", (lambda v: lambda logic: logic.on_set_position(v))(value))
      for value in (0, 25, 37, 41, 45, 50, 75, 100)]
 
@@ -385,8 +381,6 @@ class TestInterruptions(ModelTestCase):
         ("close", lambda h: h.run(h.logic.on_close())),
         ("tilt_on", lambda h: h.run(h.logic.on_set_tilt_mode(True))),
         ("tilt_off", lambda h: h.run(h.logic.on_set_tilt_mode(False))),
-        ("long_down", lambda h: h.run(h.logic.on_knx_long(DIRECTION_DOWN))),
-        ("short_down", lambda h: h.run(h.logic.on_knx_short(DIRECTION_DOWN))),
         ("step_down", lambda h: h.run(h.logic.on_step(DIRECTION_DOWN))),
         ("tilt_toggle", lambda h: h.run(h.logic.on_toggle_tilt_mode())),
         ("set_position", lambda h: h.run(h.logic.on_set_position(70))),
@@ -787,16 +781,6 @@ class TestCalibrationDrift(ModelTestCase):
         harness.commands = 0
         harness.run(harness.logic.on_set_tilt_mode(False))
         self.assertFalse(harness.sim.latched)
-        self.assert_nominal(harness)
-
-    def test_a_guarded_descent_is_immune_to_drift_entirely(self):
-        harness = fresh(20, quirks=Quirks(drift_per_move=1.5))
-        harness.run(harness.logic.on_set_tilt_mode(True))
-        harness.published = []
-        harness.commands = 0
-        harness.run(harness.logic.on_knx_long(DIRECTION_DOWN))
-        self.assertFalse(harness.sim.latched)
-        self.assertEqual(0, harness.sim.reported)
         self.assert_nominal(harness)
 
     def test_a_position_command_can_stop_short_of_releasing(self):

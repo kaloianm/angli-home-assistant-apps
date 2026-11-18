@@ -26,8 +26,8 @@ The core returns `Action`s, and the adapter translates them one-to-one:
 | `arm_settle_timer` / `cancel_settle_timer` | `run_in` / `cancel_timer` |
 | `notify` | persistent notification |
 
-The adapter also filters events, decodes KNX telegrams and button presses, ignores commands until
-the startup state is seeded, applies the rate limit, and wraps callbacks in the error boundary.
+The adapter also filters events, decodes button presses, ignores commands until the startup state
+is seeded, applies the rate limit, and wraps callbacks in the error boundary.
 
 ## Belief
 
@@ -145,17 +145,16 @@ motion) when any of the three changed. They travel together so a slat angle is n
 height.
 
 - **Mode** comes from `_belief_after_interrupt`: the belief if the current plan stopped now. A slat
-  move keeps tilt; an entry shows it only once latched; anything that may release (an exit, a long
-  press up) drops it at once. `_displayed_in_tilt` uses the same rule for the toggle and
-  `set_tilt_mode` decisions.
+  move keeps tilt; an entry shows it only once latched; anything that may release (an exit) drops it
+  at once. `_displayed_in_tilt` uses the same rule for the toggle and `set_tilt_mode` decisions.
 - **Motion** is on the virtual scale: a real descent while latched is `opening`. It comes from the
   controller, or from the current step while a command is outstanding. A settled report means
   `idle`, even while a recheck is pending.
 - An unknown position is published as `unavailable`.
 
 The adapter writes the position sensor every time. It writes the tilt-mode sensor only when it
-changes, since it is mirrored to KNX. A fresh instance always writes it once, which re-creates the
-entity after an HA restart. The position is sent as a string because AppDaemon drops a falsy `0`.
+changes. A fresh instance always writes it once, which re-creates the entity after an HA restart.
+The position is sent as a string because AppDaemon drops a falsy `0`.
 
 ## Safety
 
@@ -169,7 +168,7 @@ entity after an HA restart. The position is sent as a string because AppDaemon d
 - **Error boundary:** an unhandled callback exception disables the blind and notifies. Wrapping
   callbacks in `try`/`except` is the one sanctioned exception to the project's "let errors
   propagate" rule. Malformed external input (bad `set_position`, `set_tilt_mode` without `enabled`,
-  unknown command, bad KNX value, non-numeric position) is logged and ignored instead.
+  unknown command, non-numeric position) is logged and ignored instead.
 - **Startup:** `STARTUP_DELAY_SECONDS` after start, the adapter seeds the belief from the real
   position. Commands are ignored until then. Startup never moves the blind; an `UNKNOWN` latch is
   resolved by the full open that guards the next descent or entry.
@@ -228,32 +227,6 @@ template:
 
 `default_entity_id` pins the id the dashboards expect. The app matches events by `virtual_id`, not
 by entity id.
-
-### KNX events (`knx/knx_events.yaml`)
-
-List each blind's three wall-button addresses. In ETS these must not be linked to the actuator. No
-`type:` is needed, because the adapter decodes the raw bit itself.
-
-```yaml
-- address:
-    - "2/6/7"   # Playroom Shutter - long press
-    - "2/7/7"   # Playroom Shutter - short press
-    - "2/8/7"   # Playroom Shutter - toggle slat mode
-```
-
-### KNX expose (`knx/knx_expose.yaml`)
-
-Mirrors both entities onto the bus. Expose them as a pair, because the position is a slat angle
-while the tilt bit is on. Nothing is sent while the position is `unavailable`.
-
-```yaml
-- entity_id: "binary_sensor.gradhermetic_playroom_shutter_tilt_mode"
-  address: "9/3/0"
-  type: "binary"
-- entity_id: "sensor.gradhermetic_playroom_shutter_position"
-  address: "9/3/1"
-  type: "percent"
-```
 
 ## Installation
 

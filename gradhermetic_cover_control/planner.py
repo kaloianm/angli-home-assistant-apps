@@ -64,7 +64,6 @@ INTENT_ENTER_TILT = "enter_tilt"
 INTENT_LEAVE_TILT = "leave_tilt"
 INTENT_SLAT_STEP = "slat_step"
 INTENT_HEIGHT_STEP = "height_step"
-INTENT_LONG_PRESS = "long_press"
 
 
 @dataclass(frozen=True)
@@ -146,7 +145,6 @@ class Intent:
     kind: str
     virtual_pct: Optional[int] = None
     direction: Optional[str] = None
-    cross_open_edge: bool = False
     landing_virtual: Optional[int] = None
 
 
@@ -165,11 +163,9 @@ def plan(zone: Zone, belief: Belief, intent: Intent) -> Optional[Plan]:
     if intent.kind == INTENT_LEAVE_TILT:
         return _plan_leave_tilt(zone, belief)
     if intent.kind == INTENT_SLAT_STEP:
-        return _plan_slat_step(zone, belief, intent.direction, intent.cross_open_edge)
+        return _plan_slat_step(zone, belief, intent.direction)
     if intent.kind == INTENT_HEIGHT_STEP:
         return _plan_height_step(zone, belief, intent.direction)
-    if intent.kind == INTENT_LONG_PRESS:
-        return _plan_long_press(belief, intent.direction)
     raise ValueError(f"unknown intent {intent.kind!r}")
 
 
@@ -289,34 +285,21 @@ def _plan_leave_tilt(zone: Zone, belief: Belief) -> Optional[Plan]:
                 LATCH_UNLATCHED)
 
 
-def _plan_slat_step(zone: Zone, belief: Belief, direction: Optional[str],
-                    cross_open_edge: bool) -> Optional[Plan]:
+def _plan_slat_step(zone: Zone, belief: Belief, direction: Optional[str]) -> Optional[Plan]:
     """
     Step the slats by ``tilt_step_pct`` of real travel, clamped to the zone. Up (more light) is
-    real-downward.
-
-    At the open edge an up step leaves tilt if ``cross_open_edge`` (KNX), else does nothing.
+    real-downward. A step past either slat edge does nothing.
     """
     if not belief.in_tilt or belief.position is None:
         return None
     current = min(max(belief.position, zone.lower), zone.upper)
     if direction == DIRECTION_UP:
         if current == zone.lower:
-            return _plan_leave_tilt(zone, belief) if cross_open_edge else None
+            return None
         return _slat_plan(max(zone.lower, current - zone.tilt_step_pct))
     if current == zone.upper:
         return None
     return _slat_plan(min(zone.upper, current + zone.tilt_step_pct))
-
-
-def _plan_long_press(belief: Belief, direction: Optional[str]) -> Plan:
-    """
-    Long wall-button press: jump to an extreme, releasing the latch first when descending.
-    """
-    if direction == DIRECTION_UP:
-        return Plan(PLAN_NORMAL, (Step(STEP_MOVE_TO, 100, COMMAND_OPEN), ), LATCH_UNLATCHED)
-    return Plan(PLAN_NORMAL, _guard_descent(belief, (Step(STEP_MOVE_TO, 0, COMMAND_CLOSE), )),
-                LATCH_UNLATCHED)
 
 
 def _slat_plan(real_target: int) -> Plan:

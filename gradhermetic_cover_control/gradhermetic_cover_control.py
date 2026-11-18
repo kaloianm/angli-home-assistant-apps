@@ -1,9 +1,9 @@
 """
 AppDaemon adapter for GradhermeticCoverControl.
 
-Transport only: listens for template-cover command events, step/tilt button presses, KNX telegrams
-and real-cover state changes, feeds them to the pure core (:mod:`logic`), and translates the
-resulting :class:`Action` values into service calls and ``set_state`` updates. Makes no decisions.
+Transport only: listens for template-cover command events, step/tilt button presses and real-cover
+state changes, feeds them to the pure core (:mod:`logic`), and translates the resulting
+:class:`Action` values into service calls and ``set_state`` updates. Makes no decisions.
 See README.md for the Home Assistant contract and IMPLEMENTATION.md for the architecture.
 """
 
@@ -94,9 +94,6 @@ class GradhermeticCoverControl(hass.Hass):
         self.listen_state(self._on_step_button, self._step_down_button)
         self.listen_state(self._on_tilt_button, self._tilt_button)
 
-        if config.knx_move_address or config.knx_step_address or config.knx_tilt_address:
-            self.listen_event(self._on_knx, "knx_event")
-
         self.run_in(self._seed_startup_state, STARTUP_DELAY_SECONDS)
 
         self.log(f"Initialized for '{config.virtual_id}' wrapping {config.real_cover}.")
@@ -186,42 +183,6 @@ class GradhermeticCoverControl(hass.Hass):
             self._apply_actions(self._runtime.logic.on_settle_timer(position, is_moving, direction))
         except Exception as exc:
             self._report_error("_on_settle", exc)
-
-    # -- KNX ---------------------------------------------------------------------------------------
-
-    def _on_knx(self, event_name: str, data: Dict[str, Any], kwargs: Dict[str, Any]) -> None:
-        """
-        Route a KNX wall-button telegram to a long/short/tilt logic event.
-        """
-        try:
-            destination = data.get("destination")
-            config = self._config
-            # Unconfigured addresses are None, which a destination-less telegram would match.
-            if destination is None:
-                return
-            if destination not in (config.knx_move_address, config.knx_step_address,
-                                   config.knx_tilt_address):
-                return
-            if not self._ready:
-                self.log("Ignoring KNX press before startup state is seeded")
-                return
-            logic = self._runtime.logic
-            # The tilt address is a directionless toggle trigger.
-            if destination == config.knx_tilt_address:
-                if not _knx_trigger(data):
-                    return
-                self._apply_actions(logic.on_toggle_tilt_mode())
-                return
-            direction = _knx_direction(data)
-            if direction is None:
-                return
-            if destination == config.knx_move_address:
-                actions = logic.on_knx_long(direction)
-            else:
-                actions = logic.on_knx_short(direction)
-            self._apply_actions(actions)
-        except Exception as exc:
-            self._report_error(f"_on_knx(destination={data.get('destination')!r})", exc)
 
     # -- Dashboard step/tilt buttons ---------------------------------------------------------------
 
@@ -328,9 +289,8 @@ class GradhermeticCoverControl(hass.Hass):
         Write the position sensor (with its ``motion`` attribute) and, if it changed, the tilt-mode
         sensor.
 
-        The tilt-mode sensor is only rewritten on change because it is mirrored onto KNX. A fresh
-        app instance (every reload, including an HA restart) always writes it once, which
-        re-creates it if HA has forgotten it.
+        The tilt-mode sensor is only rewritten on change. A fresh app instance (every reload,
+        including an HA restart) always writes it once, which re-creates it if HA has forgotten it.
 
         The position is sent as a string: AppDaemon drops falsy values from the request body, so
         an integer 0 would be lost and HA would reject the update.
@@ -461,42 +421,6 @@ def _parse_pct(raw: Any) -> Optional[int]:
         return to_whole_pct(float(raw))
     except (TypeError, ValueError, OverflowError):
         return None
-
-
-def _knx_direction(data: Dict[str, Any]) -> Optional[str]:
-    """
-    Decode a KNX up/down telegram into a direction, following the repo convention 0 = up, 1 = down.
-    """
-    raw = data.get("data")
-    if isinstance(raw, (list, tuple)):
-        raw = raw[0] if raw else None
-    if raw is None:
-        return None
-    # A malformed value is ignored rather than raised into _report_error, which would disable it.
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return DIRECTION_UP if value == 0 else DIRECTION_DOWN
-
-
-def _knx_trigger(data: Dict[str, Any]) -> bool:
-    """
-    Whether a KNX tilt telegram is a toggle trigger: only a 1 is.
-
-    Ignoring 0 makes a pushbutton configured as a two-state switch (1 on press, 0 on release)
-    toggle once per press instead of twice.
-    """
-    raw = data.get("data")
-    if isinstance(raw, (list, tuple)):
-        raw = raw[0] if raw else None
-    if raw is None:
-        return False
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return False
-    return value == 1
 
 
 def _as_bool(value: Any) -> bool:

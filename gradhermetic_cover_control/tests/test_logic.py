@@ -286,7 +286,7 @@ class TestEnterLanding(unittest.TestCase):
                     _config(tilt_zone_enter_pct=landing)
 
     def test_the_toggle_lands_on_the_configured_landing_too(self):
-        # The tilt helper and the KNX tilt address go through the toggle; it is the same entry.
+        # The tilt helper goes through the toggle; it is the same entry.
         logic = GradhermeticCoverLogic(_config(tilt_zone_enter_pct=41))
         logic.seed_state(80)
         actions = run_plan(logic, logic.on_toggle_tilt_mode())
@@ -318,24 +318,6 @@ class TestInsideTilt(unittest.TestCase):
         actions = self.logic.on_set_position(50)
         self.assertEqual(ACTION_MOVE_TO, _moves(actions)[0].kind)
         self.assertEqual(41, _moves(actions)[0].position)  # 44 - 0.5 * 6
-
-    def test_step_up_moves_toward_open(self):
-        actions = self.logic.on_knx_short(DIRECTION_UP)
-        self.assertEqual(ACTION_MOVE_TO, _moves(actions)[0].kind)
-        self.assertEqual(UPPER - STEP, _moves(actions)[0].position)
-        run_plan(self.logic, actions)
-        self.assertTrue(self.logic.in_tilt)
-
-    def test_step_down_at_closed_edge_is_noop(self):
-        # Already at virtual 0 (closed edge).
-        self.assertEqual([], self.logic.on_knx_short(DIRECTION_DOWN))
-
-    def test_step_up_at_open_edge_leaves_tilt(self):
-        run_plan(self.logic, self.logic.on_open())  # virtual 100 / real LOWER.
-        actions = run_plan(self.logic, self.logic.on_knx_short(DIRECTION_UP))
-        self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
-        self.assertEqual(100, self.logic.last_position)
-        self.assertFalse(self.logic.in_tilt)
 
 
 class TestStepHelperWhileLatched(unittest.TestCase):
@@ -484,71 +466,6 @@ class TestStepHelperWhileNotLatched(unittest.TestCase):
                     self.assertFalse(logic.in_tilt)
 
 
-class TestKnxLongPress(unittest.TestCase):
-
-    def setUp(self):
-        self.logic = GradhermeticCoverLogic(_config())
-
-    def test_long_up_opens_and_leaves_tilt(self):
-        self.logic.seed_state(100)
-        run_plan(self.logic, self.logic.on_set_tilt_mode(True))
-        actions = run_plan(self.logic, self.logic.on_knx_long(DIRECTION_UP))
-        self.assertEqual(ACTION_OPEN_FULL, _moves(actions)[0].kind)
-        self.assertFalse(self.logic.in_tilt)
-        self.assertEqual(100, _published(actions)[-1].position)
-
-    def test_long_down_from_tilt_releases_by_opening_then_descends(self):
-        self.logic.seed_state(100)
-        run_plan(self.logic, self.logic.on_set_tilt_mode(True))
-        actions = run_plan(self.logic, self.logic.on_knx_long(DIRECTION_DOWN))
-        self.assertEqual([ACTION_OPEN_FULL, ACTION_CLOSE_FULL], _kinds(_moves(actions)))
-        self.assertFalse(self.logic.in_tilt)
-        self.assertEqual(0, _published(actions)[-1].position)
-
-    def test_long_down_outside_closes_fully(self):
-        self.logic.seed_state(80)
-        actions = run_plan(self.logic, self.logic.on_knx_long(DIRECTION_DOWN))
-        self.assertEqual(ACTION_CLOSE_FULL, _moves(actions)[0].kind)
-        self.assertFalse(self.logic.in_tilt)
-
-
-class TestKnxShortPress(unittest.TestCase):
-
-    def setUp(self):
-        self.logic = GradhermeticCoverLogic(_config())
-
-    def test_short_press_stops_a_moving_blind(self):
-        self.logic.seed_state(50)
-        self.logic.on_open()  # starts a plan
-        self.logic.on_real_position(70, True)  # now moving
-        actions = self.logic.on_knx_short(DIRECTION_UP)
-        self.assertEqual([ACTION_STOP, ACTION_CANCEL_SETTLE_TIMER], _kinds(actions)[:2])
-        self.assertFalse(self.logic.has_pending_plan)
-
-    def test_short_press_steps_the_height_when_not_latched(self):
-        # The same rule as the dashboard step helpers: a nudge, never a tilt entry.
-        self.logic.seed_state(80)
-        self.assertEqual(78, _moves(self.logic.on_knx_short(DIRECTION_DOWN))[0].position)
-        logic = GradhermeticCoverLogic(_config())
-        logic.seed_state(10)
-        self.assertEqual(12, _moves(logic.on_knx_short(DIRECTION_UP))[0].position)
-        self.assertFalse(logic.in_tilt)
-
-    def test_short_press_ignored_when_position_unknown(self):
-        self.logic.seed_state(None)
-        self.assertEqual([], self.logic.on_knx_short(DIRECTION_DOWN))
-
-    def test_short_press_inside_the_band_without_a_latch_belief_steps_the_height(self):
-        # Resting in the band with the latch unknown (after a restart, say) used to make both
-        # buttons dead. Now up rises out of the band and down pays the release first.
-        self.logic.seed_state(41)
-        self.assertEqual(LATCH_UNKNOWN, self.logic.latch)
-        self.assertEqual(RELEASE, _moves(self.logic.on_knx_short(DIRECTION_UP))[0].position)
-        logic = GradhermeticCoverLogic(_config())
-        logic.seed_state(41)
-        self.assertEqual(ACTION_OPEN_FULL, _moves(logic.on_knx_short(DIRECTION_DOWN))[0].kind)
-
-
 class TestStartupAndMisc(unittest.TestCase):
     """
     Startup only ever seeds the belief. Re-referencing the actuator is left to the first move that
@@ -623,7 +540,7 @@ class TestStartupAndMisc(unittest.TestCase):
         self.logic.seed_state(50)
         self.logic.disable()
         self.assertEqual([], self.logic.on_open())
-        self.assertEqual([], self.logic.on_knx_short(DIRECTION_DOWN))
+        self.assertEqual([], self.logic.on_step(DIRECTION_DOWN))
         self.assertEqual([], self.logic.on_real_position(50, False))
         self.assertEqual([], self.logic.on_settle_timer(50, False))
 
@@ -655,11 +572,6 @@ class TestLatchSafetyGuard(unittest.TestCase):
         self.assertEqual([ACTION_OPEN_FULL, ACTION_CLOSE_FULL], _kinds(_moves(actions)))
         self.assertFalse(self.logic.in_tilt)
         self.assertEqual(0, self.logic.last_position)
-
-    def test_long_down_releases_by_opening_before_descending(self):
-        actions = run_plan(self.logic, self.logic.on_knx_long(DIRECTION_DOWN))
-        self.assertEqual([ACTION_OPEN_FULL, ACTION_CLOSE_FULL], _kinds(_moves(actions)))
-        self.assertFalse(self.logic.in_tilt)
 
     def test_set_position_downward_releases_first(self):
         actions = run_plan(self.logic, self.logic.on_set_position(10))
@@ -1068,7 +980,7 @@ class TestPublishing(unittest.TestCase):
 
 
 class TestTiltToggle(unittest.TestCase):
-    """The stateless toggle behind the tilt helper and the KNX tilt address."""
+    """The stateless toggle behind the tilt helper."""
 
     def setUp(self):
         self.logic = GradhermeticCoverLogic(_config())
@@ -1130,20 +1042,6 @@ class TestTiltToggle(unittest.TestCase):
         actions = self.logic.on_set_tilt_mode(True)
         self.assertEqual(ACTION_STOP, _kinds(actions)[0])
         self.assertFalse(self.logic.has_pending_plan)
-
-    def test_the_toggle_follows_the_mode_the_cover_displays(self):
-        # A KNX long press up starts a PLAN_NORMAL from a latched belief. That plan can release the
-        # latch, so the displayed belief drops to height mode at once while the raw latch stays
-        # LATCHED until the plan finishes. The chip says "Height Mode", so a tap has to mean enter.
-        self.logic.seed_state(100)
-        run_plan(self.logic, self.logic.on_set_tilt_mode(True))
-        actions = self.logic.on_knx_long(DIRECTION_UP)
-        self.assertFalse(_published(actions)[-1].in_tilt)
-        self.assertEqual(LATCH_LATCHED, self.logic.latch)  # the raw belief still disagrees
-        entering = self.logic.on_toggle_tilt_mode()
-        self.assertEqual([ACTION_OPEN_FULL], _kinds(_moves(entering)))
-        pending = self.logic._executor.plan  # pylint: disable=protected-access
-        self.assertEqual(LATCH_LATCHED, pending.final_latch)
 
     def test_every_refused_tilt_request_says_why(self):
         entries = []

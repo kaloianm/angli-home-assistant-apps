@@ -55,7 +55,6 @@ from gradhermetic_cover_control.planner import (
     INTENT_ENTER_TILT,
     INTENT_HEIGHT_STEP,
     INTENT_LEAVE_TILT,
-    INTENT_LONG_PRESS,
     INTENT_OPEN,
     INTENT_SET_POSITION,
     INTENT_SLAT_STEP,
@@ -75,7 +74,7 @@ _Published = Tuple[Optional[int], bool, str]
 
 class GradhermeticCoverLogic:
     """
-    State machine translating user/KNX intent into blind movements for one Gradhermetic cover.
+    State machine translating user intent into blind movements for one Gradhermetic cover.
     """
 
     # The event surface is wide by design: one method per thing that can happen to a blind.
@@ -280,7 +279,7 @@ class GradhermeticCoverLogic:
 
     def on_toggle_tilt_mode(self) -> List[Action]:
         """
-        Toggle tilt mode (dashboard tilt helper, KNX tilt address). Cancels an entry or exit in
+        Toggle tilt mode (dashboard tilt helper). Cancels an entry or exit in
         flight; otherwise toggles what the dashboard shows (:meth:`_displayed_in_tilt`).
         """
         if self._disabled:
@@ -306,37 +305,15 @@ class GradhermeticCoverLogic:
     def _displayed_in_tilt(self) -> bool:
         """
         Whether the published mode is tilt. Differs from the raw latch while a plan that leaves
-        tilt (e.g. a KNX long press up) is still running.
+        tilt is still running.
         """
         return self._belief_after_interrupt().latch == LATCH_LATCHED
 
     # -- Step events -------------------------------------------------------------------------------
 
-    def on_knx_long(self, direction: str) -> List[Action]:
-        """
-        Handle a long wall-button press: jump to an extreme.
-
-        Up drives fully open (leaving tilt naturally); down drives fully closed, releasing the latch
-        upward first whenever it might be engaged.
-        """
-        return self._run(Intent(INTENT_LONG_PRESS, direction=direction))
-
-    def on_knx_short(self, direction: str) -> List[Action]:
-        """
-        Handle a short wall-button press: :meth:`on_step`, except that an up step at the open
-        slat edge leaves tilt.
-        """
-        return self._step(direction, cross_open_edge=True)
-
     def on_step(self, direction: str) -> List[Action]:
         """
-        Handle a dashboard step button press.
-        """
-        return self._step(direction, cross_open_edge=False)
-
-    def _step(self, direction: str, cross_open_edge: bool) -> List[Action]:
-        """
-        The step rule shared by all step controls, like a KNX stop/step object:
+        Handle a step, like a KNX stop/step object:
 
         1. If anything is moving, stop it.
         2. If latched, step the slats by ``tilt_step_pct``.
@@ -347,7 +324,7 @@ class GradhermeticCoverLogic:
         if self.has_pending_plan or self._is_moving:
             return self.on_stop()
         if self.in_tilt:
-            intent = Intent(INTENT_SLAT_STEP, direction=direction, cross_open_edge=cross_open_edge)
+            intent = Intent(INTENT_SLAT_STEP, direction=direction)
         else:
             intent = Intent(INTENT_HEIGHT_STEP, direction=direction)
         belief = self.belief()

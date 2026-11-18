@@ -24,9 +24,6 @@ class GradhermeticConfig:
     virtual_id: str
     virtual_name: str
     zone: Zone
-    knx_move_address: Optional[str]
-    knx_step_address: Optional[str]
-    knx_tilt_address: Optional[str]
 
     def __str__(self) -> str:
         """
@@ -42,10 +39,7 @@ class GradhermeticConfig:
                 f"tilt_zone_release_pct={self.zone.tilt_zone_release_pct}, "
                 f"tilt_zone_enter_pct={self.zone.enter_landing_real}, "
                 f"tilt_step_pct={self.zone.tilt_step_pct}, "
-                f"height_step_pct={self.zone.height_step_pct}, "
-                f"knx_move_address={self.knx_move_address}, "
-                f"knx_step_address={self.knx_step_address}, "
-                f"knx_tilt_address={self.knx_tilt_address}"
+                f"height_step_pct={self.zone.height_step_pct}"
                 ")")
 
 
@@ -72,9 +66,6 @@ def parse_app_config(args: Dict[str, Any]) -> GradhermeticConfig:
         virtual_id=virtual_id,
         virtual_name=virtual_name,
         zone=zone,
-        knx_move_address=_optional_str(args, "knx_move_address"),
-        knx_step_address=_optional_str(args, "knx_step_address"),
-        knx_tilt_address=_optional_str(args, "knx_tilt_address"),
     )
 
 
@@ -85,16 +76,6 @@ def _require_non_empty_str(source: Dict[str, Any], key: str) -> str:
     value = source.get(key)
     if value is None or str(value).strip() == "":
         raise ValueError(f"{key} is required")
-    return str(value).strip()
-
-
-def _optional_str(source: Dict[str, Any], key: str) -> Optional[str]:
-    """
-    Read an optional string field, returning None when absent or blank.
-    """
-    value = source.get(key)
-    if value is None or str(value).strip() == "":
-        return None
     return str(value).strip()
 
 

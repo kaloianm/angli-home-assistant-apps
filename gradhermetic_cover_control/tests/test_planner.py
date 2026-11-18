@@ -11,7 +11,6 @@ from gradhermetic_cover_control.planner import (
     INTENT_ENTER_TILT,
     INTENT_HEIGHT_STEP,
     INTENT_LEAVE_TILT,
-    INTENT_LONG_PRESS,
     INTENT_OPEN,
     INTENT_SET_POSITION,
     INTENT_SLAT_STEP,
@@ -258,22 +257,6 @@ class TestWholeHeight(unittest.TestCase):
         self.assertEqual([60], _targets(movement))
         self.assertEqual(LATCH_UNLATCHED, movement.final_latch)
 
-    def test_long_up_opens_fully(self):
-        movement = plan(ZONE, _belief(41, LATCH_LATCHED),
-                        Intent(INTENT_LONG_PRESS, direction=DIRECTION_UP))
-        self.assertEqual([100], _targets(movement))
-        self.assertEqual([COMMAND_OPEN], _commands(movement))
-
-    def test_long_down_while_latched_releases_by_opening_fully(self):
-        movement = plan(ZONE, _belief(41, LATCH_LATCHED),
-                        Intent(INTENT_LONG_PRESS, direction=DIRECTION_DOWN))
-        self.assertEqual([100, 0], _targets(movement))
-
-    def test_long_down_outside_the_band_closes_directly(self):
-        movement = plan(ZONE, _belief(80, LATCH_UNLATCHED),
-                        Intent(INTENT_LONG_PRESS, direction=DIRECTION_DOWN))
-        self.assertEqual([0], _targets(movement))
-
 
 class TestSlatMoves(unittest.TestCase):
 
@@ -305,15 +288,10 @@ class TestSlatMoves(unittest.TestCase):
             plan(ZONE, _belief(UPPER, LATCH_LATCHED),
                  Intent(INTENT_SLAT_STEP, direction=DIRECTION_DOWN)))
 
-    def test_step_up_at_the_open_edge_clamps_for_the_helper(self):
+    def test_step_up_at_the_open_edge_clamps(self):
         self.assertIsNone(
             plan(ZONE, _belief(LOWER, LATCH_LATCHED),
                  Intent(INTENT_SLAT_STEP, direction=DIRECTION_UP)))
-
-    def test_step_up_at_the_open_edge_leaves_tilt_for_a_wall_button(self):
-        movement = plan(ZONE, _belief(LOWER, LATCH_LATCHED),
-                        Intent(INTENT_SLAT_STEP, direction=DIRECTION_UP, cross_open_edge=True))
-        self.assertEqual(PLAN_LEAVE, movement.kind)
 
     def test_no_slat_move_without_a_latch_belief(self):
         for latch in (LATCH_UNLATCHED, LATCH_UNKNOWN):
@@ -436,10 +414,8 @@ class TestInvariantsHoldForEveryPlan(unittest.TestCase):
         intents += [Intent(INTENT_SET_POSITION, virtual_pct=v) for v in range(0, 101, 5)]
         for direction in (DIRECTION_UP, DIRECTION_DOWN):
             intents += [
-                Intent(INTENT_LONG_PRESS, direction=direction),
                 Intent(INTENT_HEIGHT_STEP, direction=direction),
                 Intent(INTENT_SLAT_STEP, direction=direction),
-                Intent(INTENT_SLAT_STEP, direction=direction, cross_open_edge=True),
             ]
         return intents
 

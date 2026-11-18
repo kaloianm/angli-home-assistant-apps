@@ -23,17 +23,12 @@ def _valid_args(**overrides):
 class TestConfigParsing(unittest.TestCase):
 
     def test_valid_config_parses(self):
-        config = parse_app_config(
-            _valid_args(knx_move_address="1/2/3", knx_step_address="1/2/4",
-                        knx_tilt_address="1/2/5"))
+        config = parse_app_config(_valid_args())
         self.assertEqual("cover.living_room_blind", config.real_cover)
         self.assertEqual("living_room", config.virtual_id)
         self.assertEqual("Living Room Blind", config.virtual_name)
         self.assertEqual(44, config.zone.tilt_zone_upper_pct)
         self.assertEqual(38, config.zone.tilt_zone_lower_pct)
-        self.assertEqual("1/2/3", config.knx_move_address)
-        self.assertEqual("1/2/4", config.knx_step_address)
-        self.assertEqual("1/2/5", config.knx_tilt_address)
 
     def test_the_landing_key_is_optional(self):
         # Absent means "keep the geometric default": the closed edge.
@@ -162,17 +157,6 @@ class TestConfigParsing(unittest.TestCase):
     def test_non_numeric_landing_raises(self):
         with self.assertRaisesRegex(ValueError, "tilt_zone_enter_pct must be a number"):
             parse_app_config(_valid_args(tilt_zone_enter_pct="ajar"))
-
-    def test_knx_addresses_are_optional(self):
-        config = parse_app_config(_valid_args())
-        self.assertIsNone(config.knx_move_address)
-        self.assertIsNone(config.knx_step_address)
-        self.assertIsNone(config.knx_tilt_address)
-
-    def test_blank_knx_address_becomes_none(self):
-        config = parse_app_config(_valid_args(knx_move_address="  ", knx_tilt_address="  "))
-        self.assertIsNone(config.knx_move_address)
-        self.assertIsNone(config.knx_tilt_address)
 
     def test_missing_real_cover_raises(self):
         args = _valid_args()
