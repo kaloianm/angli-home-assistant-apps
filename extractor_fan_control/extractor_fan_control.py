@@ -8,7 +8,7 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Any
 
-from extractor_fan_control.config import PairConfig, parse_app_config
+from extractor_fan_control.config import parse_app_config
 from extractor_fan_control.logic import (
     Action,
     ActionKind,
@@ -16,11 +16,7 @@ from extractor_fan_control.logic import (
     LogicConfig,
     TimerName,
 )
-from extractor_fan_control.runtime import (
-    FAN_CMD_RATE_LIMIT,
-    FAN_CMD_RATE_WINDOW_SECONDS,
-    PairRuntime,
-)
+from extractor_fan_control.rate_limiter import RateLimiter
 
 try:
     import appdaemon.plugins.hass.hassapi as hass
@@ -33,9 +29,15 @@ except ImportError:  # pragma: no cover - used only outside AppDaemon runtime.
         Hass = _HassBase
 
 
+# More fan switch commands than this (keepalive pulses included) within the window disables the fan
+# until AppDaemon restarts.
+FAN_CMD_RATE_LIMIT = 5
+FAN_CMD_RATE_WINDOW_SECONDS = 30
+
+
 class ExtractorFanControl(hass.Hass):
     """
-    AppDaemon app wiring for extractor fan control logic.
+    AppDaemon app wiring extractor fan control logic for one light/fan pair.
     """
 
     def initialize(self) -> None:
@@ -44,55 +46,48 @@ class ExtractorFanControl(hass.Hass):
         """
         # AppDaemon convention initializes instance state in this hook.
         # pylint: disable=attribute-defined-outside-init
-        self._config = parse_app_config(self.args or {})
-        self._runtime_by_name: dict[str, PairRuntime] = {}
+        config = parse_app_config(self.args or {})
+        self._config = config
+        self.log(f"Processing config: {config}", level="DEBUG")
+        self._validate_entities()
 
-        for pair_config in self._config.pairs:
-            self.log(f"Processing pair: {pair_config}", level="DEBUG")
-            self._validate_pair_entities(pair_config)
-            runtime = PairRuntime(
-                config=pair_config,
-                logic=ExtractorFanPairLogic(
-                    LogicConfig(
-                        min_light_on_for_fan_seconds=pair_config.min_light_on_for_fan_seconds,
-                        short_visit_threshold_seconds=pair_config.short_visit_threshold_seconds,
-                    ),
-                    log=lambda message, level="INFO", pair_name=pair_config.name: self.log(
-                        f"[{pair_name}] {message}", level=level),
-                ),
-            )
-            self._runtime_by_name[pair_config.name] = runtime
+        # Set by the rate limit or an unhandled exception; actions are dropped from then on.
+        self._disabled = False
 
-            # Creates the sensor and clears any countdown left from before a restart.
-            self._publish_off_deadline(runtime, None)
+        self._logic = ExtractorFanPairLogic(
+            LogicConfig(
+                min_light_on_for_fan_seconds=config.min_light_on_for_fan_seconds,
+                short_visit_threshold_seconds=config.short_visit_threshold_seconds,
+            ),
+            log=self.log,
+        )
+        self._rate_limiter = RateLimiter(FAN_CMD_RATE_LIMIT, FAN_CMD_RATE_WINDOW_SECONDS)
+        self._activation_timer_handle: Any | None = None
+        self._deadline_timer_handle: Any | None = None
+        self._keepalive_timer_handle: Any | None = None
 
-            runtime.light_listener_handle = self.listen_state(self._on_light_state,
-                                                              pair_config.light_entity,
-                                                              pair_name=pair_config.name)
-            if pair_config.daily_run_time and pair_config.daily_run_duration_seconds:
-                runtime.daily_schedule_handle = self.run_daily(
-                    self._on_daily_schedule_start,
-                    self.parse_time(pair_config.daily_run_time),
-                    pair_name=pair_config.name,
-                )
+        # Creates the sensor and clears any countdown left from before a restart.
+        self._publish_off_deadline(None)
 
-        self.log("ExtractorFanControl initialized with "
-                 f"{len(self._runtime_by_name)} pair(s). "
-                 "keepalive_pulse_interval_seconds="
-                 f"{self._config.keepalive_pulse_interval_seconds}")
+        self.listen_state(self._on_light_state, config.light_entity)
+        if config.daily_run_time and config.daily_run_duration_seconds:
+            self.run_daily(self._on_daily_schedule_start, self.parse_time(config.daily_run_time))
 
-    def _validate_pair_entities(self, pair_config: PairConfig) -> None:
+        self.log(f"Initialized '{config.name}'. keepalive_pulse_interval_seconds="
+                 f"{config.keepalive_pulse_interval_seconds}")
+
+    def _validate_entities(self) -> None:
         """
         Log configuration errors for missing entities without failing startup.
         """
         entities = (
-            ("light_entity", pair_config.light_entity),
-            ("fan_switch_entity", pair_config.fan_switch_entity),
+            ("light_entity", self._config.light_entity),
+            ("fan_switch_entity", self._config.fan_switch_entity),
         )
         for key, entity_id in entities:
             if self.get_state(entity_id, default=None) is None:
                 self.log(
-                    f"[{pair_config.name}] Configured {key} '{entity_id}' does not exist in Home Assistant.",
+                    f"Configured {key} '{entity_id}' does not exist in Home Assistant.",
                     level="ERROR",
                 )
 
@@ -105,118 +100,109 @@ class ExtractorFanControl(hass.Hass):
         kwargs: dict[str, Any],
     ) -> None:
         """
-        Process light ON/OFF state transitions for one pair.
+        Process light ON/OFF state transitions.
         """
-        pair_name = kwargs.get("pair_name")
         try:
             if new == old:
                 return
             if new not in ("on", "off"):
                 return
 
-            runtime = self._runtime_by_name[pair_name]
             now = self.datetime()
             if new == "on":
-                actions = runtime.logic.on_light_on(now)
+                actions = self._logic.on_light_on(now)
             else:
-                actions = runtime.logic.on_light_off(now)
-            self._apply_actions(runtime, actions)
+                actions = self._logic.on_light_off(now)
+            self._apply_actions(actions)
         except Exception as exc:
-            self._report_error(f"_on_light_state(entity={entity!r}, new={new!r})", exc, pair_name)
+            self._report_error(f"_on_light_state(entity={entity!r}, new={new!r})", exc)
 
     def _on_daily_schedule_start(self, kwargs: dict[str, Any]) -> None:
         """
-        Trigger scheduled run for one pair.
+        Trigger the scheduled run.
         """
-        pair_name = kwargs.get("pair_name")
         try:
-            runtime = self._runtime_by_name[pair_name]
-            if runtime.config.daily_run_duration_seconds is None:
+            if self._config.daily_run_duration_seconds is None:
                 return
-            actions = runtime.logic.on_schedule_started(
+            actions = self._logic.on_schedule_started(
                 self.datetime(),
-                duration_seconds=runtime.config.daily_run_duration_seconds,
+                duration_seconds=self._config.daily_run_duration_seconds,
             )
-            self._apply_actions(runtime, actions)
+            self._apply_actions(actions)
         except Exception as exc:
-            self._report_error("_on_daily_schedule_start", exc, pair_name)
+            self._report_error("_on_daily_schedule_start", exc)
 
-    def _on_pair_timer(self, kwargs: dict[str, Any]) -> None:
+    def _on_timer(self, kwargs: dict[str, Any]) -> None:
         """
         Drive logic timer progression for activation/deadline events.
         """
-        pair_name = kwargs.get("pair_name")
         try:
-            runtime = self._runtime_by_name[pair_name]
             timer_name = kwargs["timer_name"]
             match timer_name:
                 case TimerName.ACTIVATION:
-                    runtime.activation_timer_handle = None
+                    self._activation_timer_handle = None
                 case TimerName.DEADLINE:
-                    runtime.deadline_timer_handle = None
-            actions = runtime.logic.on_time_tick(self.datetime())
-            self._apply_actions(runtime, actions)
+                    self._deadline_timer_handle = None
+            actions = self._logic.on_time_tick(self.datetime())
+            self._apply_actions(actions)
         except Exception as exc:
-            self._report_error("_on_pair_timer", exc, pair_name)
+            self._report_error("_on_timer", exc)
 
     def _on_keepalive_tick(self, kwargs: dict[str, Any]) -> None:
         """
         Send periodic ON pulse to keep KNX staircase output alive.
         """
-        pair_name = kwargs.get("pair_name")
         try:
-            runtime = self._runtime_by_name[pair_name]
             # run_every callbacks can still arrive right after cancellation; ignore those.
-            if runtime.keepalive_timer_handle is None or runtime.disabled:
+            if self._keepalive_timer_handle is None or self._disabled:
                 return
-            self._turn_fan(runtime, on=True, keepalive=True)
+            self._turn_fan(on=True, keepalive=True)
         except Exception as exc:
-            self._report_error("_on_keepalive_tick", exc, pair_name)
+            self._report_error("_on_keepalive_tick", exc)
 
-    def _apply_actions(self, runtime: PairRuntime, actions: list[Action]) -> None:
+    def _apply_actions(self, actions: list[Action]) -> None:
         """
         Translate pure logic actions into AppDaemon side effects.
         """
-        if runtime.disabled:
+        if self._disabled:
             return
         for action in actions:
             match action.kind:
                 case ActionKind.FAN_ON:
-                    self._turn_fan(runtime, on=True)
+                    self._turn_fan(on=True)
                 case ActionKind.FAN_OFF:
-                    self._turn_fan(runtime, on=False)
+                    self._turn_fan(on=False)
                 case ActionKind.START_KEEPALIVE:
-                    self._start_keepalive(runtime)
+                    self._start_keepalive()
                 case ActionKind.STOP_KEEPALIVE:
-                    self._stop_keepalive(runtime)
+                    self._stop_keepalive()
                 case ActionKind.SET_TIMER:
-                    self._set_timer(runtime, action)
+                    self._set_timer(action)
                 case ActionKind.CANCEL_TIMER:
-                    self._cancel_timer(runtime, action.timer_name)
+                    self._cancel_timer(action.timer_name)
                 case ActionKind.SET_OFF_DEADLINE:
-                    self._publish_off_deadline(runtime, action.at)
+                    self._publish_off_deadline(action.at)
 
-    def _turn_fan(self, runtime: PairRuntime, *, on: bool, keepalive: bool = False) -> None:
+    def _turn_fan(self, *, on: bool, keepalive: bool = False) -> None:
         """
         Issue a rate-limited fan switch command. Keepalive pulses log at ``DEBUG``.
         """
-        if runtime.disabled:
+        if self._disabled:
             return
-        now = self.datetime()
-        if runtime.record_fan_command(now):
-            self._disable_pair(runtime)
+        if self._rate_limiter.record(self.datetime()):
+            self._disable()
             return
         service = "switch/turn_on" if on else "switch/turn_off"
-        self.log(f"[{runtime.config.name}] Fan {service}"
-                 f"{' (keepalive)' if keepalive else ''}", level="DEBUG" if keepalive else "INFO")
-        self.call_service(service, entity_id=runtime.config.fan_switch_entity)
+        self.log(f"Fan {service}{' (keepalive)' if keepalive else ''}",
+                 level="DEBUG" if keepalive else "INFO")
+        self.call_service(service, entity_id=self._config.fan_switch_entity)
 
-    def _publish_off_deadline(self, runtime: PairRuntime, at: datetime | None) -> None:
+    def _publish_off_deadline(self, at: datetime | None) -> None:
         """
         Publish when the fan is going to turn off, or ``unknown``. Not rate-limited: it is a state
         write, not a fan command.
         """
-        entity_id = runtime.config.off_at_sensor_entity
+        entity_id = self._config.off_at_sensor_entity
         state = "unknown" if at is None else self._to_local_aware(at).isoformat()
         self.set_state(
             entity_id,
@@ -235,111 +221,95 @@ class ExtractorFanControl(hass.Hass):
         """
         return naive_local.replace(tzinfo=self.datetime(aware=True).tzinfo)
 
-    def _disable_pair(self, runtime: PairRuntime) -> None:
+    def _disable(self) -> None:
         """
-        Permanently disable a pair due to rate limiting and notify.
+        Permanently disable this fan due to rate limiting and notify.
         """
-        runtime.disabled = True
-        runtime.logic.disable()
-        self._cancel_timer(runtime, TimerName.ACTIVATION)
-        self._cancel_timer(runtime, TimerName.DEADLINE)
-        self._stop_keepalive(runtime)
-        self._publish_off_deadline(runtime, None)
+        self._shutdown()
         self.log(
-            f"[{runtime.config.name}] DISABLED: fan switch command rate "
-            f"limit exceeded ({FAN_CMD_RATE_LIMIT} commands in "
-            f"{FAN_CMD_RATE_WINDOW_SECONDS}s). Restart AppDaemon to "
-            "re-enable.", level="ERROR")
+            f"DISABLED: fan switch command rate limit exceeded ({FAN_CMD_RATE_LIMIT} commands in "
+            f"{FAN_CMD_RATE_WINDOW_SECONDS}s). Restart AppDaemon to re-enable.", level="ERROR")
         self.call_service(
             "persistent_notification/create",
             title="ExtractorFanControl disabled",
-            message=(f"Pair '{runtime.config.name}' has been disabled because "
-                     f"it sent more than {FAN_CMD_RATE_LIMIT} fan switch "
-                     f"commands in {FAN_CMD_RATE_WINDOW_SECONDS} seconds. "
-                     "This likely indicates a bug. Restart AppDaemon to "
-                     "re-enable."),
+            message=(f"Fan '{self._config.name}' has been disabled because it sent more than "
+                     f"{FAN_CMD_RATE_LIMIT} fan switch commands in {FAN_CMD_RATE_WINDOW_SECONDS} "
+                     "seconds. This likely indicates a bug. Restart AppDaemon to re-enable."),
         )
 
-    def _report_error(
-        self,
-        context: str,
-        exc: Exception,
-        pair_name: str | None = None,
-    ) -> None:
+    def _report_error(self, context: str, exc: Exception) -> None:
         """
-        Log an unhandled callback exception, disable the affected pair, and notify Home Assistant.
+        Log an unhandled callback exception, disable the fan, and notify Home Assistant.
         """
         tb = traceback.format_exc()
         self.log(f"Unhandled exception in {context}: {type(exc).__name__}: {exc}\n{tb}",
                  level="ERROR")
-
-        if pair_name is not None and pair_name in self._runtime_by_name:
-            runtime = self._runtime_by_name[pair_name]
-            runtime.disabled = True
-            runtime.logic.disable()
-            self._cancel_timer(runtime, TimerName.ACTIVATION)
-            self._cancel_timer(runtime, TimerName.DEADLINE)
-            self._stop_keepalive(runtime)
-            self._publish_off_deadline(runtime, None)
-
+        self._shutdown()
         self.call_service(
             "persistent_notification/create",
             title="ExtractorFanControl error",
             message=f"{context}\n{type(exc).__name__}: {exc}",
         )
 
-    def _start_keepalive(self, runtime: PairRuntime) -> None:
+    def _shutdown(self) -> None:
+        """
+        Disable both the adapter and the logic, cancel every timer and clear the countdown.
+
+        The countdown is cleared directly because the logic's actions are ignored from now on.
+        """
+        self._disabled = True
+        self._logic.disable()
+        self._cancel_timer(TimerName.ACTIVATION)
+        self._cancel_timer(TimerName.DEADLINE)
+        self._stop_keepalive()
+        self._publish_off_deadline(None)
+
+    def _start_keepalive(self) -> None:
         """
         Start periodic staircase keepalive pulses.
         """
-        if runtime.keepalive_timer_handle is not None:
+        if self._keepalive_timer_handle is not None:
             return
         interval = self._config.keepalive_pulse_interval_seconds
-        runtime.keepalive_timer_handle = self.run_every(
+        self._keepalive_timer_handle = self.run_every(
             self._on_keepalive_tick,
             self.datetime() + timedelta(seconds=interval),
             interval,
-            pair_name=runtime.config.name,
         )
 
-    def _stop_keepalive(self, runtime: PairRuntime) -> None:
+    def _stop_keepalive(self) -> None:
         """
         Stop periodic keepalive pulses.
         """
-        if runtime.keepalive_timer_handle is None:
+        if self._keepalive_timer_handle is None:
             return
-        self.cancel_timer(runtime.keepalive_timer_handle)
-        runtime.keepalive_timer_handle = None
+        self.cancel_timer(self._keepalive_timer_handle)
+        self._keepalive_timer_handle = None
 
-    def _set_timer(self, runtime: PairRuntime, action: Action) -> None:
+    def _set_timer(self, action: Action) -> None:
         """
         Set activation/deadline one-shot timer at the requested timestamp.
         """
         if action.timer_name not in (TimerName.ACTIVATION, TimerName.DEADLINE) or action.at is None:
             return
-        self._cancel_timer(runtime, action.timer_name)
-        handle = self.run_at(
-            self._on_pair_timer,
-            action.at,
-            pair_name=runtime.config.name,
-            timer_name=action.timer_name,
-        )
+        self._cancel_timer(action.timer_name)
+        handle = self.run_at(self._on_timer, action.at, timer_name=action.timer_name)
         if action.timer_name == TimerName.ACTIVATION:
-            runtime.activation_timer_handle = handle
+            self._activation_timer_handle = handle
         else:
-            runtime.deadline_timer_handle = handle
+            self._deadline_timer_handle = handle
 
-    def _cancel_timer(self, runtime: PairRuntime, timer_name: str | None) -> None:
+    def _cancel_timer(self, timer_name: str | None) -> None:
         """
         Cancel activation/deadline timer if currently scheduled.
         """
         match timer_name:
             case TimerName.ACTIVATION:
-                handle = runtime.activation_timer_handle
-                runtime.activation_timer_handle = None
+                handle = self._activation_timer_handle
+                self._activation_timer_handle = None
             case TimerName.DEADLINE:
-                handle = runtime.deadline_timer_handle
-                runtime.deadline_timer_handle = None
+                handle = self._deadline_timer_handle
+                self._deadline_timer_handle = None
             case _:
                 return
 

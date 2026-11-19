@@ -9,7 +9,7 @@ User-facing behavior and configuration are in [README.md](README.md).
 | `logic.py` | `ExtractorFanPairLogic`: pure state machine for one pair, returning declarative actions |
 | `extractor_fan_control.py` | AppDaemon adapter: listeners, timers, service calls, notifications |
 | `config.py` | Parses `apps.yaml` |
-| `runtime.py` | Per-pair callback handles and the fan command rate limiter |
+| `rate_limiter.py` | Sliding-window fan command rate limiter |
 
 ## State Machine
 
@@ -54,9 +54,9 @@ light-off. The adapter writes it to `off_at_sensor_entity` with `set_state`, whi
 rate-limited. The logic works in naive local time; the adapter attaches the timezone at publish
 time because `device_class: timestamp` needs an aware ISO 8601 string.
 
-`initialize()` publishes `unknown` for every pair, which creates the sensor and clears a pre-restart
-countdown. Disabling a pair also publishes `unknown` directly, because once the pair is disabled the
-adapter ignores the logic's actions.
+`initialize()` publishes `unknown`, which creates the sensor and clears a pre-restart countdown.
+Disabling the app also publishes `unknown` directly, because once it is disabled the adapter ignores
+the logic's actions.
 
 ## KNX Keepalive
 
@@ -73,8 +73,8 @@ Suggested actuator relay settings:
 ## Safety
 
 - **Rate limit:** more than `FAN_CMD_RATE_LIMIT` (5) fan commands in `FAN_CMD_RATE_WINDOW_SECONDS`
-  (30), keepalives included, disables the pair until restart and creates a persistent notification.
-- **Error boundary:** an unhandled callback exception disables the affected pair and notifies.
+  (30), keepalives included, disables the app until restart and creates a persistent notification.
+- **Error boundary:** an unhandled callback exception disables the app and notifies.
 
 ## Installation
 
