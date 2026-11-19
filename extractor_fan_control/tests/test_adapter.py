@@ -292,6 +292,17 @@ class TestSafetyBoundaries(unittest.TestCase):
         app.advance(60)
         self.assertEqual([], app.service_calls)
 
+    def test_a_rate_limit_trip_on_activation_leaves_no_timer_running(self):
+        app = FakeApp().start()
+        for _ in range(FAN_CMD_RATE_LIMIT):
+            app.now += timedelta(milliseconds=1)
+            app._turn_fan(on=False)  # pylint: disable=protected-access
+        # The activation's fan command trips the limit; the keepalive it would start must not start.
+        app.light("on")
+        app.advance(6)
+        self.assertTrue(app._disabled)  # pylint: disable=protected-access
+        self.assertEqual({}, app.timers)
+
     def test_a_keepalive_tick_after_disabling_is_ignored(self):
         app = FakeApp().start()
         app.light("on")

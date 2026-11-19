@@ -536,6 +536,17 @@ class TestSafetyBoundaries(unittest.TestCase):
         app.command_event(command="close")
         self.assertEqual([], app.service_calls)
 
+    def test_a_rate_limit_trip_mid_plan_leaves_no_timer_armed(self):
+        app = FakeApp(state=cover_state(80)).start()
+        app.command_event(command="set_position", position=30)
+        for _ in range(COMMAND_RATE_LIMIT - 1):
+            app.now += timedelta(milliseconds=1)
+            app._command("cover/stop_cover")  # pylint: disable=protected-access
+        # The new plan's command trips the limit; the timer it would arm next must not be armed.
+        app.command_event(command="close")
+        self.assertTrue(app._disabled)  # pylint: disable=protected-access
+        self.assertEqual({}, app.timers)
+
     def test_an_unhandled_callback_exception_disables_and_notifies(self):
         app = FakeApp(state=cover_state(80)).start()
         app._logic.on_close = _raises  # pylint: disable=protected-access

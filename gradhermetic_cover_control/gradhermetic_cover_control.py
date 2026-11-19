@@ -166,9 +166,10 @@ class GradhermeticCoverControl(Hass):
         """
         Translate declarative logic actions one-to-one into AppDaemon side effects.
         """
-        if self._disabled:
-            return
         for action in actions:
+            # Checked per action: a command that trips the rate limit disables mid-list.
+            if self._disabled:
+                return
             match action.kind:
                 case ActionKind.MOVE_TO:
                     self._command("cover/set_cover_position", position=action.position)
@@ -316,11 +317,12 @@ class GradhermeticCoverControl(Hass):
 
     def _shutdown(self) -> None:
         """
-        Disable both the adapter and the logic, and cancel the settle timer.
+        Disable the logic, apply what it hands back (cancelling the settle timer), then the adapter.
         """
-        self._disabled = True
-        self._logic.disable()
-        self._cancel_settle()
+        try:
+            self._apply_actions(self._logic.disable())
+        finally:
+            self._disabled = True
 
 
 def _describe_command(service: str, data: dict[str, Any]) -> str:

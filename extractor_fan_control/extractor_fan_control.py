@@ -156,9 +156,10 @@ class ExtractorFanControl(Hass):
         """
         Translate pure logic actions into AppDaemon side effects.
         """
-        if self._disabled:
-            return
         for action in actions:
+            # Checked per action: a command that trips the rate limit disables mid-list.
+            if self._disabled:
+                return
             match action.kind:
                 case ActionKind.FAN_ON:
                     self._turn_fan(on=True)

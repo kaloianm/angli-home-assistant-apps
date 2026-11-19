@@ -554,9 +554,15 @@ class TestStartupAndMisc(unittest.TestCase):
         self.assertEqual([ActionKind.PUBLISH_STATE], _kinds(actions))
         self.assertEqual(55, actions[0].position)
 
+    def test_disabling_abandons_the_plan_in_flight(self):
+        self.logic.seed_state(50)
+        self.logic.on_open()
+        self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER], _kinds(self.logic.disable()))
+        self.assertFalse(self.logic.has_pending_plan)
+
     def test_disabled_logic_ignores_events(self):
         self.logic.seed_state(50)
-        self.logic.disable()
+        self.assertEqual([], self.logic.disable())
         self.assertEqual([], self.logic.on_open())
         self.assertEqual([], self.logic.on_step(Direction.DOWN))
         self.assertEqual([], self.logic.on_real_position(50, False))
@@ -753,10 +759,19 @@ class TestInvariantFailure(unittest.TestCase):
         logic.seed_state(80)
         with mock.patch("gradhermetic_cover_control.planner.check_plan", return_value="L1: boom"):
             actions = logic.on_close()
-        self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER, ActionKind.NOTIFY], _kinds(actions))
+        self.assertEqual([ActionKind.NOTIFY], _kinds(actions))
         self.assertEqual(NotifyKind.INVARIANT, actions[-1].notify_kind)
         self.assertIn("L1: boom", actions[-1].message)
         self.assertEqual([], logic.on_open())  # disabled from here on
+
+    def test_a_failed_safety_check_abandons_the_plan_in_flight(self):
+        logic = GradhermeticCoverLogic(_config())
+        logic.seed_state(80)
+        logic.on_open()
+        with mock.patch("gradhermetic_cover_control.planner.check_plan", return_value="L1: boom"):
+            actions = logic.on_close()
+        self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER, ActionKind.NOTIFY], _kinds(actions))
+        self.assertFalse(logic.has_pending_plan)
 
 
 class TestConfirmedBugRegressions(unittest.TestCase):

@@ -160,9 +160,9 @@ class GradhermeticCoverLogic:
         Permanently stop automation decisions for this blind until restart.
         """
         self._disabled = True
-        self._executor.abandon()
+        actions = self._executor.abandon().actions
         self._log("disabled")
-        return []
+        return actions
 
     # -- User / command events ---------------------------------------------------------------------
 
@@ -469,11 +469,10 @@ class GradhermeticCoverLogic:
         """
         self._log(f"refusing a plan that violates {violation}", level="ERROR")
         self._disabled = True
-        self._executor.abandon()
-        return [
-            Action(ActionKind.CANCEL_SETTLE_TIMER),
+        actions = self._executor.abandon().actions
+        actions.append(
             Action(
                 ActionKind.NOTIFY, notify_kind=NotifyKind.INVARIANT,
                 message=(f"was disabled by a failed safety check: {violation}. This is a bug in "
-                         "the movement planner.")),
-        ]
+                         "the movement planner.")))
+        return actions
