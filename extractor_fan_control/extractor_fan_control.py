@@ -30,12 +30,14 @@ class ExtractorFanControl(Hass):
     AppDaemon app wiring extractor fan control logic for one light/fan pair.
     """
 
+    # AppDaemon sets up app state in initialize() rather than __init__, dictates the callback
+    # signatures, and every callback is an error boundary that must catch everything.
+    # pylint: disable=attribute-defined-outside-init,unused-argument,broad-exception-caught
+
     def initialize(self) -> None:
         """
         AppDaemon startup hook.
         """
-        # AppDaemon convention initializes instance state in this hook.
-        # pylint: disable=attribute-defined-outside-init
         config = parse_app_config(self.args or {})
         self._config = config
         self.log(f"Processing config: {config}", level="DEBUG")

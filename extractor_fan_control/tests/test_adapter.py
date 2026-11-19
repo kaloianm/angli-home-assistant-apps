@@ -124,6 +124,8 @@ class FakeApp(ExtractorFanControl):
         return self.published[OFF_AT]["state"]
 
     # -- AppDaemon API -----------------------------------------------------------------------------
+    # Stand-ins with AppDaemon's signatures.
+    # pylint: disable=missing-function-docstring
 
     def log(self, message, level="INFO"):
         self.logs.append((level, message))
@@ -131,11 +133,11 @@ class FakeApp(ExtractorFanControl):
     def get_state(self, entity_id, default=None):
         return "off" if entity_id in self.existing else default
 
-    def listen_state(self, callback, entity, **kwargs):
+    def listen_state(self, callback, entity, **_kwargs):
         self.state_listeners.append((entity, callback))
         return self._handle()
 
-    def run_daily(self, callback, start, **kwargs):
+    def run_daily(self, callback, start, **_kwargs):
         self.daily.append((callback, start))
         return self._handle()
 

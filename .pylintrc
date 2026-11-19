@@ -1,2 +1,17 @@
+[BASIC]
+# Tests are named for what they check; private helpers need no docstring either.
+no-docstring-rgx=^_|^test_|^setUp$
+
 [MESSAGES CONTROL]
-disable=superfluous-parens
+# Module and class names here say what they are; the design-size checks fire on dataclasses, state
+# machines and match dispatch, where splitting would hurt; and the test fixtures repeat on purpose.
+disable=superfluous-parens,
+        missing-module-docstring,
+        missing-class-docstring,
+        duplicate-code,
+        too-few-public-methods,
+        too-many-instance-attributes,
+        too-many-public-methods,
+        too-many-return-statements,
+        too-many-branches,
+        too-many-boolean-expressions

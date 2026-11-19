@@ -39,12 +39,14 @@ class GradhermeticCoverControl(Hass):
     AppDaemon app wrapping a real cover with Gradhermetic tilt-mode control.
     """
 
+    # AppDaemon sets up app state in initialize() rather than __init__, dictates the callback
+    # signatures, and every callback is an error boundary that must catch everything.
+    # pylint: disable=attribute-defined-outside-init,unused-argument,broad-exception-caught
+
     def initialize(self) -> None:
         """
         AppDaemon startup hook.
         """
-        # AppDaemon convention initializes instance state in this hook.
-        # pylint: disable=attribute-defined-outside-init
         config = parse_app_config(self.args or {})
         self._config = config
         self._position_entity = f"sensor.gradhermetic_{config.virtual_id}_position"
@@ -85,7 +87,7 @@ class GradhermeticCoverControl(Hass):
         try:
             position, is_moving, direction = self._read_real_position()
             self._apply_actions(self._logic.on_startup(position, is_moving, direction))
-            self._ready = True  # pylint: disable=attribute-defined-outside-init
+            self._ready = True
         except Exception as exc:
             self._report_error("_seed_startup_state", exc)
 

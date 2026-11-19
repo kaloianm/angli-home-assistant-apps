@@ -47,9 +47,6 @@ class GradhermeticCoverLogic:
     State machine translating user intent into blind movements for one Gradhermetic cover.
     """
 
-    # The event surface is wide by design: one method per thing that can happen to a blind.
-    # pylint: disable=too-many-public-methods
-
     def __init__(
         self,
         zone: Zone,
@@ -182,8 +179,8 @@ class GradhermeticCoverLogic:
         """
         Handle ``cover.close_cover``: least light.
 
-        Outside tilt this closes the blind fully; inside tilt it moves the slats to the entry landing
-        (virtual 0).
+        Outside tilt this closes the blind fully; inside tilt it moves the slats to the entry
+        landing (virtual 0).
         """
         return self._run(Intent(IntentKind.CLOSE))
 

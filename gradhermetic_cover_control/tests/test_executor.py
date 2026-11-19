@@ -44,6 +44,8 @@ class _Rig:
     An executor on a real actuator, fed the way the logic feeds it.
     """
 
+    # pylint: disable=missing-function-docstring
+
     def __init__(self, position, is_moving=False):
         self.actuator = Actuator()
         self.actuator.seed(position, is_moving)

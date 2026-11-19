@@ -179,7 +179,7 @@ class TestExtractorFanPairLogic(unittest.TestCase):
         ]
         self.assertTrue(
             any(a.at == self.t0 + timedelta(seconds=190) for a in deadline_sets)
-            or timer_set_actions == [])
+            or not timer_set_actions)
 
     def test_equal_thresholds_allow_activation_and_expected_stop_behavior(self):
         logic = ExtractorFanPairLogic(

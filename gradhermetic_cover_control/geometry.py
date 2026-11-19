@@ -246,7 +246,8 @@ class Zone:
 
     def snap_step_target(self, target: int, rising: bool) -> int:
         """
-        Snap a height-step target inside the ambiguity band to the band edge in the step's direction.
+        Snap a height-step target inside the ambiguity band to the band edge in the step's
+        direction.
         """
         target = clamp_pct(target)
         if not self.band_low < target < self.band_high:

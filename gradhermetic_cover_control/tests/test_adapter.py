@@ -121,6 +121,8 @@ class FakeApp(GradhermeticCoverControl):
                 callback(name, data, {})
 
     # -- AppDaemon API -----------------------------------------------------------------------------
+    # Stand-ins with AppDaemon's signatures.
+    # pylint: disable=missing-function-docstring
 
     def log(self, message, level="INFO"):
         self.logs.append((level, message))
@@ -132,15 +134,15 @@ class FakeApp(GradhermeticCoverControl):
             return self.cover_state
         return default if self.cover_state is None else self.cover_state.get("state", default)
 
-    def listen_state(self, callback, entity, **kwargs):
+    def listen_state(self, callback, entity, **_kwargs):
         self.state_listeners.append((entity, callback))
         return self._handle()
 
-    def listen_event(self, callback, event, **kwargs):
+    def listen_event(self, callback, event, **_kwargs):
         self.event_listeners.append((event, callback))
         return self._handle()
 
-    def run_in(self, callback, seconds, **kwargs):
+    def run_in(self, callback, seconds, **_kwargs):
         handle = self._handle()
         self.timers[handle] = (callback, seconds)
         return handle
@@ -524,7 +526,7 @@ class TestSafetyBoundaries(unittest.TestCase):
         # A runaway replan loop is synchronous, so its commands land milliseconds apart; that is
         # the shape the limit exists to catch, and the only one that can gather COMMAND_RATE_LIMIT
         # commands inside a COMMAND_RATE_WINDOW_SECONDS window at all.
-        for index in range(COMMAND_RATE_LIMIT + 1):
+        for _ in range(COMMAND_RATE_LIMIT + 1):
             app.now += timedelta(milliseconds=1)
             app._command("cover/stop_cover")  # pylint: disable=protected-access
         self.assertTrue(app._disabled)  # pylint: disable=protected-access

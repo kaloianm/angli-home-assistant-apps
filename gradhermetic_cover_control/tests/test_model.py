@@ -255,7 +255,7 @@ INTENTS = [
     ("tilt_off", lambda logic: logic.on_set_tilt_mode(False)),
     ("step_up", lambda logic: logic.on_step(Direction.UP)),
     ("step_down", lambda logic: logic.on_step(Direction.DOWN)),
-] + [(f"set_position_{value}", (lambda v: lambda logic: logic.on_set_position(v))(value))
+] + [(f"set_position_{value}", lambda logic, v=value: logic.on_set_position(v))
      for value in (0, 25, 37, 41, 45, 50, 75, 100)]
 
 
