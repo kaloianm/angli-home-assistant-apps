@@ -12,7 +12,7 @@ testable without AppDaemon. Each app instance manages one blind.
 | `geometry.py` | `Zone`: config validation, band/zone predicates, named targets, band snapping, the real↔virtual mapping |
 | `planner.py` | `plan(zone, belief, intent) -> Plan`: all movement sequences and latch guards; `check_plan` invariants |
 | `actuator.py` | `Actuator`: the real cover with no Gradhermetic knowledge. Drives one `Move`, tracks position and motion, owns the settle timer and stops, and delivers an `Arrived` or `Stalled` verdict |
-| `executor.py` | Drives one `Plan` as a series of actuator moves: step activation, advancing on `Arrived`, notifying on `Stalled` |
+| `executor.py` | Owns the `Actuator` and drives one `Plan` as a series of its moves: step activation, advancing on `Arrived`, notifying on `Stalled`, stop and replacement. The logic reaches the actuator only through it |
 | `logic.py` | `GradhermeticCoverLogic`: holds the belief, routes events to planner/executor, publishes state |
 | `gradhermetic_cover_control.py` | AppDaemon adapter (I/O only) |
 | `config.py` | Parses `apps.yaml` args |
@@ -263,7 +263,7 @@ python3 -m unittest discover -s gradhermetic_cover_control/tests -t . -v
 | `test_geometry.py` | Mapping round-trips, predicates at the edges, snapping, validation |
 | `test_planner.py` | Golden sequences per intent; a full state-space sweep asserting every plan passes `check_plan`; each invariant rejecting what it forbids |
 | `test_actuator.py` | Command translation, stale-feedback immunity, every settle-timer path, the recheck, when a stop is sent, direction and heading |
-| `test_executor.py` | Skip-if-satisfied, advancing on verdicts, which steps get the deviation tolerance, stall notification |
+| `test_executor.py` | Skip-if-satisfied, advancing on verdicts, which steps get the deviation tolerance, stall notification, stop, replacement |
 | `test_logic.py` | Event surface, belief transitions, replacement, step rule, publishing, tilt toggle, named regressions |
 | `test_config.py` | `apps.yaml` parsing |
 | `test_adapter.py` | The adapter against a fake `hass.Hass`: wiring, filtering, startup gate, malformed input, action translation, rate limit, error boundary |

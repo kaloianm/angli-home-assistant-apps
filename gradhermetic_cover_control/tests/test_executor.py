@@ -1,11 +1,10 @@
 import unittest
 
 from gradhermetic_cover_control.actions import ActionKind, NotifyKind
-from gradhermetic_cover_control.actuator import Actuator, CommandKind
+from gradhermetic_cover_control.actuator import CommandKind
 from gradhermetic_cover_control.executor import (
     DEVIATION_TOLERANCE_PCT,
     Executor,
-    Outcome,
     Status,
     virtual_position,
 )
@@ -41,28 +40,24 @@ def _move_plan(target, command=CommandKind.POSITION):
 
 class _Rig:
     """
-    An executor on a real actuator, fed the way the logic feeds it.
+    An executor seeded at a position, fed the way the logic feeds it.
     """
 
     # pylint: disable=missing-function-docstring
 
     def __init__(self, position, is_moving=False):
-        self.actuator = Actuator()
-        self.actuator.seed(position, is_moving)
-        self.executor = Executor(ZONE, self.actuator)
+        self.executor = Executor(ZONE)
+        self.executor.seed(position, is_moving)
+        self.actuator = self.executor._actuator  # pylint: disable=protected-access
 
     def start(self, movement):
         return self.executor.start(movement)
 
     def report(self, position, is_moving=False):
-        return self._feed(self.actuator.on_report(position, is_moving))
+        return self.executor.on_report(position, is_moving)
 
     def timer(self, position, is_moving=False):
-        return self._feed(self.actuator.on_timer(position, is_moving))
-
-    def _feed(self, feedback):
-        outcome = self.executor.on_verdict(feedback.verdict)
-        return Outcome(feedback.actions + outcome.actions, outcome.status, outcome.plan)
+        return self.executor.on_timer(position, is_moving)
 
 
 class TestActivation(unittest.TestCase):
@@ -142,7 +137,7 @@ class TestArrival(unittest.TestCase):
         self.assertIsNone(self.rig.actuator.move)
 
     def test_no_verdict_without_a_plan(self):
-        self.assertEqual(Status.IDLE, Executor(ZONE, Actuator()).on_verdict(None).status)
+        self.assertEqual(Status.IDLE, _Rig(50).report(30).status)
 
 
 class TestRiseToAtLeast(unittest.TestCase):
@@ -291,9 +286,47 @@ class TestAbandon(unittest.TestCase):
         self.assertIsNone(rig.actuator.move)
 
     def test_abandoning_nothing_does_nothing(self):
-        outcome = Executor(ZONE, Actuator()).abandon()
+        outcome = Executor(ZONE).abandon()
         self.assertEqual(Status.IDLE, outcome.status)
         self.assertEqual([], outcome.actions)
+
+
+class TestStop(unittest.TestCase):
+
+    def test_stop_halts_the_blind_and_reports_the_plan(self):
+        rig = _Rig(80)
+        movement = _enter_plan()
+        rig.start(movement)
+        outcome = rig.executor.stop()
+        self.assertEqual(Status.ABANDONED, outcome.status)
+        self.assertIs(movement, outcome.plan)
+        self.assertEqual([ActionKind.STOP, ActionKind.CANCEL_SETTLE_TIMER], _kinds(outcome))
+        self.assertFalse(rig.executor.has_plan)
+
+    def test_stop_without_a_plan_sends_no_stop_to_a_blind_at_rest(self):
+        outcome = _Rig(80).executor.stop()
+        self.assertEqual(Status.IDLE, outcome.status)
+        self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER], _kinds(outcome))
+
+
+class TestReplace(unittest.TestCase):
+
+    def test_starting_a_plan_replaces_the_one_in_flight(self):
+        rig = _Rig(80)
+        rig.start(_enter_plan())
+        replacement = _move_plan(30)
+        outcome = rig.start(replacement)
+        self.assertEqual([ActionKind.MOVE_TO, ActionKind.ARM_SETTLE_TIMER], _kinds(outcome))
+        self.assertIs(replacement, rig.executor.plan)
+        self.assertEqual(30, rig.actuator.move.target)
+
+    def test_a_replacement_already_satisfied_releases_the_old_move(self):
+        rig = _Rig(80)
+        rig.start(_move_plan(30))
+        outcome = rig.start(_move_plan(80))
+        self.assertEqual(Status.COMPLETED, outcome.status)
+        self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER], _kinds(outcome))
+        self.assertIsNone(rig.actuator.move)
 
 
 if __name__ == "__main__":

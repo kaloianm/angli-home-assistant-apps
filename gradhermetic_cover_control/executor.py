@@ -1,6 +1,7 @@
 """
 Execution of one movement plan, step by step, on top of :mod:`actuator`.
 
+The executor owns the :class:`Actuator`: every command and every controller reading goes through it.
 Each step becomes one actuator :class:`Move`. The executor only decides what happens next: a step
 already satisfied by a settled blind is skipped without a command, an :class:`Arrived` verdict
 advances the plan, and a :class:`Stalled` one abandons it and notifies.
@@ -13,7 +14,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from gradhermetic_cover_control.actions import Action, ActionKind, NotifyKind
-from gradhermetic_cover_control.actuator import Actuator, Stalled, Verdict
+from gradhermetic_cover_control.actuator import Actuator, Direction, Feedback, Stalled
 from gradhermetic_cover_control.geometry import Zone, clamp_pct
 from gradhermetic_cover_control.planner import Latch, Plan, PlanKind, Step, StepKind
 
@@ -58,17 +59,37 @@ class Executor:
     def __init__(
         self,
         zone: Zone,
-        actuator: Actuator,
         log: Callable[..., None] = lambda *_args, **_kwargs: None,
     ) -> None:
         """
-        Create an idle executor for one blind.
+        Create an idle executor for one blind, with nothing known about the cover.
         """
         self._zone = zone
-        self._actuator = actuator
+        self._actuator = Actuator(log)
         self._log = log
         self._plan: Plan | None = None
         self._index = 0
+
+    @property
+    def position(self) -> int | None:
+        """
+        The last reported real position, or None while it is unreadable.
+        """
+        return self._actuator.position
+
+    @property
+    def is_moving(self) -> bool:
+        """
+        Whether the controller last reported the blind travelling.
+        """
+        return self._actuator.is_moving
+
+    @property
+    def heading(self) -> Direction | None:
+        """
+        Which way the blind is travelling (see :attr:`Actuator.heading`).
+        """
+        return self._actuator.heading
 
     @property
     def plan(self) -> Plan | None:
@@ -95,37 +116,81 @@ class Executor:
 
     # -- Events ------------------------------------------------------------------------------------
 
+    def seed(self, position: int | None, is_moving: bool = False,
+             direction: Direction | None = None) -> None:
+        """
+        Take the first controller reading, with no plan in progress.
+        """
+        self._actuator.seed(position, is_moving, direction)
+
     def start(self, movement: Plan) -> Outcome:
         """
-        Begin a plan, activating its first unsatisfied step. The caller abandons any previous plan.
+        Begin a plan, activating its first unsatisfied step.
+
+        A plan in flight is replaced without a stop: the new command supersedes its move, or, if
+        nothing is left to command, completion releases it. The caller degrades its belief for the
+        replaced plan first.
         """
+        if self._plan is not None:
+            self._log(f"replacing the {self._plan.kind} plan", level="DEBUG")
         self._plan = movement
         self._index = 0
         return self._advance()
 
-    def on_verdict(self, verdict: Verdict | None) -> Outcome:
+    def on_report(self, position: int | None, is_moving: bool,
+                  direction: Direction | None = None) -> Outcome:
         """
-        Consume the actuator's verdict on the current step, if it gave one.
+        Consume a controller report, advancing the plan on the actuator's verdict.
         """
-        if self._plan is None or verdict is None:
-            return Outcome()
-        if isinstance(verdict, Stalled):
-            return self._stall(verdict.reason)
-        self._index += 1
-        return self._advance()
+        return self._judge(self._actuator.on_report(position, is_moving, direction))
+
+    def on_timer(self, position: int | None, is_moving: bool,
+                 direction: Direction | None = None) -> Outcome:
+        """
+        Consume a settle-timer firing, with the controller state read when it fired.
+        """
+        return self._judge(self._actuator.on_timer(position, is_moving, direction))
+
+    def stop(self) -> Outcome:
+        """
+        Drop the current plan and stop the blind if it may be travelling (see
+        :meth:`Actuator.stop`).
+        """
+        return self._drop(self._actuator.stop())
 
     def abandon(self) -> Outcome:
         """
-        Drop the current plan because it is being stopped or replaced.
+        Drop the current plan without stopping the blind.
+        """
+        if self._plan is None:
+            return Outcome()
+        return self._drop(self._actuator.release())
+
+    # -- Internals ---------------------------------------------------------------------------------
+
+    def _judge(self, feedback: Feedback) -> Outcome:
+        """
+        Act on the actuator's verdict on the current step, if it gave one.
+        """
+        if self._plan is None or feedback.verdict is None:
+            return Outcome(feedback.actions)
+        if isinstance(feedback.verdict, Stalled):
+            outcome = self._stall(feedback.verdict.reason)
+        else:
+            self._index += 1
+            outcome = self._advance()
+        return Outcome(feedback.actions + outcome.actions, outcome.status, outcome.plan)
+
+    def _drop(self, actions: list[Action]) -> Outcome:
+        """
+        Forget the current plan, reporting it as abandoned alongside the actuator's ``actions``.
         """
         movement = self._plan
         if movement is None:
-            return Outcome()
+            return Outcome(actions)
         self._log("plan abandoned", level="DEBUG")
         self._clear()
-        return Outcome(self._actuator.release(), Status.ABANDONED, movement)
-
-    # -- Internals ---------------------------------------------------------------------------------
+        return Outcome(actions, Status.ABANDONED, movement)
 
     def _step(self) -> Step:
         """
