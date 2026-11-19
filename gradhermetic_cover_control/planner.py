@@ -81,7 +81,6 @@ class Belief:
 
     position: int | None
     latch: Latch
-    is_moving: bool = False
 
     @property
     def in_tilt(self) -> bool:

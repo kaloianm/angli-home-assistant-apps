@@ -35,7 +35,7 @@ from collections.abc import Callable
 from gradhermetic_cover_control import planner
 from gradhermetic_cover_control.actions import Action, ActionKind, Motion, NotifyKind
 from gradhermetic_cover_control.cover_types import Direction
-from gradhermetic_cover_control.executor import Executor, Outcome, Status, virtual_position
+from gradhermetic_cover_control.executor import Executor, Outcome, Stall, Status
 from gradhermetic_cover_control.geometry import Zone, clamp_pct
 from gradhermetic_cover_control.planner import Belief, Intent, IntentKind, Latch, Plan, PlanKind
 
@@ -114,8 +114,7 @@ class GradhermeticCoverLogic:
         """
         The current belief, as the planner sees it.
         """
-        return Belief(position=self._executor.position, latch=self._latch,
-                      is_moving=self._executor.is_moving)
+        return Belief(position=self._executor.position, latch=self._latch)
 
     # -- Lifecycle ---------------------------------------------------------------------------------
 
@@ -317,7 +316,7 @@ class GradhermeticCoverLogic:
         """
         Consume a settle-timer firing, with the controller state read at the moment it fired.
         """
-        if self._disabled or not self.has_pending_plan:
+        if self._disabled:
             return []
         actions = self._feed(self._executor.on_timer, position, is_moving, direction)
         return actions + self._publish_current()
@@ -359,7 +358,10 @@ class GradhermeticCoverLogic:
         match outcome.status:
             case Status.COMPLETED:
                 self._latch = outcome.plan.final_latch
-            case Status.STALLED | Status.ABANDONED:
+            case Status.STALLED:
+                self._degrade_latch(outcome.plan)
+                return outcome.actions + [_stall_notice(outcome.stall)]
+            case Status.ABANDONED:
                 self._degrade_latch(outcome.plan)
         return outcome.actions
 
@@ -394,8 +396,7 @@ class GradhermeticCoverLogic:
         """
         pending = self._executor.plan
         latch = self._latch if pending is None else self._degraded_latch(pending)
-        return Belief(position=self._executor.position, latch=latch,
-                      is_moving=self._executor.is_moving)
+        return Belief(position=self._executor.position, latch=latch)
 
     def _degrade_latch(self, movement: Plan) -> None:
         """
@@ -466,3 +467,22 @@ class GradhermeticCoverLogic:
                 message=(f"was disabled by a failed safety check: {violation}. This is a bug in "
                          "the movement planner.")))
         return actions
+
+
+def virtual_position(zone: Zone, latch: Latch, position: int) -> int:
+    """
+    Map a real position to the virtual position the user-facing cover shows.
+    """
+    if latch == Latch.LATCHED:
+        return zone.real_to_virtual(position)
+    return clamp_pct(position)
+
+
+def _stall_notice(stall: Stall) -> Action:
+    """
+    The notification for a plan that stalled.
+    """
+    return Action(
+        ActionKind.NOTIFY, notify_kind=NotifyKind.STALL,
+        message=(f"did not reach {stall.target}% ({stall.reason}) and the move was abandoned. "
+                 "Check the blind for a mechanical obstruction or a misconfigured tilt zone."))

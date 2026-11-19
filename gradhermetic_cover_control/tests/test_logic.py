@@ -5,7 +5,7 @@ from unittest import mock
 from gradhermetic_cover_control.actions import ActionKind, Motion, NotifyKind
 from gradhermetic_cover_control.cover_types import Direction
 from gradhermetic_cover_control.geometry import Zone
-from gradhermetic_cover_control.logic import GradhermeticCoverLogic
+from gradhermetic_cover_control.logic import GradhermeticCoverLogic, virtual_position
 from gradhermetic_cover_control.planner import Latch, PlanKind
 
 # Geometry used throughout: zone [38, 44], epsilon 2, release 46, step 2 real travel percent.
@@ -733,6 +733,8 @@ class TestSettleTimer(unittest.TestCase):
         self.assertEqual(
             [ActionKind.CANCEL_SETTLE_TIMER, ActionKind.NOTIFY, ActionKind.PUBLISH_STATE],
             _kinds(actions))
+        self.assertEqual(NotifyKind.STALL, actions[1].notify_kind)
+        self.assertIn("did not reach 0% (it settled at 50%)", actions[1].message)
         self.assertFalse(self.logic.has_pending_plan)
 
     def test_an_unreadable_position_stalls_and_stops(self):
@@ -742,8 +744,10 @@ class TestSettleTimer(unittest.TestCase):
                          _kinds(actions)[:3])
         self.assertEqual(Latch.UNKNOWN, self.logic.latch)
 
-    def test_a_stray_firing_without_a_plan_does_nothing(self):
+    def test_a_stray_firing_without_a_plan_is_just_a_reading(self):
+        self.logic.on_startup(80)
         self.assertEqual([], self.logic.on_settle_timer(80, False))
+        self.assertEqual([ActionKind.PUBLISH_STATE], _kinds(self.logic.on_settle_timer(70, False)))
 
     def test_the_timer_can_complete_a_plan_the_actuator_never_reported(self):
         self.logic.on_close()
@@ -751,6 +755,19 @@ class TestSettleTimer(unittest.TestCase):
         self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER, ActionKind.PUBLISH_STATE],
                          _kinds(actions))
         self.assertFalse(self.logic.has_pending_plan)
+
+
+class TestVirtualPosition(unittest.TestCase):
+    """The mapping the logic publishes with: a height outside tilt, a slat angle inside it."""
+
+    def test_unlatched_and_unknown_publish_the_real_position(self):
+        self.assertEqual(30, virtual_position(_config(), Latch.UNLATCHED, 30))
+        self.assertEqual(41, virtual_position(_config(), Latch.UNKNOWN, 41))
+
+    def test_latched_publishes_the_inverted_zone_mapping(self):
+        zone = _config()
+        self.assertEqual(67, virtual_position(zone, Latch.LATCHED, 40))
+        self.assertEqual(zone.real_to_virtual(43), virtual_position(zone, Latch.LATCHED, 43))
 
 
 class TestInvariantFailure(unittest.TestCase):

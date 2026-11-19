@@ -47,8 +47,8 @@ CUSTOM_ZONE = Zone(tilt_zone_upper_pct=UPPER, tilt_zone_lower_pct=LOWER,
 STARTS = (100, 80, 47, RELEASE, 45, UPPER, 41, LOWER, DIP, 30, 0, None)
 
 
-def _belief(position, latch=Latch.UNLATCHED, is_moving=False):
-    return Belief(position=position, latch=latch, is_moving=is_moving)
+def _belief(position, latch=Latch.UNLATCHED):
+    return Belief(position=position, latch=latch)
 
 
 def _targets(movement):

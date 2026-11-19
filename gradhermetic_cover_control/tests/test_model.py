@@ -19,7 +19,6 @@ import unittest
 
 from gradhermetic_cover_control.actions import ActionKind
 from gradhermetic_cover_control.cover_types import Direction
-from gradhermetic_cover_control.executor import virtual_position
 from gradhermetic_cover_control.geometry import Zone
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 from gradhermetic_cover_control.planner import (
@@ -289,9 +288,7 @@ class ModelTestCase(unittest.TestCase):
         self.assertFalse(harness.timer_armed, "the settle timer was left armed")
         self.assertEqual(harness.sim.reported, harness.logic.last_position)
         if harness.published:
-            expected = virtual_position(harness.zone, harness.logic.latch,
-                                        harness.logic.last_position)
-            self.assertEqual(expected, harness.published[-1])
+            self.assertEqual(harness.logic.current_virtual_position(), harness.published[-1])
 
     def assert_nominal(self, harness):
         """

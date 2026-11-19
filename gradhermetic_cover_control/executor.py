@@ -4,7 +4,7 @@ Execution of one movement plan, step by step, on top of :mod:`actuator`.
 The executor owns the :class:`Actuator`: every command and every controller reading goes through it.
 Each step becomes one actuator :class:`Move`. The executor only decides what happens next: a step
 already satisfied by a settled blind is skipped without a command, an :class:`Arrived` verdict
-advances the plan, and a :class:`Stalled` one abandons it and notifies.
+advances the plan, and a :class:`Stalled` one abandons it and reports why.
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from gradhermetic_cover_control.actions import Action, ActionKind, NotifyKind
+from gradhermetic_cover_control.actions import Action
 from gradhermetic_cover_control.actuator import Actuator, Feedback, Move, Stalled
 from gradhermetic_cover_control.cover_types import Direction
-from gradhermetic_cover_control.geometry import Zone, clamp_pct
-from gradhermetic_cover_control.planner import Latch, Plan, PlanKind, Step, StepKind
+from gradhermetic_cover_control.geometry import Zone
+from gradhermetic_cover_control.planner import Plan, PlanKind, Step, StepKind
 
 # How far off target an ordinary height move may settle and still count as arrived; see
 # Executor._tolerance.
@@ -37,8 +37,18 @@ class Status(StrEnum):
     # The blind settled short of its target, or its position became unreadable. The plan was
     # dropped.
     STALLED = "stalled"
-    # The plan was dropped for a stop or a replacement.
+    # The plan was dropped for a stop or because the blind is being disabled.
     ABANDONED = "abandoned"
+
+
+@dataclass(frozen=True)
+class Stall:
+    """
+    Why a plan stalled: the satisfaction target of the step it gave up on, and what the blind did.
+    """
+
+    target: int
+    reason: str
 
 
 @dataclass
@@ -50,6 +60,7 @@ class Outcome:
     actions: list[Action] = field(default_factory=list)
     status: Status = Status.IDLE
     plan: Plan | None = None
+    stall: Stall | None = None
 
 
 class Executor:
@@ -180,7 +191,8 @@ class Executor:
         else:
             self._index += 1
             outcome = self._advance()
-        return Outcome(feedback.actions + outcome.actions, outcome.status, outcome.plan)
+        return Outcome(feedback.actions + outcome.actions, outcome.status, outcome.plan,
+                       outcome.stall)
 
     def _drop(self, actions: list[Action]) -> Outcome:
         """
@@ -262,23 +274,10 @@ class Executor:
 
     def _stall(self, reason: str) -> Outcome:
         """
-        Abandon a plan the blind is not going to finish, and notify, naming the satisfaction target.
+        Abandon a plan the blind is not going to finish, naming the satisfaction target it missed.
         """
         movement = self._plan
         target = self._step().target
         self._clear()
-        message = (f"did not reach {target}% ({reason}) and the move was abandoned. Check the "
-                   "blind for a mechanical obstruction or a misconfigured tilt zone.")
         self._log(f"plan stalled short of {target}%: {reason}", level="ERROR")
-        actions = self._actuator.release()
-        actions.append(Action(ActionKind.NOTIFY, notify_kind=NotifyKind.STALL, message=message))
-        return Outcome(actions, Status.STALLED, movement)
-
-
-def virtual_position(zone: Zone, latch: Latch, position: int) -> int:
-    """
-    Map a real position to the virtual position the user-facing cover shows.
-    """
-    if latch == Latch.LATCHED:
-        return zone.real_to_virtual(position)
-    return clamp_pct(position)
+        return Outcome(self._actuator.release(), Status.STALLED, movement, Stall(target, reason))

@@ -1,12 +1,12 @@
 import unittest
 
-from gradhermetic_cover_control.actions import ActionKind, NotifyKind
+from gradhermetic_cover_control.actions import ActionKind
 from gradhermetic_cover_control.cover_types import CommandKind
 from gradhermetic_cover_control.executor import (
     DEVIATION_TOLERANCE_PCT,
     Executor,
+    Stall,
     Status,
-    virtual_position,
 )
 from gradhermetic_cover_control.geometry import Zone
 from gradhermetic_cover_control.planner import Latch, Plan, PlanKind, Step, StepKind
@@ -198,11 +198,8 @@ class TestStall(unittest.TestCase):
                  Latch.UNLATCHED))
         outcome = rig.timer(45)
         self.assertEqual(Status.STALLED, outcome.status)
-        self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER, ActionKind.NOTIFY], _kinds(outcome))
-        notify = _of(outcome, ActionKind.NOTIFY)[0]
-        self.assertEqual(NotifyKind.STALL, notify.notify_kind)
-        self.assertIn("did not reach 46%", notify.message)
-        self.assertIn("45", notify.message)
+        self.assertEqual([ActionKind.CANCEL_SETTLE_TIMER], _kinds(outcome))
+        self.assertEqual(Stall(46, "it settled at 45%"), outcome.stall)
         self.assertFalse(rig.executor.has_plan)
         self.assertIsNone(rig.actuator.move)
 
@@ -211,9 +208,8 @@ class TestStall(unittest.TestCase):
         rig.start(_move_plan(0, CommandKind.CLOSE))
         outcome = rig.timer(None)
         self.assertEqual(Status.STALLED, outcome.status)
-        self.assertEqual([ActionKind.STOP, ActionKind.CANCEL_SETTLE_TIMER, ActionKind.NOTIFY],
-                         _kinds(outcome))
-        self.assertIn("unreadable", _of(outcome, ActionKind.NOTIFY)[0].message)
+        self.assertEqual([ActionKind.STOP, ActionKind.CANCEL_SETTLE_TIMER], _kinds(outcome))
+        self.assertIn("unreadable", outcome.stall.reason)
 
 
 class TestDeviationTolerance(unittest.TestCase):
@@ -254,16 +250,7 @@ class TestDeviationTolerance(unittest.TestCase):
         self.assertEqual(Status.STALLED, rig.timer(45).status)
 
 
-class TestVirtualPosition(unittest.TestCase):
-    """The mapping the logic publishes with: a height outside tilt, a slat angle inside it."""
-
-    def test_unlatched_and_unknown_publish_the_real_position(self):
-        self.assertEqual(30, virtual_position(ZONE, Latch.UNLATCHED, 30))
-        self.assertEqual(41, virtual_position(ZONE, Latch.UNKNOWN, 41))
-
-    def test_latched_publishes_the_inverted_zone_mapping(self):
-        self.assertEqual(67, virtual_position(ZONE, Latch.LATCHED, 40))
-        self.assertEqual(ZONE.real_to_virtual(43), virtual_position(ZONE, Latch.LATCHED, 43))
+class TestPublishing(unittest.TestCase):
 
     def test_the_executor_never_publishes(self):
         # Publishing needs the belief, which only the logic holds; the executor reports outcomes.
