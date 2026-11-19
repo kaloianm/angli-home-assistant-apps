@@ -12,10 +12,10 @@ from datetime import datetime, timedelta
 from gradhermetic_cover_control.actions import Action, ActionKind, Motion, NotifyKind
 from gradhermetic_cover_control.gradhermetic_cover_control import (
     COMMAND_EVENT,
+    COMMAND_RATE_LIMIT,
     STARTUP_DELAY_SECONDS,
     GradhermeticCoverControl,
 )
-from gradhermetic_cover_control.runtime import COMMAND_RATE_LIMIT
 
 REAL_COVER = "cover.living_room_blind"
 VIRTUAL_ID = "living_room"
@@ -213,7 +213,7 @@ class TestStartupSeed(unittest.TestCase):
         app.get_state = _raises
         app.fire_timers()
         self.assertIn("GradhermeticCoverControl error", app.notify_titles())
-        self.assertTrue(app._runtime.disabled)  # pylint: disable=protected-access
+        self.assertTrue(app._disabled)  # pylint: disable=protected-access
 
 
 class TestCommandEvents(unittest.TestCase):
@@ -263,12 +263,12 @@ class TestCommandEvents(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.app.command_event(command="set_position", position=raw)
                 self.assertEqual([], self.app.service_calls)
-                self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
+                self.assertFalse(self.app._disabled)  # pylint: disable=protected-access
 
     def test_a_malformed_position_is_ignored_not_fatal(self):
         self.app.command_event(command="set_position", position="banana")
         self.assertEqual([], self.app.service_calls)
-        self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
+        self.assertFalse(self.app._disabled)  # pylint: disable=protected-access
 
     def test_set_tilt_mode_without_enabled_is_ignored(self):
         self.app.command_event(command="set_tilt_mode")
@@ -281,7 +281,7 @@ class TestCommandEvents(unittest.TestCase):
     def test_an_unknown_command_is_ignored(self):
         self.app.command_event(command="fly")
         self.assertEqual([], self.app.service_calls)
-        self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
+        self.assertFalse(self.app._disabled)  # pylint: disable=protected-access
 
 
 class TestStepAndToggleCommands(unittest.TestCase):
@@ -310,7 +310,7 @@ class TestStepAndToggleCommands(unittest.TestCase):
     def test_a_step_never_enters_tilt(self):
         self.app.command_event(command="step", direction="down")
         self.assertEqual([], self.app.calls_to("cover/open_cover"))
-        self.assertFalse(self.app._runtime.logic.in_tilt)  # pylint: disable=protected-access
+        self.assertFalse(self.app._logic.in_tilt)  # pylint: disable=protected-access
 
     def test_a_step_while_moving_stops_the_blind(self):
         self.app.command_event(command="close")
@@ -324,7 +324,7 @@ class TestStepAndToggleCommands(unittest.TestCase):
             with self.subTest(direction=direction):
                 self.app.command_event(command="step", direction=direction)
                 self.assertEqual([], self.app.service_calls)
-                self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
+                self.assertFalse(self.app._disabled)  # pylint: disable=protected-access
 
 
 class TestActionTranslation(unittest.TestCase):
@@ -450,27 +450,27 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
         self.app.report(30)
         self.assertEqual("30", self.app.published[POSITION_ENTITY]["state"])
         # pylint: disable-next=protected-access
-        self.assertFalse(self.app._runtime.logic.has_pending_plan)
+        self.assertFalse(self.app._logic.has_pending_plan)
 
     def test_an_unavailable_cover_clears_the_position_belief(self):
         self.app.report(70, state="closing")
         self.app.report(None, state="unavailable")
-        logic = self.app._runtime.logic  # pylint: disable=protected-access
+        logic = self.app._logic  # pylint: disable=protected-access
         self.assertIsNone(logic.last_position)
         self.assertFalse(logic.is_moving)
 
     def test_a_fractional_reading_is_rounded_to_a_whole_percent(self):
         # Nothing past the adapter handles a fraction, even from a cover that reports one.
         self.app.report(41.6)
-        logic = self.app._runtime.logic  # pylint: disable=protected-access
+        logic = self.app._logic  # pylint: disable=protected-access
         self.assertEqual(42, logic.last_position)
         self.assertIs(int, type(logic.last_position))
 
     def test_a_non_numeric_position_is_treated_as_unavailable(self):
         self.app.report("unknown")
-        logic = self.app._runtime.logic  # pylint: disable=protected-access
+        logic = self.app._logic  # pylint: disable=protected-access
         self.assertIsNone(logic.last_position)
-        self.assertFalse(self.app._runtime.disabled)  # pylint: disable=protected-access
+        self.assertFalse(self.app._disabled)  # pylint: disable=protected-access
 
     def test_the_settle_timer_reads_the_controller_and_stalls(self):
         self.app.command_event(command="set_position", position=30)
@@ -505,7 +505,7 @@ class TestFeedbackAndTheSettleTimer(unittest.TestCase):
         self.app.command_event(command="close")
         self.app.cover_state = cover_state(55, state="closing")
         self.app.fire_timers()
-        logic = self.app._runtime.logic  # pylint: disable=protected-access
+        logic = self.app._logic  # pylint: disable=protected-access
         self.assertTrue(logic.is_moving)
         self.assertEqual("closing", self.app.published[POSITION_ENTITY]["attributes"]["motion"])
 
@@ -521,14 +521,13 @@ class TestSafetyBoundaries(unittest.TestCase):
 
     def test_the_rate_limit_disables_and_notifies(self):
         app = FakeApp(state=cover_state(80)).start()
-        runtime = app._runtime  # pylint: disable=protected-access
         # A runaway replan loop is synchronous, so its commands land milliseconds apart; that is
         # the shape the limit exists to catch, and the only one that can gather COMMAND_RATE_LIMIT
         # commands inside a COMMAND_RATE_WINDOW_SECONDS window at all.
         for index in range(COMMAND_RATE_LIMIT + 1):
             app.now += timedelta(milliseconds=1)
-            app._command(runtime, "cover/stop_cover")  # pylint: disable=protected-access
-        self.assertTrue(runtime.disabled)
+            app._command("cover/stop_cover")  # pylint: disable=protected-access
+        self.assertTrue(app._disabled)  # pylint: disable=protected-access
         self.assertIn("GradhermeticCoverControl disabled", app.notify_titles())
         # Nothing reaches the real cover afterwards.
         app.service_calls.clear()
@@ -537,9 +536,9 @@ class TestSafetyBoundaries(unittest.TestCase):
 
     def test_an_unhandled_callback_exception_disables_and_notifies(self):
         app = FakeApp(state=cover_state(80)).start()
-        app._runtime.logic.on_close = _raises  # pylint: disable=protected-access
+        app._logic.on_close = _raises  # pylint: disable=protected-access
         app.command_event(command="close")
-        self.assertTrue(app._runtime.disabled)  # pylint: disable=protected-access
+        self.assertTrue(app._disabled)  # pylint: disable=protected-access
         self.assertIn("GradhermeticCoverControl error", app.notify_titles())
 
 

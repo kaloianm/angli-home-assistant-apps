@@ -17,11 +17,7 @@ from gradhermetic_cover_control.actuator import Direction
 from gradhermetic_cover_control.config import parse_app_config
 from gradhermetic_cover_control.geometry import to_whole_pct
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
-from gradhermetic_cover_control.runtime import (
-    COMMAND_RATE_LIMIT,
-    COMMAND_RATE_WINDOW_SECONDS,
-    CoverRuntime,
-)
+from gradhermetic_cover_control.rate_limiter import RateLimiter
 
 try:
     import appdaemon.plugins.hass.hassapi as hass
@@ -40,6 +36,12 @@ COMMAND_EVENT = "gradhermetic_command"
 # Seconds to wait after startup before reading the real cover's position, letting entity state
 # settle.
 STARTUP_DELAY_SECONDS = 5
+
+# More real-cover commands than this within the window disables the blind until AppDaemon restarts.
+# It catches a runaway replan loop (which hits it in seconds) while staying well above a burst of
+# human taps (~30 a minute).
+COMMAND_RATE_LIMIT = 60
+COMMAND_RATE_WINDOW_SECONDS = 60
 
 
 class GradhermeticCoverControl(hass.Hass):
@@ -62,11 +64,15 @@ class GradhermeticCoverControl(hass.Hass):
         # guards are derived from.
         self._ready = False
 
+        # Set by the rate limit or an unhandled exception; actions are dropped from then on.
+        self._disabled = False
+
         # Last state written to the tilt-mode sensor; see _publish_virtual.
         self._last_tilt_state: str | None = None
 
-        logic = GradhermeticCoverLogic(config.zone, log=self.log)
-        self._runtime = CoverRuntime(config=config, logic=logic)
+        self._logic = GradhermeticCoverLogic(config.zone, log=self.log)
+        self._rate_limiter = RateLimiter(COMMAND_RATE_LIMIT, COMMAND_RATE_WINDOW_SECONDS)
+        self._settle_timer_handle: Any | None = None
 
         if self.get_state(config.real_cover, default=None) is None:
             self.log(
@@ -88,7 +94,7 @@ class GradhermeticCoverControl(hass.Hass):
         """
         try:
             position, is_moving, direction = self._read_real_position()
-            self._apply_actions(self._runtime.logic.on_startup(position, is_moving, direction))
+            self._apply_actions(self._logic.on_startup(position, is_moving, direction))
             self._ready = True  # pylint: disable=attribute-defined-outside-init
         except Exception as exc:
             self._report_error("_seed_startup_state", exc)
@@ -113,15 +119,15 @@ class GradhermeticCoverControl(hass.Hass):
         """
         Translate a command payload into logic events.
         """
-        runtime = self._runtime
+        logic = self._logic
         command = data.get("command")
         match command:
             case "open":
-                return runtime.logic.on_open()
+                return logic.on_open()
             case "close":
-                return runtime.logic.on_close()
+                return logic.on_close()
             case "stop":
-                return runtime.logic.on_stop()
+                return logic.on_stop()
             case "set_position":
                 raw_position = data.get("position")
                 position = _parse_pct(raw_position)
@@ -129,21 +135,21 @@ class GradhermeticCoverControl(hass.Hass):
                     self.log(f"Ignoring set_position with invalid position {raw_position!r}",
                              level="WARNING")
                     return []
-                return runtime.logic.on_set_position(position)
+                return logic.on_set_position(position)
             case "set_tilt_mode":
                 enabled = data.get("enabled")
                 if enabled is None:
                     self.log("Ignoring set_tilt_mode without 'enabled'", level="WARNING")
                     return []
-                return runtime.logic.on_set_tilt_mode(_as_bool(enabled))
+                return logic.on_set_tilt_mode(_as_bool(enabled))
             case "toggle_tilt_mode":
-                return runtime.logic.on_toggle_tilt_mode()
+                return logic.on_toggle_tilt_mode()
             case "step":
                 direction = data.get("direction")
                 if direction not in (Direction.UP, Direction.DOWN):
                     self.log(f"Ignoring step with invalid direction {direction!r}", level="WARNING")
                     return []
-                return runtime.logic.on_step(Direction(direction))
+                return logic.on_step(Direction(direction))
             case _:
                 self.log(f"Ignoring unknown command {command!r}", level="WARNING")
                 return []
@@ -158,8 +164,7 @@ class GradhermeticCoverControl(hass.Hass):
         """
         try:
             position, is_moving, direction = _extract_feedback(new)
-            self._apply_actions(self._runtime.logic.on_real_position(position, is_moving,
-                                                                     direction))
+            self._apply_actions(self._logic.on_real_position(position, is_moving, direction))
         except Exception as exc:
             self._report_error(f"_on_real_cover_state(entity={entity!r})", exc)
 
@@ -169,41 +174,40 @@ class GradhermeticCoverControl(hass.Hass):
         """
         Translate declarative logic actions one-to-one into AppDaemon side effects.
         """
-        runtime = self._runtime
-        if runtime.disabled:
+        if self._disabled:
             return
         for action in actions:
             match action.kind:
                 case ActionKind.MOVE_TO:
-                    self._command(runtime, "cover/set_cover_position", position=action.position)
+                    self._command("cover/set_cover_position", position=action.position)
                 case ActionKind.OPEN_FULL:
-                    self._command(runtime, "cover/open_cover")
+                    self._command("cover/open_cover")
                 case ActionKind.CLOSE_FULL:
-                    self._command(runtime, "cover/close_cover")
+                    self._command("cover/close_cover")
                 case ActionKind.STOP:
-                    self._command(runtime, "cover/stop_cover")
+                    self._command("cover/stop_cover")
                 case ActionKind.PUBLISH_STATE:
                     self._publish_virtual(action.position, action.in_tilt, action.motion)
                 case ActionKind.ARM_SETTLE_TIMER:
-                    self._arm_settle(runtime, action.seconds)
+                    self._arm_settle(action.seconds)
                 case ActionKind.CANCEL_SETTLE_TIMER:
-                    self._cancel_settle(runtime)
+                    self._cancel_settle()
                 case ActionKind.NOTIFY:
-                    self._notify(runtime, action.notify_kind, action.message)
+                    self._notify(action.notify_kind, action.message)
 
-    def _command(self, runtime: CoverRuntime, service: str, **data: Any) -> None:
+    def _command(self, service: str, **data: Any) -> None:
         """
         Issue a real-cover service call, enforcing the command rate limit.
         """
-        if runtime.disabled:
+        if self._disabled:
             return
-        if runtime.record_command(self.datetime()):
-            self._disable(runtime)
+        if self._rate_limiter.record(self.datetime()):
+            self._disable()
             return
         self.log(f"Cover {_describe_command(service, data)}")
-        self.call_service(service, entity_id=runtime.config.real_cover, **data)
+        self.call_service(service, entity_id=self._config.real_cover, **data)
 
-    def _notify(self, runtime: CoverRuntime, kind: NotifyKind | None, message: str | None) -> None:
+    def _notify(self, kind: NotifyKind | None, message: str | None) -> None:
         """
         Render a logic notification as a Home Assistant persistent notification.
         """
@@ -213,7 +217,7 @@ class GradhermeticCoverControl(hass.Hass):
         self.call_service(
             "persistent_notification/create",
             title=title,
-            message=f"Cover '{runtime.config.virtual_id}' {message}",
+            message=f"Cover '{self._config.virtual_id}' {message}",
         )
 
     def _publish_virtual(self, virtual_position: int | None, in_tilt: bool | None,
@@ -252,20 +256,20 @@ class GradhermeticCoverControl(hass.Hass):
 
     # -- Settle timer ------------------------------------------------------------------------------
 
-    def _arm_settle(self, runtime: CoverRuntime, seconds: float | None) -> None:
+    def _arm_settle(self, seconds: float | None) -> None:
         """
         (Re)start the settle timer used as a plan-advancement fallback.
         """
-        self._cancel_settle(runtime)
-        runtime.settle_timer_handle = self.run_in(self._on_settle, seconds)
+        self._cancel_settle()
+        self._settle_timer_handle = self.run_in(self._on_settle, seconds)
 
-    def _cancel_settle(self, runtime: CoverRuntime) -> None:
+    def _cancel_settle(self) -> None:
         """
         Cancel the settle timer if scheduled.
         """
-        if runtime.settle_timer_handle is not None:
-            self.cancel_timer(runtime.settle_timer_handle)
-            runtime.settle_timer_handle = None
+        if self._settle_timer_handle is not None:
+            self.cancel_timer(self._settle_timer_handle)
+            self._settle_timer_handle = None
 
     def _on_settle(self, kwargs: dict[str, Any]) -> None:
         """
@@ -273,9 +277,9 @@ class GradhermeticCoverControl(hass.Hass):
         timer exists for the case where a state update never arrived.
         """
         try:
-            self._runtime.settle_timer_handle = None
+            self._settle_timer_handle = None
             position, is_moving, direction = self._read_real_position()
-            self._apply_actions(self._runtime.logic.on_settle_timer(position, is_moving, direction))
+            self._apply_actions(self._logic.on_settle_timer(position, is_moving, direction))
         except Exception as exc:
             self._report_error("_on_settle", exc)
 
@@ -287,13 +291,11 @@ class GradhermeticCoverControl(hass.Hass):
         """
         return _extract_feedback(self.get_state(self._config.real_cover, attribute="all"))
 
-    def _disable(self, runtime: CoverRuntime) -> None:
+    def _disable(self) -> None:
         """
         Permanently disable this blind due to rate limiting and notify.
         """
-        runtime.disabled = True
-        runtime.logic.disable()
-        self._cancel_settle(runtime)
+        self._shutdown()
         self.log(
             f"DISABLED: real-cover command rate limit exceeded ({COMMAND_RATE_LIMIT} "
             f"commands in {COMMAND_RATE_WINDOW_SECONDS}s). Restart AppDaemon to re-enable.",
@@ -301,7 +303,7 @@ class GradhermeticCoverControl(hass.Hass):
         self.call_service(
             "persistent_notification/create",
             title="GradhermeticCoverControl disabled",
-            message=(f"Cover '{runtime.config.virtual_id}' has been disabled because it sent more "
+            message=(f"Cover '{self._config.virtual_id}' has been disabled because it sent more "
                      f"than {COMMAND_RATE_LIMIT} commands in {COMMAND_RATE_WINDOW_SECONDS} "
                      "seconds. This likely indicates a bug. Restart AppDaemon to re-enable."),
         )
@@ -313,16 +315,20 @@ class GradhermeticCoverControl(hass.Hass):
         tb = traceback.format_exc()
         self.log(f"Unhandled exception in {context}: {type(exc).__name__}: {exc}\n{tb}",
                  level="ERROR")
-        runtime = getattr(self, "_runtime", None)
-        if runtime is not None:
-            runtime.disabled = True
-            runtime.logic.disable()
-            self._cancel_settle(runtime)
+        self._shutdown()
         self.call_service(
             "persistent_notification/create",
             title="GradhermeticCoverControl error",
             message=f"{context}\n{type(exc).__name__}: {exc}",
         )
+
+    def _shutdown(self) -> None:
+        """
+        Disable both the adapter and the logic, and cancel the settle timer.
+        """
+        self._disabled = True
+        self._logic.disable()
+        self._cancel_settle()
 
 
 def _describe_command(service: str, data: dict[str, Any]) -> str:
