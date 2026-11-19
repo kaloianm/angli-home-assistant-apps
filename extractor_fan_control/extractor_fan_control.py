@@ -21,8 +21,8 @@ from extractor_fan_control.logic import (
 
 # More fan switch commands than this (keepalive pulses included) within the window disables the fan
 # until AppDaemon restarts.
-FAN_CMD_RATE_LIMIT = 5
-FAN_CMD_RATE_WINDOW_SECONDS = 30
+COMMAND_RATE_LIMIT = 5
+COMMAND_RATE_WINDOW_SECONDS = 30
 
 
 class ExtractorFanControl(Hass):
@@ -53,7 +53,7 @@ class ExtractorFanControl(Hass):
             ),
             log=self.log,
         )
-        self._rate_limiter = RateLimiter(FAN_CMD_RATE_LIMIT, FAN_CMD_RATE_WINDOW_SECONDS)
+        self._rate_limiter = RateLimiter(COMMAND_RATE_LIMIT, COMMAND_RATE_WINDOW_SECONDS)
         self._activation_timer_handle: Any | None = None
         self._deadline_timer_handle: Any | None = None
         self._keepalive_timer_handle: Any | None = None
@@ -220,13 +220,13 @@ class ExtractorFanControl(Hass):
         """
         self._shutdown()
         self.log(
-            f"DISABLED: fan switch command rate limit exceeded ({FAN_CMD_RATE_LIMIT} commands in "
-            f"{FAN_CMD_RATE_WINDOW_SECONDS}s). Restart AppDaemon to re-enable.", level="ERROR")
+            f"DISABLED: fan switch command rate limit exceeded ({COMMAND_RATE_LIMIT} commands in "
+            f"{COMMAND_RATE_WINDOW_SECONDS}s). Restart AppDaemon to re-enable.", level="ERROR")
         self.call_service(
             "persistent_notification/create",
             title="ExtractorFanControl disabled",
             message=(f"Fan '{self._config.name}' has been disabled because it sent more than "
-                     f"{FAN_CMD_RATE_LIMIT} fan switch commands in {FAN_CMD_RATE_WINDOW_SECONDS} "
+                     f"{COMMAND_RATE_LIMIT} fan switch commands in {COMMAND_RATE_WINDOW_SECONDS} "
                      "seconds. This likely indicates a bug. Restart AppDaemon to re-enable."),
         )
 

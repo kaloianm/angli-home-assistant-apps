@@ -18,12 +18,12 @@ Every run asserts the same properties:
 import unittest
 
 from gradhermetic_cover_control.actions import ActionKind
+from gradhermetic_cover_control.cover_types import Direction
 from gradhermetic_cover_control.executor import virtual_position
 from gradhermetic_cover_control.geometry import Zone
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
 from gradhermetic_cover_control.planner import (
     Belief,
-    Direction,
     Intent,
     IntentKind,
     Latch,

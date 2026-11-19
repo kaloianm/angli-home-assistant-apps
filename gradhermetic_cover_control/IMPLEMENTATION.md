@@ -12,10 +12,11 @@ testable without AppDaemon. Each app instance manages one blind.
 | `geometry.py` | `Zone`: config validation, band/zone predicates, named targets, band snapping, the real↔virtual mapping |
 | `planner.py` | `plan(zone, belief, intent) -> Plan`: all movement sequences and latch guards; `check_plan` invariants |
 | `actuator.py` | `Actuator`: the real cover with no Gradhermetic knowledge. Drives one `Move`, tracks position and motion, owns the settle timer and stops, and delivers an `Arrived` or `Stalled` verdict |
-| `executor.py` | Owns the `Actuator` and drives one `Plan` as a series of its moves: step activation, advancing on `Arrived`, notifying on `Stalled`, stop and replacement. The logic reaches the actuator only through it |
+| `executor.py` | Owns the `Actuator` and drives one `Plan` as a series of its moves: turns each `Step` into a `Move`, step activation, advancing on `Arrived`, notifying on `Stalled`, stop and replacement. The only module that knows both the planner and the actuator |
 | `logic.py` | `GradhermeticCoverLogic`: holds the belief, routes events to planner/executor, publishes state |
 | `gradhermetic_cover_control.py` | AppDaemon adapter (I/O only) |
 | `config.py` | Parses `apps.yaml` args |
+| `cover_types.py` | `Direction` and `CommandKind`, shared by the planner, actuator and adapter |
 
 The core returns `Action`s (`actions.py`), and the adapter translates them one-to-one:
 

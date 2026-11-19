@@ -1,10 +1,9 @@
 import unittest
 
+from gradhermetic_cover_control.cover_types import CommandKind, Direction
 from gradhermetic_cover_control.geometry import Zone
 from gradhermetic_cover_control.planner import (
     Belief,
-    CommandKind,
-    Direction,
     Intent,
     IntentKind,
     Latch,
@@ -136,15 +135,12 @@ class TestLeaveTilt(unittest.TestCase):
         movement = plan(ZONE, _belief(UPPER, Latch.LATCHED), Intent(IntentKind.LEAVE_TILT))
         self.assertEqual([RELEASE], _targets(movement))
         self.assertGreater(movement.steps[0].command_position, movement.steps[0].target)
-        self.assertTrue(movement.steps[0].satisfied_by(RELEASE))
-        self.assertTrue(movement.steps[0].satisfied_by(100))
-        self.assertFalse(movement.steps[0].satisfied_by(RELEASE - 1))
+        self.assertEqual(StepKind.RISE_TO_AT_LEAST, movement.steps[0].kind)
 
     def test_the_exit_accepts_no_lower_than_a_configured_release_height(self):
         movement = plan(CUSTOM_ZONE, _belief(UPPER, Latch.LATCHED), Intent(IntentKind.LEAVE_TILT))
         self.assertEqual([CUSTOM_RELEASE], _targets(movement))
         self.assertEqual([100], _commanded(movement))
-        self.assertFalse(movement.steps[0].satisfied_by(CUSTOM_RELEASE - 1))
 
     def test_uncertain_belief_has_nothing_to_leave(self):
         for latch in (Latch.UNLATCHED, Latch.UNKNOWN):

@@ -71,7 +71,7 @@ Suggested actuator relay settings:
 
 ## Safety
 
-- **Rate limit:** more than `FAN_CMD_RATE_LIMIT` (5) fan commands in `FAN_CMD_RATE_WINDOW_SECONDS`
+- **Rate limit:** more than `COMMAND_RATE_LIMIT` (5) fan commands in `COMMAND_RATE_WINDOW_SECONDS`
   (30), keepalives included, disables the app until restart and creates a persistent notification.
 - **Error boundary:** an unhandled callback exception disables the app and notifies.
 

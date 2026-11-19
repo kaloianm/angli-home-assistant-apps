@@ -34,7 +34,7 @@ from collections.abc import Callable
 
 from gradhermetic_cover_control import planner
 from gradhermetic_cover_control.actions import Action, ActionKind, Motion, NotifyKind
-from gradhermetic_cover_control.actuator import Direction
+from gradhermetic_cover_control.cover_types import Direction
 from gradhermetic_cover_control.executor import Executor, Outcome, Status, virtual_position
 from gradhermetic_cover_control.geometry import Zone, clamp_pct
 from gradhermetic_cover_control.planner import Belief, Intent, IntentKind, Latch, Plan, PlanKind

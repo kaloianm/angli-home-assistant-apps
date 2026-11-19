@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import StrEnum
 
 from gradhermetic_cover_control.actions import Action, ActionKind
+from gradhermetic_cover_control.cover_types import CommandKind, Direction
 
 # How long a move may go without progress before the timer looks at it.
 SETTLE_TIMEOUT_SECONDS = 45
@@ -27,22 +27,6 @@ SETTLE_TIMEOUT_SECONDS = 45
 # Shorter wait for a cover seen moving and then settled short: it has stopped, so only a late
 # report could still change the verdict.
 SETTLED_RECHECK_SECONDS = 10
-
-
-class Direction(StrEnum):
-    UP = "up"
-    DOWN = "down"
-
-
-class CommandKind(StrEnum):
-    """
-    Which real-cover service carries a move. ``OPEN``/``CLOSE`` send the commands rather than a
-    position so the actuator drives against its own limit switch.
-    """
-
-    POSITION = "position"
-    OPEN = "open"
-    CLOSE = "close"
 
 
 @dataclass(frozen=True)

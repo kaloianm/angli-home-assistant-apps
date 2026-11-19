@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from gradhermetic_cover_control.actions import Action, ActionKind, NotifyKind
-from gradhermetic_cover_control.actuator import Actuator, Direction, Feedback, Stalled
+from gradhermetic_cover_control.actuator import Actuator, Feedback, Move, Stalled
+from gradhermetic_cover_control.cover_types import Direction
 from gradhermetic_cover_control.geometry import Zone, clamp_pct
 from gradhermetic_cover_control.planner import Latch, Plan, PlanKind, Step, StepKind
 
@@ -215,7 +216,8 @@ class Executor:
         resting = not self._actuator.is_moving and position is not None
         while self._index < len(self._plan.steps):
             step = self._step()
-            if resting and step.satisfied_by(position):
+            move = self._move(step)
+            if resting and move.arrived(position):
                 self._log(f"skipping {step.kind} {step.target}: already at {position}",
                           level="DEBUG")
                 self._index += 1
@@ -223,9 +225,17 @@ class Executor:
             self._log(
                 f"commanding {step.kind} {step.command_position} (satisfied at "
                 f"{step.target}) from {position}", level="DEBUG")
-            actions = self._actuator.start(step.move(self._tolerance(step)))
+            actions = self._actuator.start(move)
             return Outcome(actions, Status.RUNNING, self._plan)
         return self._complete()
+
+    def _move(self, step: Step) -> Move:
+        """
+        The actuator move that carries out a step.
+        """
+        return Move(step.command, step.command_position, step.target,
+                    at_least=step.kind == StepKind.RISE_TO_AT_LEAST,
+                    tolerance_pct=self._tolerance(step))
 
     def _tolerance(self, step: Step) -> int:
         """

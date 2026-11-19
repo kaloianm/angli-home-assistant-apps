@@ -10,7 +10,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from extractor_fan_control.extractor_fan_control import (
-    FAN_CMD_RATE_LIMIT,
+    COMMAND_RATE_LIMIT,
     ExtractorFanControl,
 )
 
@@ -278,7 +278,7 @@ class TestSafetyBoundaries(unittest.TestCase):
         app.light("on")
         app.advance(6)
         # The activation sent the first command, so these take it one past the limit.
-        for _ in range(FAN_CMD_RATE_LIMIT):
+        for _ in range(COMMAND_RATE_LIMIT):
             app.now += timedelta(milliseconds=1)
             app._turn_fan(on=True)  # pylint: disable=protected-access
         self.assertTrue(app._disabled)  # pylint: disable=protected-access
@@ -294,7 +294,7 @@ class TestSafetyBoundaries(unittest.TestCase):
 
     def test_a_rate_limit_trip_on_activation_leaves_no_timer_running(self):
         app = FakeApp().start()
-        for _ in range(FAN_CMD_RATE_LIMIT):
+        for _ in range(COMMAND_RATE_LIMIT):
             app.now += timedelta(milliseconds=1)
             app._turn_fan(on=False)  # pylint: disable=protected-access
         # The activation's fan command trips the limit; the keepalive it would start must not start.

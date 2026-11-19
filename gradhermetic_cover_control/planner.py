@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from gradhermetic_cover_control.actuator import CommandKind, Direction, Move
+from gradhermetic_cover_control.cover_types import CommandKind, Direction
 from gradhermetic_cover_control.geometry import Zone
 
 # -- Latch belief ----------------------------------------------------------------------------------
@@ -120,19 +120,6 @@ class Step:
         if self.command_pct is None:
             return self.target
         return self.command_pct
-
-    def move(self, tolerance_pct: int = 0) -> Move:
-        """
-        The actuator move that carries out this step.
-        """
-        return Move(self.command, self.command_position, self.target,
-                    at_least=self.kind == StepKind.RISE_TO_AT_LEAST, tolerance_pct=tolerance_pct)
-
-    def satisfied_by(self, position: int) -> bool:
-        """
-        Whether a reported real position satisfies this step.
-        """
-        return self.move().arrived(position)
 
 
 @dataclass(frozen=True)

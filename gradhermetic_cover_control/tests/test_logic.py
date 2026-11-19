@@ -3,9 +3,10 @@ import unittest
 from unittest import mock
 
 from gradhermetic_cover_control.actions import ActionKind, Motion, NotifyKind
+from gradhermetic_cover_control.cover_types import Direction
 from gradhermetic_cover_control.geometry import Zone
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
-from gradhermetic_cover_control.planner import Direction, Latch, PlanKind
+from gradhermetic_cover_control.planner import Latch, PlanKind
 
 # Geometry used throughout: zone [38, 44], epsilon 2, release 46, step 2 real travel percent.
 # Every configured number is a whole percent of real blind travel; span 6 makes the 2% step a third

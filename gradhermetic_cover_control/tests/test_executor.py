@@ -1,7 +1,7 @@
 import unittest
 
 from gradhermetic_cover_control.actions import ActionKind, NotifyKind
-from gradhermetic_cover_control.actuator import CommandKind
+from gradhermetic_cover_control.cover_types import CommandKind
 from gradhermetic_cover_control.executor import (
     DEVIATION_TOLERANCE_PCT,
     Executor,

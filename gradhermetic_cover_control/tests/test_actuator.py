@@ -6,11 +6,10 @@ from gradhermetic_cover_control.actuator import (
     SETTLE_TIMEOUT_SECONDS,
     Actuator,
     Arrived,
-    CommandKind,
-    Direction,
     Move,
     Stalled,
 )
+from gradhermetic_cover_control.cover_types import CommandKind, Direction
 
 
 def _kinds(actions):
