@@ -9,7 +9,6 @@ User-facing behavior and configuration are in [README.md](README.md).
 | `logic.py` | `ExtractorFanPairLogic`: pure state machine for one pair, returning declarative actions |
 | `extractor_fan_control.py` | AppDaemon adapter: listeners, timers, service calls, notifications |
 | `config.py` | Parses `apps.yaml` |
-| `rate_limiter.py` | Sliding-window fan command rate limiter |
 
 ## State Machine
 
@@ -96,6 +95,7 @@ The tests cover:
 - the off-deadline output
 - the rule that a light-off never starts the fan
 - config validation
-- the rate limiter
+- the adapter against a fake `hass.Hass`: wiring, sensor publishing, keepalive, rate
+  limit, error boundary
 
 No AppDaemon installation is needed.

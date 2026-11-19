@@ -12,23 +12,13 @@ from __future__ import annotations
 import traceback
 from typing import Any
 
+from appdaemon_common.hassapi import Hass
+from appdaemon_common.rate_limiter import RateLimiter
 from gradhermetic_cover_control.actions import Action, ActionKind, Motion, NotifyKind
 from gradhermetic_cover_control.actuator import Direction
 from gradhermetic_cover_control.config import parse_app_config
 from gradhermetic_cover_control.geometry import to_whole_pct
 from gradhermetic_cover_control.logic import GradhermeticCoverLogic
-from gradhermetic_cover_control.rate_limiter import RateLimiter
-
-try:
-    import appdaemon.plugins.hass.hassapi as hass
-except ImportError:  # pragma: no cover - used only outside AppDaemon runtime.
-
-    class _HassBase:
-        pass
-
-    class hass:  # type: ignore[no-redef]
-        Hass = _HassBase
-
 
 # Home Assistant event fired by the template cover to carry user commands to this app.
 COMMAND_EVENT = "gradhermetic_command"
@@ -44,7 +34,7 @@ COMMAND_RATE_LIMIT = 60
 COMMAND_RATE_WINDOW_SECONDS = 60
 
 
-class GradhermeticCoverControl(hass.Hass):
+class GradhermeticCoverControl(Hass):
     """
     AppDaemon app wrapping a real cover with Gradhermetic tilt-mode control.
     """

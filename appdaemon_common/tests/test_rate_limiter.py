@@ -2,7 +2,7 @@ import unittest
 
 from datetime import datetime, timedelta
 
-from gradhermetic_cover_control.rate_limiter import RateLimiter
+from appdaemon_common.rate_limiter import RateLimiter
 
 LIMIT = 60
 WINDOW_SECONDS = 60

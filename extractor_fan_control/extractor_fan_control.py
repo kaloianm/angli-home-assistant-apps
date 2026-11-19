@@ -8,6 +8,8 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Any
 
+from appdaemon_common.hassapi import Hass
+from appdaemon_common.rate_limiter import RateLimiter
 from extractor_fan_control.config import parse_app_config
 from extractor_fan_control.logic import (
     Action,
@@ -16,18 +18,6 @@ from extractor_fan_control.logic import (
     LogicConfig,
     TimerName,
 )
-from extractor_fan_control.rate_limiter import RateLimiter
-
-try:
-    import appdaemon.plugins.hass.hassapi as hass
-except ImportError:  # pragma: no cover - used only outside AppDaemon runtime.
-
-    class _HassBase:
-        pass
-
-    class hass:  # type: ignore[no-redef]
-        Hass = _HassBase
-
 
 # More fan switch commands than this (keepalive pulses included) within the window disables the fan
 # until AppDaemon restarts.
@@ -35,7 +25,7 @@ FAN_CMD_RATE_LIMIT = 5
 FAN_CMD_RATE_WINDOW_SECONDS = 30
 
 
-class ExtractorFanControl(hass.Hass):
+class ExtractorFanControl(Hass):
     """
     AppDaemon app wiring extractor fan control logic for one light/fan pair.
     """

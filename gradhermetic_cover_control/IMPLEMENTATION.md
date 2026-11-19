@@ -16,7 +16,6 @@ testable without AppDaemon. Each app instance manages one blind.
 | `logic.py` | `GradhermeticCoverLogic`: holds the belief, routes events to planner/executor, publishes state |
 | `gradhermetic_cover_control.py` | AppDaemon adapter (I/O only) |
 | `config.py` | Parses `apps.yaml` args |
-| `rate_limiter.py` | Sliding-window command rate limiter |
 
 The core returns `Action`s (`actions.py`), and the adapter translates them one-to-one:
 
@@ -266,7 +265,7 @@ python3 -m unittest discover -s gradhermetic_cover_control/tests -t . -v
 | `test_actuator.py` | Command translation, stale-feedback immunity, every settle-timer path, the recheck, when a stop is sent, direction and heading |
 | `test_executor.py` | Skip-if-satisfied, advancing on verdicts, which steps get the deviation tolerance, stall notification |
 | `test_logic.py` | Event surface, belief transitions, replacement, step rule, publishing, tilt toggle, named regressions |
-| `test_config.py`, `test_rate_limiter.py` | `apps.yaml` parsing, rate limiter |
+| `test_config.py` | `apps.yaml` parsing |
 | `test_adapter.py` | The adapter against a fake `hass.Hass`: wiring, filtering, startup gate, malformed input, action translation, rate limit, error boundary |
 | `simulator.py`, `test_model.py` | Whole-app model tests, below |
 
