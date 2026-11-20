@@ -29,9 +29,9 @@ STARTUP_DELAY_SECONDS = 5
 
 # More real-cover commands than this within the window disables the blind until AppDaemon restarts.
 # A synchronous replan loop hits it in milliseconds, and a loop driven by ~1 s feedback reports in
-# about 15 s. A tilt entry is up to 4 commands, which leaves room for a run of slat taps.
-COMMAND_RATE_LIMIT = 15
-COMMAND_RATE_WINDOW_SECONDS = 60
+# about 20 s. A tilt entry is up to 4 commands, which leaves room for a run of slat taps.
+COMMAND_RATE_LIMIT = 20
+COMMAND_RATE_WINDOW_SECONDS = 30
 
 
 class GradhermeticCoverControl(Hass):
