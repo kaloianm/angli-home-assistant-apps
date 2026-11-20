@@ -171,7 +171,7 @@ class Harness:
                 # every one of them, not only at rest.
                 if action.in_tilt and not self.sim.latched:
                     raise AssertionError(
-                        f"published slat mode at {action.position} while the mechanism is not "
+                        f"published tilt mode at {action.position} while the mechanism is not "
                         "latched")
                 self.published.append(action.position)
             elif action.kind == ActionKind.ARM_SETTLE_TIMER:

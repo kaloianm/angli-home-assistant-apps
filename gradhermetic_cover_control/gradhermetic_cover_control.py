@@ -242,7 +242,7 @@ class GradhermeticCoverControl(Hass):
             self._tilt_mode_entity,
             state=tilt_state,
             attributes={
-                "friendly_name": f"{self._config.virtual_name} Slat Mode",
+                "friendly_name": f"{self._config.virtual_name} Tilt Mode",
                 "icon": "mdi:blinds-horizontal",
             },
         )

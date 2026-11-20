@@ -207,7 +207,7 @@ class TestEnterLeaveTilt(unittest.TestCase):
 
     def test_losing_the_latch_belief_publishes_the_mode_as_off(self):
         # Slat control is offered only from a confident LATCHED belief, so an interrupted sequence
-        # that leaves the belief uncertain must not still show the blind as being in slat mode.
+        # that leaves the belief uncertain must not still show the blind as being in tilt mode.
         self.logic.seed_state(100)
         run_plan(self.logic, self.logic.on_set_tilt_mode(True))
         actions = self.logic.on_real_position(80, False)  # external motion clear of the band

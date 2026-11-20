@@ -409,7 +409,7 @@ class TestActionTranslation(unittest.TestCase):
         self._apply(Action(ActionKind.PUBLISH_STATE, position=67, in_tilt=True))
         published = self.app.published[TILT_MODE_ENTITY]
         self.assertEqual("on", published["state"])
-        self.assertEqual("Living Room Blind Slat Mode", published["attributes"]["friendly_name"])
+        self.assertEqual("Living Room Blind Tilt Mode", published["attributes"]["friendly_name"])
 
         self._apply(Action(ActionKind.PUBLISH_STATE, position=20, in_tilt=False))
         self.assertEqual("off", self.app.published[TILT_MODE_ENTITY]["state"])
